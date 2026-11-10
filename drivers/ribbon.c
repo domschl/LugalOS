@@ -47,16 +47,17 @@ LCDTERM_UTEXT void ribbon_init(ribbon_t *r, uint16_t screen_w, uint16_t screen_h
     r->screen_h = screen_h ? screen_h : 480u;
 #if RIBBON_AXIS_Y_SUPPORTED
     r->axis = RIBBON_AXIS_X;
+#endif
     r->y_full = 0;
     r->y_pad0 = 0;
     r->y_extra = 0;
-#endif
     for (unsigned i = 0; i < RIBBON_MAX_WINDOWS; i++) {
         r->wins[i].type = RIBBON_WIN_EMPTY;
         r->wins[i].vterm_id = 0;
         r->wins[i].size = 0;
         r->wins[i].flags = 0;
         r->wins[i].owner_pid = -1;
+        r->wins[i].share = 0;
         r->wins[i].reserved = 0;
         r->wins[i].m0 = 0;
         r->wins[i].m1 = 0;
@@ -66,14 +67,13 @@ LCDTERM_UTEXT void ribbon_init(ribbon_t *r, uint16_t screen_w, uint16_t screen_h
 
 LCDTERM_UTEXT bool ribbon_set_axis(ribbon_t *r, uint8_t axis, uint16_t y_pad0, uint16_t y_extra, uint8_t y_full) {
     if (!r) return false;
-#if RIBBON_AXIS_Y_SUPPORTED
-    r->axis = axis == RIBBON_AXIS_Y ? RIBBON_AXIS_Y : RIBBON_AXIS_X;
     r->y_pad0 = y_pad0;
     r->y_extra = y_extra;
     r->y_full = y_full;
+#if RIBBON_AXIS_Y_SUPPORTED
+    r->axis = axis == RIBBON_AXIS_Y ? RIBBON_AXIS_Y : RIBBON_AXIS_X;
     return true;
 #else
-    (void)y_pad0; (void)y_extra; (void)y_full;
     return axis == RIBBON_AXIS_X;
 #endif
 }
@@ -88,18 +88,12 @@ LCDTERM_UTEXT static int32_t ax_cell(const ribbon_t *r) {
 }
 
 LCDTERM_UTEXT static int32_t ax_extra(const ribbon_t *r) {
-#if RIBBON_AXIS_Y_SUPPORTED
     if (AXIS_Y(r)) return (int32_t)r->y_extra;
-#endif
-    (void)r;
     return 7;                                            /* the frame's borders and the text's inset */
 }
 
 LCDTERM_UTEXT static int32_t ax_pad0(const ribbon_t *r) {
-#if RIBBON_AXIS_Y_SUPPORTED
     if (AXIS_Y(r)) return (int32_t)r->y_pad0;
-#endif
-    (void)r;
     return RIBBON_BORDER_PAD;
 }
 
@@ -113,22 +107,18 @@ LCDTERM_UTEXT static int32_t ax_len(const ribbon_t *r) {
 
 LCDTERM_UTEXT uint8_t ribbon_size_full(const ribbon_t *r) {
     if (!r) return 1;
-#if RIBBON_AXIS_Y_SUPPORTED
     if (AXIS_Y(r)) return r->y_full ? r->y_full : 1u;
-#endif
     return RIBBON_COLS_FULL(r->screen_w);
 }
 
 LCDTERM_UTEXT uint8_t ribbon_size_pair(const ribbon_t *r) {
     if (!r) return 2;
-#if RIBBON_AXIS_Y_SUPPORTED
     if (AXIS_Y(r)) {
         /* Two windows and the gap in the length one window takes alone. */
         int32_t px = ax_cell(r) * (int32_t)ribbon_size_full(r) - ax_extra(r) - RIBBON_GAP;
         int32_t units = px / ax_cell(r);
         return (uint8_t)(units < 2 * (int32_t)RIBBON_ROWS_MIN ? 2 * (int32_t)RIBBON_ROWS_MIN : units);
     }
-#endif
     return (uint8_t)RIBBON_COLS_PAIR(r->screen_w);
 }
 
@@ -136,13 +126,122 @@ LCDTERM_UTEXT uint8_t ribbon_size_half(const ribbon_t *r) {
     return (uint8_t)(ribbon_size_pair(r) / 2u);
 }
 
+/* --- Columns ---------------------------------------------------------------
+ * Stacks are laid out across a landscape screen only. The raw_ helpers see
+ * the stacking whatever the axis -- it is kept down a portrait screen too --
+ * and look after the flags; the others give the columns being laid out. */
+#define STACKED(r, i) (((r)->wins[i].flags & RIBBON_FLAG_STACKED) != 0)
+
+LCDTERM_UTEXT static uint8_t raw_col_first(const ribbon_t *r, uint8_t i) {
+    while (i > 0 && STACKED(r, i)) i--;
+    return i;
+}
+
+LCDTERM_UTEXT static uint8_t raw_col_end(const ribbon_t *r, uint8_t i) {
+    i++;
+    while (i < r->count && STACKED(r, i)) i++;
+    return i;
+}
+
+LCDTERM_UTEXT uint8_t ribbon_col_first(const ribbon_t *r, uint8_t idx) {
+    return AXIS_Y(r) ? idx : raw_col_first(r, idx);
+}
+
+LCDTERM_UTEXT uint8_t ribbon_col_end(const ribbon_t *r, uint8_t idx) {
+    return AXIS_Y(r) ? (uint8_t)(idx + 1u) : raw_col_end(r, idx);
+}
+
+/* The text rows n stacked windows share: the height one window has alone,
+ * less n - 1 windows' title bars and borders and the gaps between them. */
+LCDTERM_UTEXT static int32_t stack_rows(const ribbon_t *r, unsigned n) {
+    int32_t cell = (int32_t)FONT_CELL_H;
+    int32_t px = cell * (int32_t)r->y_full - (int32_t)(n - 1u) * ((int32_t)r->y_extra + RIBBON_GAP);
+    return px > 0 ? px / cell : 0;
+}
+
+LCDTERM_UTEXT uint8_t ribbon_stack_max(const ribbon_t *r) {
+    if (!r || AXIS_Y(r) || r->y_full == 0) return 1;
+    for (unsigned n = RIBBON_STACK_MAX; n > 1u; n--)
+        if (stack_rows(r, n) >= (int32_t)(n * RIBBON_ROWS_MIN)) return (uint8_t)n;
+    return 1;
+}
+
+/* The rows a window with height preset `share` gets of `total`. */
+LCDTERM_UTEXT static int32_t share_rows(uint8_t share, int32_t total) {
+    if (share == RIBBON_SHARE_THIRD) return total / 3;
+    if (share == RIBBON_SHARE_HALF) return total / 2;
+    if (share == RIBBON_SHARE_TWO_THIRDS) return 2 * total / 3;
+    return 0;
+}
+
+/* The rows of the windows first..end-1 of a column (rows[k] for first + k):
+ * a window with a preset gets it (kept between RIBBON_ROWS_MIN and what
+ * leaves the others theirs), the others share the rest equally, the
+ * remainder to the lowest. `solo` in the column has all of it. */
+LCDTERM_UTEXT static void stack_layout(const ribbon_t *r, uint8_t first, uint8_t end, uint8_t solo,
+                                       int32_t rows[RIBBON_STACK_MAX]) {
+    unsigned n = (unsigned)(end - first);
+    if (n > RIBBON_STACK_MAX) n = RIBBON_STACK_MAX;
+    if (solo >= first && solo < first + n) {
+        for (unsigned k = 0; k < n; k++) rows[k] = first + k == solo ? (int32_t)r->y_full : 0;
+        return;
+    }
+    int32_t total = stack_rows(r, n), rest = total;
+    unsigned set = RIBBON_NONE, others = n;
+    for (unsigned k = 0; k < n; k++) {
+        int32_t want = share_rows(r->wins[first + k].share, total);
+        if (n < 2u || want == 0 || set != RIBBON_NONE) continue;
+        int32_t hi = total - (int32_t)(n - 1u) * (int32_t)RIBBON_ROWS_MIN;
+        if (want < (int32_t)RIBBON_ROWS_MIN) want = RIBBON_ROWS_MIN;
+        if (want > hi) want = hi;
+        rows[k] = want;
+        rest -= want;
+        set = k;
+        others--;
+    }
+    int32_t base = others ? rest / (int32_t)others : 0, extra = others ? rest % (int32_t)others : 0;
+    unsigned seen = 0;
+    for (unsigned k = 0; k < n; k++) {
+        if (k == set) continue;
+        seen++;
+        rows[k] = base + (seen > others - (unsigned)extra ? 1 : 0);
+    }
+}
+
+LCDTERM_UTEXT bool ribbon_win_rows(const ribbon_t *r, uint8_t idx, uint8_t solo, int32_t *y0, int32_t *y1, uint8_t *rows) {
+    if (!r || idx >= r->count || AXIS_Y(r)) return false;
+    uint8_t first = raw_col_first(r, idx), end = raw_col_end(r, idx);
+    int32_t h[RIBBON_STACK_MAX];
+    stack_layout(r, first, end, solo, h);
+    int32_t cell = (int32_t)FONT_CELL_H, extra = (int32_t)r->y_extra;
+    int32_t y = (int32_t)r->y_pad0;
+    for (uint8_t k = first; k < idx; k++)
+        if (h[k - first] > 0) y += cell * h[k - first] + extra + RIBBON_GAP;
+    int32_t n = h[idx - first];
+    *y0 = y;
+    *y1 = n > 0 ? y + cell * n + extra - 1 : y - 1;
+    *rows = (uint8_t)n;
+    return true;
+}
+
 LCDTERM_UTEXT void ribbon_layout(ribbon_t *r) {
     if (!r) return;
     int32_t cur = ax_pad0(r);
     int32_t cell = ax_cell(r), extra = ax_extra(r);
     uint8_t max_size = ribbon_size_full(r);
+    if (r->count > 0) r->wins[0].flags &= (uint8_t)~RIBBON_FLAG_STACKED;
     for (uint8_t i = 0; i < r->count; i++) {
         ribbon_win_t *w = &r->wins[i];
+        /* a column deeper than a stack may be is cut short there */
+        if (STACKED(r, i) && i - raw_col_first(r, i) >= (int)RIBBON_STACK_MAX)
+            w->flags &= (uint8_t)~RIBBON_FLAG_STACKED;
+        if (!AXIS_Y(r) && STACKED(r, i)) {
+            const ribbon_win_t *above = &r->wins[i - 1];
+            w->size = above->size;
+            w->m0 = above->m0;
+            w->m1 = above->m1;
+            continue;
+        }
         uint8_t size = w->size;
         uint8_t min_size = AXIS_Y(r) ? RIBBON_ROWS_MIN : (w->type == RIBBON_WIN_TERM ? RIBBON_TERM_MIN_COLS : 1u);
         if (size < min_size) size = min_size;
@@ -193,6 +292,7 @@ LCDTERM_UTEXT int32_t ribbon_compute_viewport(const ribbon_t *r, uint8_t idx, in
 LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t vterm_id, uint8_t size, const char *title) {
     if (!r || r->count >= RIBBON_MAX_WINDOWS) return -1;
     if (idx > r->count) idx = r->count;
+    while (idx < r->count && STACKED(r, idx)) idx++;   /* a new window starts a column, after this one */
 
     for (int i = (int)r->count - 1; i >= (int)idx; i--) {
         win_copy(&r->wins[i + 1], &r->wins[i]);
@@ -202,6 +302,7 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
     r->wins[idx].size = size ? size : ribbon_size_full(r);
     r->wins[idx].flags = 0;
     r->wins[idx].owner_pid = -1;
+    r->wins[idx].share = 0;
     r->wins[idx].reserved = 0;
     if (title && title[0]) {
         cstr_copy(r->wins[idx].title, title, sizeof(r->wins[idx].title));
@@ -240,7 +341,7 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
     }
 
     r->count++;
-    r->active_idx = idx;
+    (void)ribbon_focus(r, idx);
     ribbon_layout(r);
     r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
     return (int)idx;
@@ -248,6 +349,8 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
 
 LCDTERM_UTEXT bool ribbon_remove(ribbon_t *r, uint8_t idx) {
     if (!r || r->count == 0 || idx >= r->count) return false;
+    if (!STACKED(r, idx) && idx + 1u < r->count)       /* the next window heads the column now */
+        r->wins[idx + 1].flags &= (uint8_t)~RIBBON_FLAG_STACKED;
 
     for (uint8_t i = idx; i + 1 < r->count; i++) {
         win_copy(&r->wins[i], &r->wins[i + 1]);
@@ -260,6 +363,7 @@ LCDTERM_UTEXT bool ribbon_remove(ribbon_t *r, uint8_t idx) {
     } else if (r->active_idx >= r->count && r->count > 0) {
         r->active_idx = (uint8_t)(r->count - 1u);
     }
+    if (r->count > 0) (void)ribbon_focus(r, r->active_idx);
     ribbon_layout(r);
     if (r->count > 0) {
         r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
@@ -272,9 +376,12 @@ LCDTERM_UTEXT bool ribbon_remove(ribbon_t *r, uint8_t idx) {
 LCDTERM_UTEXT bool ribbon_swap(ribbon_t *r, uint8_t idx_a, uint8_t idx_b) {
     if (!r || idx_a >= r->count || idx_b >= r->count || idx_a == idx_b) return false;
     ribbon_win_t tmp;
+    uint8_t st_a = r->wins[idx_a].flags & RIBBON_FLAG_STACKED, st_b = r->wins[idx_b].flags & RIBBON_FLAG_STACKED;
     win_copy(&tmp, &r->wins[idx_a]);
     win_copy(&r->wins[idx_a], &r->wins[idx_b]);
     win_copy(&r->wins[idx_b], &tmp);
+    r->wins[idx_a].flags = (uint8_t)((r->wins[idx_a].flags & ~RIBBON_FLAG_STACKED) | st_a);
+    r->wins[idx_b].flags = (uint8_t)((r->wins[idx_b].flags & ~RIBBON_FLAG_STACKED) | st_b);
 
     if (r->active_idx == idx_a) r->active_idx = idx_b;
     else if (r->active_idx == idx_b) r->active_idx = idx_a;
@@ -284,8 +391,49 @@ LCDTERM_UTEXT bool ribbon_swap(ribbon_t *r, uint8_t idx_a, uint8_t idx_b) {
     return true;
 }
 
+/* Window `from` to place `to`, the ones between moving up one; the active
+ * window followed. Its flags go with it: the caller sets the stacking. */
+LCDTERM_UTEXT static void win_move(ribbon_t *r, uint8_t from, uint8_t to) {
+    if (from == to) return;
+    ribbon_win_t tmp;
+    win_copy(&tmp, &r->wins[from]);
+    if (from < to) {
+        for (uint8_t i = from; i < to; i++) win_copy(&r->wins[i], &r->wins[i + 1]);
+    } else {
+        for (uint8_t i = from; i > to; i--) win_copy(&r->wins[i], &r->wins[i - 1]);
+    }
+    win_copy(&r->wins[to], &tmp);
+    uint8_t a = r->active_idx;
+    if (a == from) a = to;
+    else if (from < to && a > from && a <= to) a--;
+    else if (from > to && a >= to && a < from) a++;
+    r->active_idx = a;
+}
+
+LCDTERM_UTEXT static void settle(ribbon_t *r) {
+    ribbon_layout(r);
+    r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
+}
+
 LCDTERM_UTEXT bool ribbon_move(ribbon_t *r, uint8_t from_idx, int dir) {
     if (!r || r->count < 2 || from_idx >= r->count) return false;
+    if (!AXIS_Y(r)) {
+        /* Across: the column, past the next one (each keeps its stacking). */
+        uint8_t f = raw_col_first(r, from_idx), e = raw_col_end(r, from_idx);
+        if (dir < 0) {
+            if (f == 0) return false;
+            uint8_t lf = raw_col_first(r, (uint8_t)(f - 1u));
+            for (uint8_t k = 0; k < f - lf; k++) win_move(r, lf, (uint8_t)(e - 1u));
+        } else if (dir > 0) {
+            if (e >= r->count) return false;
+            uint8_t re = raw_col_end(r, e);
+            for (uint8_t k = 0; k < re - e; k++) win_move(r, (uint8_t)(e + k), (uint8_t)(f + k));
+        } else {
+            return false;
+        }
+        settle(r);
+        return true;
+    }
     if (dir < 0 && from_idx > 0) {
         return ribbon_swap(r, from_idx, (uint8_t)(from_idx - 1u));
     } else if (dir > 0 && from_idx + 1 < r->count) {
@@ -297,18 +445,39 @@ LCDTERM_UTEXT bool ribbon_move(ribbon_t *r, uint8_t from_idx, int dir) {
 LCDTERM_UTEXT bool ribbon_focus(ribbon_t *r, uint8_t idx) {
     if (!r || r->count == 0 || idx >= r->count) return false;
     r->active_idx = idx;
+    for (uint8_t i = raw_col_first(r, idx), e = raw_col_end(r, idx); i < e; i++)
+        r->wins[i].flags &= (uint8_t)~RIBBON_FLAG_COL_FOCUS;
+    r->wins[idx].flags |= RIBBON_FLAG_COL_FOCUS;
     r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
     return true;
 }
 
 LCDTERM_UTEXT bool ribbon_focus_step(ribbon_t *r, int dir) {
     if (!r || r->count == 0) return false;
+    if (!AXIS_Y(r)) {
+        uint8_t f = raw_col_first(r, r->active_idx), e = raw_col_end(r, r->active_idx);
+        uint8_t to_first, to_end;
+        if (dir < 0 && f > 0) { to_end = f; to_first = raw_col_first(r, (uint8_t)(f - 1u)); }
+        else if (dir > 0 && e < r->count) { to_first = e; to_end = raw_col_end(r, e); }
+        else return false;
+        uint8_t to = to_first;
+        for (uint8_t i = to_first; i < to_end; i++)
+            if (r->wins[i].flags & RIBBON_FLAG_COL_FOCUS) to = i;
+        return ribbon_focus(r, to);
+    }
     if (dir < 0 && r->active_idx > 0) {
         return ribbon_focus(r, (uint8_t)(r->active_idx - 1u));
     } else if (dir > 0 && r->active_idx + 1 < r->count) {
         return ribbon_focus(r, (uint8_t)(r->active_idx + 1u));
     }
     return false;
+}
+
+/* A width for the active window's column (every window in it). */
+LCDTERM_UTEXT static void col_set_size(ribbon_t *r, uint8_t size) {
+    uint8_t a = r->active_idx;
+    for (uint8_t i = ribbon_col_first(r, a), e = ribbon_col_end(r, a); i < e; i++) r->wins[i].size = size;
+    settle(r);
 }
 
 LCDTERM_UTEXT bool ribbon_resize_active(ribbon_t *r, bool expand) {
@@ -338,9 +507,7 @@ LCDTERM_UTEXT bool ribbon_resize_active(ribbon_t *r, bool expand) {
     }
 
     if (next == cur) return false;
-    w->size = next;
-    ribbon_layout(r);
-    r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
+    col_set_size(r, next);
     return true;
 }
 
@@ -350,18 +517,94 @@ LCDTERM_UTEXT bool ribbon_cycle_active(ribbon_t *r) {
     ribbon_win_t *w = &r->wins[r->active_idx];
     uint8_t first = AXIS_Y(r) ? ribbon_size_half(r) : RIBBON_COLS_TWO_FIFTHS(r->screen_w);
     if (w->size == first) return false;
-    w->size = first;
-    ribbon_layout(r);
-    r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
+    col_set_size(r, first);
     return true;
 }
 
 LCDTERM_UTEXT bool ribbon_toggle_maximize(ribbon_t *r) {
     if (!r || r->count == 0 || r->active_idx >= r->count) return false;
     ribbon_win_t *w = &r->wins[r->active_idx];
-    w->size = w->size >= ribbon_size_full(r) ? ribbon_size_half(r) : ribbon_size_full(r);
-    ribbon_layout(r);
-    r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
+    col_set_size(r, w->size >= ribbon_size_full(r) ? ribbon_size_half(r) : ribbon_size_full(r));
+    return true;
+}
+
+/* --- Stacks ---------------------------------------------------------------- */
+
+LCDTERM_UTEXT static void col_clear_shares(ribbon_t *r, uint8_t first, uint8_t end) {
+    for (uint8_t i = first; i < end; i++) r->wins[i].share = RIBBON_SHARE_EQUAL;
+}
+
+LCDTERM_UTEXT bool ribbon_join(ribbon_t *r, int dir) {
+    if (!r || AXIS_Y(r) || r->count < 2 || dir == 0 || r->active_idx >= r->count) return false;
+    uint8_t a = r->active_idx, f = raw_col_first(r, a), e = raw_col_end(r, a);
+    const uint8_t st = RIBBON_FLAG_STACKED;
+    if (e - f > 1) {
+        /* Out of the stack, to a column of its own beside it. */
+        uint8_t to = dir < 0 ? f : (uint8_t)(e - 1u);
+        win_move(r, a, to);
+        r->wins[to].flags &= (uint8_t)~st;
+        if (dir < 0) r->wins[to + 1].flags &= (uint8_t)~st;   /* the rest of the column after it */
+        else r->wins[f].flags &= (uint8_t)~st;                /* ... before it */
+        col_clear_shares(r, f, e);
+    } else if (dir < 0) {
+        if (f == 0) return false;
+        uint8_t lf = raw_col_first(r, (uint8_t)(f - 1u));
+        if (f - lf >= ribbon_stack_max(r)) return false;
+        r->wins[a].flags |= st;                               /* already right below its last */
+        col_clear_shares(r, lf, (uint8_t)(f + 1u));
+    } else {
+        if (e >= r->count) return false;
+        uint8_t re = raw_col_end(r, e);
+        if (re - e >= ribbon_stack_max(r)) return false;
+        win_move(r, a, (uint8_t)(re - 1u));
+        r->wins[re - 1].flags |= st;
+        col_clear_shares(r, f, re);
+    }
+    (void)ribbon_focus(r, r->active_idx);
+    settle(r);
+    return true;
+}
+
+LCDTERM_UTEXT bool ribbon_focus_stack(ribbon_t *r, int dir) {
+    if (!r || AXIS_Y(r) || r->active_idx >= r->count) return false;
+    uint8_t a = r->active_idx, f = raw_col_first(r, a), e = raw_col_end(r, a);
+    if (dir < 0 && a > f) return ribbon_focus(r, (uint8_t)(a - 1u));
+    if (dir > 0 && a + 1u < e) return ribbon_focus(r, (uint8_t)(a + 1u));
+    return false;
+}
+
+LCDTERM_UTEXT bool ribbon_move_stack(ribbon_t *r, int dir) {
+    if (!r || AXIS_Y(r) || r->active_idx >= r->count) return false;
+    uint8_t a = r->active_idx, f = raw_col_first(r, a), e = raw_col_end(r, a);
+    if (dir < 0 && a > f) return ribbon_swap(r, a, (uint8_t)(a - 1u));
+    if (dir > 0 && a + 1u < e) return ribbon_swap(r, a, (uint8_t)(a + 1u));
+    return false;
+}
+
+LCDTERM_UTEXT bool ribbon_height(ribbon_t *r, int dir) {
+    if (!r || AXIS_Y(r) || r->active_idx >= r->count) return false;
+    uint8_t a = r->active_idx, f = raw_col_first(r, a), e = raw_col_end(r, a);
+    unsigned n = (unsigned)(e - f);
+    if (n < 2u) return false;
+    int32_t h[RIBBON_STACK_MAX];
+    stack_layout(r, f, e, RIBBON_NONE, h);
+    int32_t cur = h[a - f], total = stack_rows(r, n);
+    int32_t hi = total - (int32_t)(n - 1u) * (int32_t)RIBBON_ROWS_MIN;
+    /* The presets that give a height of their own here, smallest first. */
+    uint8_t pick = RIBBON_NONE, smallest = RIBBON_NONE;
+    for (uint8_t sh = RIBBON_SHARE_THIRD; sh <= RIBBON_SHARE_TWO_THIRDS; sh++) {
+        int32_t rows = share_rows(sh, total);
+        if (rows < (int32_t)RIBBON_ROWS_MIN || rows > hi) continue;
+        if (smallest == RIBBON_NONE) smallest = sh;
+        if (dir < 0 && rows < cur) pick = sh;                         /* the last below: the largest */
+        if (dir > 0 && rows > cur && pick == RIBBON_NONE) pick = sh;  /* the first above */
+        if (dir == 2 && rows > cur && pick == RIBBON_NONE) pick = sh;
+    }
+    if (dir == 2 && pick == RIBBON_NONE) pick = smallest;
+    if (pick == RIBBON_NONE || share_rows(pick, total) == cur) return false;
+    col_clear_shares(r, f, e);
+    r->wins[a].share = pick;
+    settle(r);
     return true;
 }
 
@@ -643,6 +886,84 @@ void ribbon_selftest(void) {
     bool round = ribbon_cycle_active(&r) && r.wins[0].size == 49 && ribbon_cycle_active(&r) &&
                  r.wins[0].size == 62 && ribbon_cycle_active(&r) && r.wins[0].size == 82;
     st_expect("Cmd+R at 1024: 126 -> 49 -> 62 -> 82, round", round, &fails);
+
+    /* Stacks, at the RP2350-LCD-7's geometry (800 x 480, 16 px rows, windows
+     * from y 22, 20 px of title bar and borders besides the rows, 27 rows
+     * alone). Two windows share 25 rows (12 + 13), three 23 (7 + 8 + 8). */
+    {
+        ribbon_init(&r, 800, 480);
+        (void)ribbon_set_axis(&r, RIBBON_AXIS_X, 22, 20, 27);
+        (void)ribbon_insert(&r, 0, RIBBON_WIN_TERM, 0, 48, "A");
+        (void)ribbon_insert(&r, 1, RIBBON_WIN_TERM, 1, 48, "B");
+        (void)ribbon_insert(&r, 2, RIBBON_WIN_TERM, 2, 64, "C");
+        int32_t y0 = 0, y1 = 0, b0 = 0, b1 = 0;
+        uint8_t rows = 0, brows = 0;
+        st_expect("stack: alone, the whole height (rows 27, y 22..473)",
+                  ribbon_win_rows(&r, 0, RIBBON_NONE, &y0, &y1, &rows) && rows == 27 && y0 == 22 && y1 == 473 &&
+                  ribbon_stack_max(&r) == 3, &fails);
+        (void)ribbon_focus(&r, 1);
+        st_expect("Cmd+[: B joins A's column below it",
+                  ribbon_join(&r, -1) && r.active_idx == 1 && (r.wins[1].flags & RIBBON_FLAG_STACKED) &&
+                  r.wins[1].m0 == r.wins[0].m0 && r.wins[2].m0 == r.wins[0].m1 + RIBBON_GAP &&
+                  ribbon_col_end(&r, 0) == 2, &fails);
+        bool split = ribbon_win_rows(&r, 0, RIBBON_NONE, &y0, &y1, &rows) &&
+                     ribbon_win_rows(&r, 1, RIBBON_NONE, &b0, &b1, &brows);
+        st_expect("stack of two: 12 + 13 rows, a gap apart",
+                  split && rows == 12 && brows == 13 && y0 == 22 && b0 == y1 + 1 + RIBBON_GAP && b1 <= 473, &fails);
+        st_expect("the solo window has the column, the other none",
+                  ribbon_win_rows(&r, 1, 1, &b0, &b1, &brows) && brows == 27 && b0 == 22 &&
+                  ribbon_win_rows(&r, 0, 1, &y0, &y1, &rows) && rows == 0, &fails);
+        st_expect("Cmd+Right and back: the stack's focus is remembered",
+                  ribbon_focus_step(&r, 1) && r.active_idx == 2 && ribbon_focus_step(&r, -1) && r.active_idx == 1, &fails);
+        st_expect("Cmd+Up / Down within the stack",
+                  ribbon_focus_stack(&r, -1) && r.active_idx == 0 && !ribbon_focus_stack(&r, -1) &&
+                  ribbon_focus_stack(&r, 1) && r.active_idx == 1 && !ribbon_focus_stack(&r, 1), &fails);
+        st_expect("Cmd+Ctrl+Up: B above A, the stacking stays with the places",
+                  ribbon_move_stack(&r, -1) && r.active_idx == 0 && r.wins[0].vterm_id == 1 &&
+                  !(r.wins[0].flags & RIBBON_FLAG_STACKED) && (r.wins[1].flags & RIBBON_FLAG_STACKED), &fails);
+        /* B on top, 12 rows: the presets are 8, 12, 16. */
+        bool h = ribbon_height(&r, 2) && ribbon_win_rows(&r, 0, RIBBON_NONE, &y0, &y1, &rows) && rows == 16;
+        h = h && ribbon_win_rows(&r, 1, RIBBON_NONE, &b0, &b1, &brows) && brows == 9;
+        h = h && ribbon_height(&r, 2) && ribbon_win_rows(&r, 0, RIBBON_NONE, &y0, &y1, &rows) && rows == 8;
+        h = h && !ribbon_height(&r, -1) && ribbon_height(&r, 1) &&
+            ribbon_win_rows(&r, 0, RIBBON_NONE, &y0, &y1, &rows) && rows == 12;
+        st_expect("height presets: round 16 -> 8, then up to 12", h, &fails);
+        st_expect("Cmd+= widens the whole column",
+                  ribbon_resize_active(&r, true) && r.wins[0].size == 64 && r.wins[1].size == 64, &fails);
+        (void)ribbon_focus(&r, 2);
+        bool three = ribbon_join(&r, -1) && ribbon_col_end(&r, 0) == 3 && r.count == 3 &&
+                     ribbon_win_rows(&r, 0, RIBBON_NONE, &y0, &y1, &rows) && rows == 7 &&
+                     ribbon_win_rows(&r, 2, RIBBON_NONE, &b0, &b1, &brows) && brows == 8 && b1 <= 473;
+        st_expect("a third joins: 7 + 8 + 8, the presets cleared", three && r.wins[0].share == 0, &fails);
+        (void)ribbon_insert(&r, 3, RIBBON_WIN_TERM, 3, 48, "D");
+        st_expect("a full column takes no fourth",
+                  r.active_idx == 3 && !ribbon_join(&r, -1) && ribbon_col_end(&r, 3) == 4, &fails);
+        (void)ribbon_focus(&r, 1);
+        st_expect("Cmd+] from the middle: out to a column of its own on the right",
+                  ribbon_join(&r, 1) && r.active_idx == 2 && ribbon_col_end(&r, 0) == 2 &&
+                  ribbon_col_first(&r, 2) == 2 && ribbon_col_end(&r, 2) == 3 && r.wins[2].vterm_id == 0, &fails);
+        (void)ribbon_focus(&r, 3);
+        st_expect("Cmd+Ctrl+Left moves D's column past A, then past the stack",
+                  ribbon_move(&r, 3, -1) && r.active_idx == 2 && r.wins[3].vterm_id == 0 &&
+                  ribbon_move(&r, 2, -1) && r.active_idx == 0 && r.wins[0].vterm_id == 3 &&
+                  ribbon_col_end(&r, 1) == 3 && (r.wins[2].flags & RIBBON_FLAG_STACKED), &fails);
+        (void)ribbon_insert(&r, 2, RIBBON_WIN_TERM, 4, 48, "E");
+        st_expect("a new window goes after a column, not into it",
+                  r.active_idx == 3 && r.wins[3].vterm_id == 4 && ribbon_col_end(&r, 1) == 3, &fails);
+        st_expect("removing a stack's top: the next heads the column",
+                  ribbon_remove(&r, 1) && !(r.wins[1].flags & RIBBON_FLAG_STACKED) && ribbon_col_end(&r, 1) == 2, &fails);
+#if RIBBON_AXIS_Y_SUPPORTED
+        (void)ribbon_focus(&r, 1);
+        (void)ribbon_join(&r, -1);                                     /* D / C: a stack again */
+        (void)ribbon_set_axis(&r, RIBBON_AXIS_Y, 22, 20, 47);
+        ribbon_layout(&r);
+        bool flat = ribbon_col_end(&r, 0) == 1 && !ribbon_join(&r, 1) && r.wins[1].m0 > r.wins[0].m1;
+        (void)ribbon_set_axis(&r, RIBBON_AXIS_X, 22, 20, 27);
+        ribbon_layout(&r);
+        st_expect("portrait lays a stack out window by window; landscape again restores it",
+                  flat && ribbon_col_end(&r, 0) == 2 && r.wins[1].m0 == r.wins[0].m0, &fails);
+#endif
+    }
 
 #if RIBBON_AXIS_Y_SUPPORTED
     /* 76.3: down the screen, at the Tab5's portrait geometry (16 x 32 cells,

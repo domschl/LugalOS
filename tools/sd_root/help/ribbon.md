@@ -29,6 +29,19 @@ The top of the screen displays a persistent status bar featuring:
 * **Minimap**: Visual representation of the full ribbon layout.
 * **System Clock**: Hardware RTC time synchronized at boot.
 
+### Stacks: windows one above the other (landscape)
+Across a landscape screen the ribbon is a row of **columns**, and a column holds one window or a **stack** of two or three, one above the other (as in the Niri window manager). The windows of a stack share the column's width; its rows are shared equally unless one has a height set.
+
+* **`Cmd+[` / `Cmd+]`**: the focused window, alone in its column, joins the column on its left / right, at its bottom. A window in a stack leaves it, for a column of its own on that side.
+* **`Cmd+Up` / `Cmd+Down`** focus the window above / below in the stack; with `Ctrl` they move the focused window up / down in it. A vertical swipe that starts on a title bar does the same as `Cmd+Up` / `Cmd+Down`.
+* **`Cmd+Left` / `Cmd+Right`** go to the next column, at the window last focused in it; with `Ctrl` they move the whole column.
+* **Widths** (`Cmd+R`, `Cmd+-`, `Cmd+=`, `Cmd+F`) apply to the whole column.
+* **Heights**: `Cmd+Shift+R` gives the focused window the next of 1/3, 1/2 and 2/3 of the column, round; `Cmd+Shift+-` / `Cmd+Shift+=` the next smaller / larger. The other windows share the rest. Joining or leaving a stack shares it equally again.
+* **How deep:** as many windows as get at least 4 text rows each, at most 3: three on the RP2350-LCD-7 (7-8 rows each), the LCD-7B and the Tab5 in landscape (5-6 rows each).
+* **The on-screen keyboard** gives the focused window its whole column while it is up; the others in the stack come back when it goes.
+* **Turning to portrait** lays a stack out window by window down the ribbon (a stack of two is a top/bottom pair); turning back restores it. The minimap shows a stack as one block, split.
+* `ribbon list` shows each stacked window's place: `stack: 2 of 2, 13 rows, y 244..471`.
+
 ### Portrait: the ribbon runs down the screen (Tab5)
 On a screen turned to portrait (the Tab5, `Cmd+O` or the IMU), the ribbon runs from top to bottom instead: every window is as wide as the screen, and its size is counted in text rows. A window is either alone on the screen (37 rows on the Tab5) or one of a **top/bottom pair** (17 rows each) -- never a narrow slice side by side.
 
@@ -59,10 +72,14 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 | Hotkey | Function |
 | :--- | :--- |
 | `Cmd+Left` / `Cmd+Right` | Focus the window left / right |
-| `Cmd+Up` / `Cmd+Down` | Portrait: focus the window above / below |
-| `Cmd+Ctrl+Left` / `Right` (portrait: `Up` / `Down`) | Move the focused window |
+| `Cmd+Up` / `Cmd+Down` | Focus the window above / below (in a stack, or down a portrait screen) |
+| `Cmd+Ctrl+Left` / `Right` | Move the focused window's column |
+| `Cmd+Ctrl+Up` / `Down` | Move the focused window up / down (in its stack, or down a portrait screen) |
+| `Cmd+[` / `Cmd+]` | Join the column on the left / right, or leave the stack to that side |
 | `Cmd+R` | The next width (2/5, 1/2, 2/3, full, then round again; portrait: alone, pair) |
 | `Cmd+-` / `Cmd+=` | The next narrower / wider width |
+| `Cmd+Shift+R` | In a stack: the next height (1/3, 1/2, 2/3, round) |
+| `Cmd+Shift+-` / `Cmd+Shift+=` | In a stack: the next lower / taller height |
 | `Cmd+F` | Maximize: the full width and back |
 | `Cmd+Enter` | New terminal |
 | `Cmd+O` | Turn the display between portrait and landscape (Tab5) |
@@ -70,7 +87,7 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 | `Cmd+1`..`Cmd+9` | Jump to window 1..9 |
 | `Cmd+Shift+3` | Screenshot (PBM) to `/sd0/screenshots/` |
 
-Taken by the window manager for stacked windows and full screen, which are being built (phase 76.4a) and do nothing yet: `Cmd+[` / `Cmd+]`, `Cmd+Up` / `Cmd+Down` across a landscape screen, `Cmd+Ctrl+Up` / `Down` there, `Cmd+Shift+R`, `Cmd+Shift+-` / `Cmd+Shift+=`, and `Cmd+Shift+F`.
+`Cmd+Shift+F` is taken by the window manager for full screen, which is being built (phase 76.4a) and does nothing yet.
 
 ### Touch Gestures (GT911 / ST7121 Capacitive Touch)
 * **Tap Window**: Tapping anywhere inside a window pane transfers focus to it.

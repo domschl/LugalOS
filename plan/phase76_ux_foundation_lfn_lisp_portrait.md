@@ -37,7 +37,7 @@
 The landscape ribbon becomes Niri's: a row of **columns**, each holding one window or a **stack** of windows one above the other. A column down a landscape screen is laid out as the portrait ribbon already is (76.3: the whole width, sizes in rows), so the two share one model: portrait is one tall column.
 
 - **Model:** `wins[]` stays flat, ordered column by column and top to bottom within one. `RIBBON_FLAG_STACKED` on a window means "in the same column as the one before it"; its height share is kept in the unused `ribbon_win_t.reserved`. A column's width is its first window's `size`, shared by the others. `RIBBON_MAX_WINDOWS` stays 8 and `ribbon_t` does not grow (RP2350 SRAM).
-- **Depth:** a stack is as deep as the screen gives windows of `RIBBON_ROWS_MIN` rows with their title bars, at most 3 (RP2350-LCD-7 27 rows, 7B 34: 3; Tab5 landscape 19: 2).
+- **Depth:** a stack is as deep as the screen gives windows of `RIBBON_ROWS_MIN` rows with their title bars, at most 3 (RP2350-LCD-7 27 rows: 7-8 each; 7B 34; Tab5 landscape 19 rows at 16x32: 5-6 each).
 - **Heights:** shared equally by default; a preset (1/3, 1/2, 2/3 of the column) sets one window, and the others share the rest.
 - **Landscape only.** Down a portrait screen a stack would be windows side by side, which 76.3 rules out. Turning to portrait lays a column's windows out one after another down the ribbon (a stack of two is the top/bottom pair); the flags stay, so turning back restores the stacks.
 - **Focus:** each column remembers the window last focused in it; `Cmd+Left/Right` return to it.

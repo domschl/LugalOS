@@ -1285,6 +1285,18 @@ static void sys_hello(uint8_t type, uint8_t id) {
 static void reader_update_cb(void *arg) { (void)arg; reader_update(); }
 #endif
 
+/* A focus change's reply ('<', '>', 'J', '^'): the window that has the
+ * focus now gets the keys, and the keyboard if it wants it. */
+static void focus_moved(const uint8_t *reply) {
+    if (reply[10] != 0) g_active_win_type = reply[10];
+    if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
+    vterm_set_active(reply[1]);
+    if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && osk_wanted()) {
+        uint8_t kreq[2] = { 'k', 1 }, kreply[SCREEN_REPLY_LEN];
+        (void)console_canvas(kreq, 2, kreply);
+    }
+}
+
 /* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
  * to the SD card (a screenshot), neither of which belongs inside a print. */
 static void run_hotkey(void) {
@@ -1323,30 +1335,27 @@ static void run_hotkey(void) {
             }
             continue;
         }
-        if (hk == CONSOLE_HOTKEY_FOCUS_LEFT) {
-            uint8_t req[1] = { '<' }, reply[SCREEN_REPLY_LEN];
-            if (console_canvas(req, 1, reply) && reply[0] == 0) {
-                if (reply[10] != 0) g_active_win_type = reply[10];
-                if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
-                vterm_set_active(reply[1]);
-                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && osk_wanted()) {
-                    uint8_t kreq[2] = { 'k', 1 };
-                    (void)console_canvas(kreq, 2, reply);
-                }
-            }
+        if (hk == CONSOLE_HOTKEY_FOCUS_LEFT || hk == CONSOLE_HOTKEY_FOCUS_RIGHT) {
+            uint8_t req[1] = { hk == CONSOLE_HOTKEY_FOCUS_LEFT ? (uint8_t)'<' : (uint8_t)'>' }, reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 1, reply) && reply[0] == 0) focus_moved(reply);
             continue;
         }
-        if (hk == CONSOLE_HOTKEY_FOCUS_RIGHT) {
-            uint8_t req[1] = { '>' }, reply[SCREEN_REPLY_LEN];
-            if (console_canvas(req, 1, reply) && reply[0] == 0) {
-                if (reply[10] != 0) g_active_win_type = reply[10];
-                if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
-                vterm_set_active(reply[1]);
-                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && osk_wanted()) {
-                    uint8_t kreq[2] = { 'k', 1 };
-                    (void)console_canvas(kreq, 2, reply);
-                }
-            }
+        if (hk == CONSOLE_HOTKEY_FOCUS_UP || hk == CONSOLE_HOTKEY_FOCUS_DOWN) {
+            /* across a landscape screen: within the stack */
+            uint8_t req[2] = { '^', (uint8_t)(hk == CONSOLE_HOTKEY_FOCUS_UP ? -1 : 1) }, reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 2, reply) && reply[0] == 0) focus_moved(reply);
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_JOIN_LEFT || hk == CONSOLE_HOTKEY_JOIN_RIGHT ||
+            hk == CONSOLE_HOTKEY_MOVE_UP || hk == CONSOLE_HOTKEY_MOVE_DOWN ||
+            hk == CONSOLE_HOTKEY_HEIGHT_DOWN || hk == CONSOLE_HOTKEY_HEIGHT_UP || hk == CONSOLE_HOTKEY_HEIGHT_NEXT) {
+            uint8_t op = (hk == CONSOLE_HOTKEY_JOIN_LEFT || hk == CONSOLE_HOTKEY_JOIN_RIGHT) ? 'j'
+                       : (hk == CONSOLE_HOTKEY_MOVE_UP || hk == CONSOLE_HOTKEY_MOVE_DOWN) ? 'm' : 'h';
+            int8_t dir = (hk == CONSOLE_HOTKEY_JOIN_LEFT || hk == CONSOLE_HOTKEY_MOVE_UP || hk == CONSOLE_HOTKEY_HEIGHT_DOWN) ? -1
+                       : hk == CONSOLE_HOTKEY_HEIGHT_NEXT ? 2 : 1;
+            uint8_t req[2] = { op, (uint8_t)dir }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 2, reply);
+            console_sync_readers();
             continue;
         }
         if (hk == CONSOLE_HOTKEY_MOVE_LEFT) {
@@ -1370,15 +1379,7 @@ static void run_hotkey(void) {
         if (hk >= CONSOLE_HOTKEY_JUMP_BASE && hk <= CONSOLE_HOTKEY_JUMP_BASE + 8) {
             uint8_t target_idx = (uint8_t)(hk - CONSOLE_HOTKEY_JUMP_BASE);
             uint8_t req[2] = { 'J', target_idx }, reply[SCREEN_REPLY_LEN];
-            if (console_canvas(req, 2, reply) && reply[0] == 0) {
-                if (reply[10] != 0) g_active_win_type = reply[10];
-                if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
-                vterm_set_active(reply[1]);
-                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && osk_wanted()) {
-                    uint8_t kreq[2] = { 'k', 1 };
-                    (void)console_canvas(kreq, 2, reply);
-                }
-            }
+            if (console_canvas(req, 2, reply) && reply[0] == 0) focus_moved(reply);
             continue;
         }
         if (hk == CONSOLE_HOTKEY_TAP) {

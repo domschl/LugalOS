@@ -12,8 +12,17 @@
  * text columns across (38, 48, 64 or 98 at 800 px; 49, 62, 82 or 126 at
  * 1024), text rows down (one window, or a top/bottom pair) -- and it spans
  * m0..m1 there. The viewport m_view slides along the axis to bring the
- * active window into view without overlapping. Across the axis every window
- * has the whole screen: the tile rows in X, the full width in Y.
+ * active window into view without overlapping. Down a portrait screen every
+ * window has the full width.
+ *
+ * Across a landscape screen the ribbon is a row of columns, and a column is
+ * one window or a stack of them, one above the other (Niri's columns): a
+ * window flagged RIBBON_FLAG_STACKED is in the column of the window before
+ * it. wins[] is ordered column by column, top to bottom within one. A
+ * column's windows share its first one's size and m0..m1; their rows are
+ * shared out by ribbon_win_rows(). Down a portrait screen the flags are kept
+ * but not laid out -- every window is its own -- so turning back restores
+ * the stacks; there they stay with the places in wins[], not the windows.
  */
 
 #define RIBBON_MAX_WINDOWS   8u
@@ -80,10 +89,21 @@ typedef enum {
 } ribbon_win_type_t;
 
 enum {
-    RIBBON_FLAG_LOCKED   = (1u << 0),
-    RIBBON_FLAG_DIRTY    = (1u << 1),
-    RIBBON_FLAG_NO_CLOSE = (1u << 2),   /* no close box (the launcher: always there) */
+    RIBBON_FLAG_LOCKED    = (1u << 0),
+    RIBBON_FLAG_DIRTY     = (1u << 1),
+    RIBBON_FLAG_NO_CLOSE  = (1u << 2),   /* no close box (the launcher: always there) */
+    RIBBON_FLAG_STACKED   = (1u << 3),   /* in the column of the window before it */
+    RIBBON_FLAG_COL_FOCUS = (1u << 4),   /* the window its column last had focused */
 };
+
+/* A stacked window's height preset (ribbon_win_t.share): of the rows its
+ * column's windows share; the others share the rest equally. */
+#define RIBBON_SHARE_EQUAL      0u
+#define RIBBON_SHARE_THIRD      1u
+#define RIBBON_SHARE_HALF       2u
+#define RIBBON_SHARE_TWO_THIRDS 3u
+#define RIBBON_STACK_MAX        3u   /* windows in a column at most (fewer where rows are short) */
+#define RIBBON_NONE             0xFFu
 
 /* The vertical ribbon is for a screen that turns (the Tab5). The RP2350 and
  * the C6 never use it: there the axis is X by definition and its fields are
@@ -105,7 +125,8 @@ typedef struct {
     uint8_t  size;       /* along the major axis: text columns (X) or rows (Y) */
     uint8_t  flags;      /* RIBBON_FLAG_* */
     int16_t  owner_pid;  /* owning process PID, or -1 if unowned/kernel */
-    int16_t  reserved;
+    uint8_t  share;      /* in a stack: RIBBON_SHARE_* */
+    uint8_t  reserved;
     int32_t  m0;         /* the frame's first pixel along the major axis, in ribbon coordinates */
     int32_t  m1;         /* ... and its last (the 2 px shadow follows) */
     char     title[RIBBON_TITLE_MAX];  /* window title */
@@ -115,16 +136,16 @@ typedef struct {
     ribbon_win_t wins[RIBBON_MAX_WINDOWS];
     uint8_t      count;         /* number of active windows (0..RIBBON_MAX_WINDOWS) */
     uint8_t      active_idx;    /* index of active (focused) window */
+    uint8_t      y_full;        /* down the screen: rows of a window alone on it */
+#if RIBBON_AXIS_Y_SUPPORTED
+    uint8_t      axis;          /* RIBBON_AXIS_X | RIBBON_AXIS_Y */
+#endif
     int32_t      m_view;        /* the viewport's offset along the major axis (px): screen = m - m_view */
     int32_t      m_target;      /* where an animation takes m_view (px) */
     uint16_t     screen_w;      /* screen width in pixels (e.g. 800) */
     uint16_t     screen_h;      /* screen height in pixels (e.g. 480) */
-#if RIBBON_AXIS_Y_SUPPORTED
-    uint8_t      axis;          /* RIBBON_AXIS_X | RIBBON_AXIS_Y */
-    uint8_t      y_full;        /* AXIS_Y: rows of a window alone on the screen */
-    uint16_t     y_pad0;        /* AXIS_Y: where the first window's frame starts (below the menu bar) */
-    uint16_t     y_extra;       /* AXIS_Y: a window's pixels besides its rows (title bar, borders) */
-#endif
+    uint16_t     y_pad0;        /* down the screen: where a window's frame starts (below the menu bar) */
+    uint16_t     y_extra;       /* down the screen: a window's pixels besides its rows (title bar, borders) */
 } ribbon_t;
 
 #if RIBBON_AXIS_Y_SUPPORTED
@@ -142,10 +163,11 @@ static inline int ribbon_is_view(uint8_t type) {
 /* Initialize ribbon structure (axis X) */
 void ribbon_init(ribbon_t *r, uint16_t screen_w, uint16_t screen_h);
 
-/* The major axis, and for Y the geometry of a window down the screen (the
+/* The major axis, and the geometry of a window down the screen (the
  * screen's: where windows start, the pixels a window has besides its rows,
- * the rows of one window alone). Sizes are the caller's to convert. False
- * where Y is not built. */
+ * the rows of one window alone) -- the portrait ribbon's sizes and a
+ * landscape stack's rows. Sizes are the caller's to convert. False for Y
+ * where Y is not built (the geometry is still taken). */
 bool ribbon_set_axis(ribbon_t *r, uint8_t axis, uint16_t y_pad0, uint16_t y_extra, uint8_t y_full);
 
 /* Sizes along the major axis: one window alone (full), two side by side or
@@ -164,17 +186,19 @@ int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t vterm_id, uint
 /* Remove window at idx. Returns true on success. */
 bool ribbon_remove(ribbon_t *r, uint8_t idx);
 
-/* Swap windows at idx_a and idx_b. */
+/* Swap windows at idx_a and idx_b (the stacking stays with the places). */
 bool ribbon_swap(ribbon_t *r, uint8_t idx_a, uint8_t idx_b);
 
-/* Move window at from_idx left (dir < 0) or right (dir > 0).
- * Updates active_idx to track the window. */
+/* Move window at from_idx left (dir < 0) or right (dir > 0) -- across a
+ * landscape screen its whole column, past the next column. Updates
+ * active_idx to track the window. */
 bool ribbon_move(ribbon_t *r, uint8_t from_idx, int dir);
 
 /* Focus window at idx, updating m_target to bring it into comfortable view. */
 bool ribbon_focus(ribbon_t *r, uint8_t idx);
 
-/* Focus left (dir < 0) or right (dir > 0) neighbor. */
+/* Focus left (dir < 0) or right (dir > 0) neighbor: across a landscape
+ * screen the next column, at the window it last had focused. */
 bool ribbon_focus_step(ribbon_t *r, int dir);
 
 /* Resize the active window: expand (true) or shrink (false) across the
@@ -229,6 +253,42 @@ bool ribbon_cycle_active(ribbon_t *r);
 
 /* Toggle the active window between full and half (one-up and a pair). */
 bool ribbon_toggle_maximize(ribbon_t *r);
+
+/* --- Columns and stacks (across a landscape screen) ------------------------ */
+
+/* The first window of idx's column, and one past its last. Down a portrait
+ * screen every window is a column of its own. */
+uint8_t ribbon_col_first(const ribbon_t *r, uint8_t idx);
+uint8_t ribbon_col_end(const ribbon_t *r, uint8_t idx);
+
+/* How many windows a column may hold here: as many as get RIBBON_ROWS_MIN
+ * rows each, at most RIBBON_STACK_MAX; 1 down a portrait screen. */
+uint8_t ribbon_stack_max(const ribbon_t *r);
+
+/* Window idx's frame down the screen (its first and last pixel row) and its
+ * text rows, across a landscape screen: the whole height alone in its
+ * column, its share in a stack. `solo` is a window that has its column to
+ * itself for now (the on-screen keyboard's), or RIBBON_NONE: the others in
+ * its column get 0 rows. False down a portrait screen (the frame is m0..m1)
+ * or for no such window. */
+bool ribbon_win_rows(const ribbon_t *r, uint8_t idx, uint8_t solo, int32_t *y0, int32_t *y1, uint8_t *rows);
+
+/* Cmd+[ / Cmd+] (Niri's consume-or-expel): the active window, alone in its
+ * column, joins the column left (dir < 0) or right (dir > 0) at its bottom;
+ * in a stack, it leaves it for a column of its own on that side. False down
+ * a portrait screen, at the ribbon's end, or into a full column. */
+bool ribbon_join(ribbon_t *r, int dir);
+
+/* Cmd+Up / Down: the focus to the window above / below in the stack. */
+bool ribbon_focus_stack(ribbon_t *r, int dir);
+
+/* Cmd+Ctrl+Up / Down: the active window up / down within its stack. */
+bool ribbon_move_stack(ribbon_t *r, int dir);
+
+/* The active window's height preset in its stack: -1 the next smaller, 1 the
+ * next larger, 2 the next one round (from the largest to the smallest).
+ * False alone in its column, or when nothing changes. */
+bool ribbon_height(ribbon_t *r, int dir);
 
 /* Standalone selftest */
 void ribbon_selftest(void);

@@ -118,6 +118,60 @@ def _wm_keys(session: QemuSession) -> bool:
     return ok
 
 
+STACK = re.compile(r"stack: (\d) of (\d), (\d+) rows, y (\d+)\.\.(\d+)")
+
+
+def _stacks(session: QemuSession) -> bool:
+    """Stacks on the RAM screen by the window manager's keys: Cmd+[ joins
+    the column on the left, Cmd+Up/Down move within it, Cmd+Shift+R changes
+    the height, a turn to portrait lays the stack out window by window and
+    turning back restores it, Cmd+] leaves it."""
+    steps: list[tuple[str, bool, str]] = []
+
+    def check(what: str, ok: bool, got: object) -> None:
+        steps.append((what, ok, str(got)))
+
+    def listing() -> tuple[list[tuple[str, int, str, int, int, bool]], list[tuple[int, int, int, int, int]]]:
+        _, log = session.send_and_expect("ribbon list", r"lsh> ", timeout=5.0)
+        wins = [(m.group(2), int(m.group(3)), m.group(4), int(m.group(5)), int(m.group(6)), bool(m.group(7)))
+                for m in WIN.finditer(log)]
+        return wins, [tuple(int(g) for g in m.groups()) for m in STACK.finditer(log)]  # type: ignore[misc]
+
+    session.send_and_expect("viewtest open", r"lsh> ", timeout=5.0)
+    before, _ = listing()
+    session.send_and_expect("key cmd-[", r"lsh> ", timeout=5.0)
+    wins, st = listing()
+    focused = [i for i, w in enumerate(wins) if w[5]]
+    check("Cmd+[: the view joins the column on its left, below",
+          len(st) == 2 and st[0][:2] == (1, 2) and st[1][:2] == (2, 2) and st[1][3] > st[0][4] and
+          len(focused) == 1 and wins[focused[0]][0] == "View" and wins[focused[0]][3] == wins[focused[0] - 1][3],
+          (before, wins, st))
+    session.send_and_expect("key cmd-up", r"lsh> ", timeout=5.0)
+    up, _ = listing()
+    check("Cmd+Up: the window above has the focus", focused and up[focused[0] - 1][5], up)
+    session.send_and_expect("key cmd-down", r"lsh> ", timeout=5.0)
+    rows0 = st[1][2]
+    session.send_and_expect("key cmd-shift-r", r"lsh> ", timeout=5.0)
+    _, st2 = listing()
+    check("Cmd+Shift+R: another height, the column's rows shared out",
+          len(st2) == 2 and st2[1][2] != rows0 and abs((st2[0][2] + st2[1][2]) - (st[0][2] + st[1][2])) <= 1, (st, st2))
+    session.send_and_expect("ramscreen turn", r"ramscreen: 480 x 800", timeout=5.0)
+    port, stp = listing()
+    check("portrait: no stacks, window by window", not stp and len(port) == len(wins), (port, stp))
+    session.send_and_expect("ramscreen turn", r"ramscreen: 800 x 480", timeout=5.0)
+    back, stb = listing()
+    check("landscape again: the stack is back", len(stb) == 2 and [w[0] for w in back] == [w[0] for w in wins], (back, stb))
+    session.send_and_expect("key cmd-]", r"lsh> ", timeout=5.0)
+    out, sto = listing()
+    check("Cmd+]: out of the stack, a column of its own on the right",
+          not sto and out[focused[0]][0] == "View" and out[focused[0]][3] > out[focused[0] - 1][4], (out, sto))
+    session.send_and_expect("key cmd-w", r"lsh> ", timeout=5.0)
+    ok = all(st_[1] for st_ in steps)
+    for what, good, got in steps:
+        print(f"    [{'PASS' if good else 'FAIL'}] {what}" + ("" if good else f": {got}"))
+    return ok
+
+
 def run_tests() -> int:
     elf_path = REPO_ROOT / "build" / "rv32" / "lugalos.elf"
     img_path = REPO_ROOT / "build" / "rv32" / "lugalos_sd.img"
@@ -230,6 +284,9 @@ def run_tests() -> int:
 
         print("  Testing the window manager's width keys (key and serial CSI-u)...")
         all_passed = _wm_keys(session) and all_passed
+
+        print("  Testing stacks (Cmd+[ / ], Cmd+Up/Down, Cmd+Shift+R, a turn)...")
+        all_passed = _stacks(session) and all_passed
 
     finally:
         session.close()

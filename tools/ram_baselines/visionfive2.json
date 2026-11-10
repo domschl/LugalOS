@@ -6,7 +6,7 @@
   "heap_pages": 30830,
   "per_file": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 14858,
+    "(no line info: .rodata)": 15058,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 20,
     "arch/riscv/common/trap.c": 15,
@@ -130,6 +130,7 @@
     "kernel/umode_probe.c": 8344,
     "kernel/vterm.c": 3601,
     "kernel/winevent.c": 2596,
+    "kernel/wmkeys.c": 176,
     "kernel/x509.c": 38,
     "kernel/zonetest.c": 69,
     "net/arp.c": 208,
@@ -177,7 +178,7 @@
   },
   "per_subsystem": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 14858,
+    "(no line info: .rodata)": 15058,
     "9p": 65752,
     "agent": 3501,
     "app:cc": 598,
@@ -192,7 +193,7 @@
     "fs": 853,
     "httpd": 184,
     "identity": 200,
-    "kernel": 238738,
+    "kernel": 238914,
     "lisp": 4921336,
     "log": 8373,
     "mqtt": 4646,
@@ -205,6 +206,6 @@
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 707894,
-  "total": 7571750
+  "ram_code": 714374,
+  "total": 7578606
 }

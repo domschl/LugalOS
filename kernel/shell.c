@@ -6282,6 +6282,11 @@ static void cmd_ribbon(const char *cmd_line) {
                         i, id, cols, unit, (long)rx0, (long)rx1, (i == active) ? " *" : "");
             cprintf("      told: %s, %s\n", (told & CONSOLE_WIN_FOCUSED) ? "focused" : "not focused",
                     (told & CONSOLE_WIN_VISIBLE) ? "shown" : "not shown");
+            uint8_t yreq[2] = { 'Y', i }, yreply[SCREEN_REPLY_LEN];
+            if (console_canvas(yreq, 2, yreply) && yreply[0] == 0 && yreply[7] > 1)
+                cprintf("      stack: %u of %u, %u rows, y %d..%d\n", (unsigned)yreply[6] + 1u, (unsigned)yreply[7],
+                        (unsigned)yreply[5], (int)(int16_t)(yreply[1] | (yreply[2] << 8)),
+                        (int)(int16_t)(yreply[3] | (yreply[4] << 8)));
         }
         return;
     }
