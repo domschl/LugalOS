@@ -187,12 +187,16 @@ LCDTERM_UTEXT static int screen_alloc_term(screen_t *scr, uint8_t vterm_id) {
         if (!scr->terms[i].in_use) {
             scr->terms[i].in_use = true;
             scr->terms[i].vterm_id = vterm_id;
-            uint32_t term_cells = (uint32_t)scr->full_cols * (uint32_t)SCREEN_TEXT_ROWS(scr->cv.h);
+            /* Every slot the same size, whatever the screen's way round now:
+             * a slot at this orientation's size overlapped the next one
+             * taken at the other's, and was too narrow after a turn. */
+            uint32_t term_cells = (uint32_t)scr->cap_cols * (uint32_t)scr->cap_rows;
             uint16_t *t_shadow = scr->shadow + i * term_cells;
             shadow_clear(t_shadow, term_cells);
             fbtext_t text;
             fbtext_init(&text, 0, 0, scr->full_cols, SCREEN_TEXT_ROWS(scr->cv.h));
             vtterm_init(&scr->terms[i].vt, &text, t_shadow);
+            vtterm_set_shadow_capacity(&scr->terms[i].vt, scr->cap_cols, scr->cap_rows);
             vtterm_set_hidden(&scr->terms[i].vt, true);
             scr->terms[i].vt.title[0] = '\0';
             scr->terms[i].vt.title_seq = 0;
@@ -210,7 +214,7 @@ LCDTERM_UTEXT static void screen_free_term(screen_t *scr, uint8_t vterm_id) {
         scr->terms[idx].vt.title[0] = '\0';
         scr->terms[idx].vt.title_seq = 0;
         vtterm_set_hidden(&scr->terms[idx].vt, true);
-        uint32_t term_cells = (uint32_t)scr->full_cols * (uint32_t)SCREEN_TEXT_ROWS(scr->cv.h);
+        uint32_t term_cells = (uint32_t)scr->cap_cols * (uint32_t)scr->cap_rows;
         shadow_clear(scr->shadow + idx * term_cells, term_cells);
     }
 }
@@ -534,9 +538,36 @@ LCDTERM_UTEXT static uint8_t solo_win(const screen_t *scr) {
     return (a < scr->ribbon.count && screen_osk_rows(scr, a) > 0) ? a : RIBBON_NONE;
 }
 
+/* The window that covers the screen now: the focused one, when it is full
+ * screen (fullscreen_follow_focus()). RIBBON_NONE for none. */
+LCDTERM_UTEXT static uint8_t fs_win(const screen_t *scr) {
+    return (scr->layout == SCREEN_LAYOUT_FULLSCREEN && scr->ribbon.active_idx < scr->ribbon.count)
+               ? scr->ribbon.active_idx : RIBBON_NONE;
+}
+
+LCDTERM_UTEXT bool screen_fullscreen(const screen_t *scr) {
+    return fs_win(scr) != RIBBON_NONE;
+}
+
+LCDTERM_UTEXT uint8_t screen_fs_state(const screen_t *scr) {
+    return (uint8_t)((fs_win(scr) != RIBBON_NONE ? scr->fs_overlay : 0u) | scr->fs_told);
+}
+
+LCDTERM_UTEXT int screen_overlay_band(const screen_t *scr) {
+    return (fs_win(scr) != RIBBON_NONE && scr->fs_overlay) ? (int)SCREEN_FS_BAND : 0;
+}
+
 LCDTERM_UTEXT void screen_win_frame(const screen_t *scr, unsigned idx, int *x0, int *y0, int *x1, int *y1) {
     const ribbon_win_t *w = &scr->ribbon.wins[idx];
     int32_t v = scr->ribbon.m_view;
+    if (idx == fs_win(scr)) {
+        /* Full screen: its content is the whole screen, the frame just off it. */
+        *x0 = -1;
+        *y0 = -(int)SCREEN_TITLEBAR_H;
+        *x1 = (int)scr->cv.w;
+        *y1 = (int)scr->cv.h;
+        return;
+    }
     if (axis_y(scr)) {
         *x0 = RIBBON_BORDER_PAD;
         *x1 = RIBBON_BORDER_PAD + (int)FONT_CELL_W * (int)RIBBON_COLS_FULL(scr->cv.w) + 6;
@@ -579,6 +610,8 @@ LCDTERM_UTEXT void screen_win_content(const screen_t *scr, unsigned idx, int *cx
  * the ribbon moves, and a frame's worth of it is not worth a clipped one). */
 LCDTERM_UTEXT bool screen_win_shown(const screen_t *scr, unsigned idx) {
     if (idx >= scr->ribbon.count) return false;
+    uint8_t fs = fs_win(scr);
+    if (fs != RIBBON_NONE) return idx == fs;               /* the others are under it */
     int x0, y0, x1, y1;
     screen_win_frame(scr, idx, &x0, &y0, &x1, &y1);
     if (axis_y(scr)) return y0 >= SCREEN_TILE_Y && y1 + 2 <= (int)scr->cv.h;   /* the shadow's last row may be cut */
@@ -823,15 +856,18 @@ LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1,
 }
 
 LCDTERM_UTEXT static bool has_text(const screen_t *scr) {
-    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) return false;
+    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+        uint8_t fs = fs_win(scr);
+        return fs != RIBBON_NONE && scr->ribbon.wins[fs].type == RIBBON_WIN_TERM;
+    }
     if (scr->ribbon.count > 0) return ribbon_find_term(&scr->ribbon) >= 0;
     if (scr->layout == SCREEN_LAYOUT_CANVAS) return false;
     return true;
 }
 
 LCDTERM_UTEXT static bool has_canvas(const screen_t *scr) {
-    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) return true;
     if (scr->ribbon.count > 0) return ribbon_find_canvas(&scr->ribbon) >= 0;
+    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) return true;
     if (scr->layout == SCREEN_LAYOUT_TEXT) return false;
     return true;
 }
@@ -1184,17 +1220,61 @@ LCDTERM_UTEXT static void clear_ribbon_gaps(const screen_t *scr) {
 }
 
 LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout);
+LCDTERM_UTEXT static void draw_menu(screen_t *scr);
+LCDTERM_UTEXT static const char *win_title(const screen_t *scr, uint8_t i);
+
+/* Over a full-screen window, in the top SCREEN_FS_BAND rows: the menu bar
+ * and the window's title bar (revealed from the top edge: a tap or click on
+ * the title bar leaves full screen), or the hint how to leave it. */
+LCDTERM_UTEXT static void draw_fs_overlay(screen_t *scr) {
+    uint8_t fs = fs_win(scr);
+    if (fs == RIBBON_NONE || !scr->fs_overlay) return;
+    const canvas1_t *cv = &scr->cv;
+    const int s = CHROME_SCALE;
+    int w = (int)cv->w;
+    if (scr->fs_overlay & SCREEN_FS_REVEAL) {
+        draw_menu(scr);
+        canvas1_fill(cv, 0, SCREEN_MENU_H, w - 1, SCREEN_FS_BAND - 1, CANVAS1_GREY);
+        const ribbon_win_t *rw = &scr->ribbon.wins[fs];
+        bool can_close = !(rw->type == RIBBON_WIN_TERM && rw->vterm_id == 0) && !(rw->flags & RIBBON_FLAG_NO_CLOSE);
+        draw_titlebar(cv, 0, SCREEN_TILE_Y, w - 1, win_title(scr, fs), true, can_close);
+        return;
+    }
+    uint32_t n = cstr_len(scr->fs_hint);
+    unsigned len = canvas1_text_len(scr->fs_hint, n);
+    int bw = (int)len * (int)FONT_CELL_W + 16 * s, bh = (int)FONT_CELL_H + 8 * s;
+    if (bw > w) bw = w;
+    int x0 = (w - bw) / 2, y0 = 6 * s;
+    canvas1_fill(cv, x0, y0, x0 + bw - 1, y0 + bh - 1, CANVAS1_WHITE);
+    canvas1_hline(cv, x0, x0 + bw - 1, y0, CANVAS1_BLACK);
+    canvas1_hline(cv, x0, x0 + bw - 1, y0 + bh - 1, CANVAS1_BLACK);
+    canvas1_vline(cv, x0, y0, y0 + bh - 1, CANVAS1_BLACK);
+    canvas1_vline(cv, x0 + bw - 1, y0, y0 + bh - 1, CANVAS1_BLACK);
+    chrome_text(cv, x0 + 8 * s, y0 + 4 * s, scr->fs_hint, n, len, 0, FONT_CELL_H, false);
+}
 
 /* Every pixel again. The canvas comes back blank, so its damage moves on --
  * unless `restore` and its layout's store has it (38.8). */
 LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     const canvas1_t *cv = &scr->cv;
     (void)place(scr, scr->layout);
-    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
-        /* Fullscreen canvas: omit all ribbon window tiles, chrome and menu bar */
+    uint8_t fs = fs_win(scr);
+    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN && (fs == RIBBON_NONE || scr->ribbon.wins[fs].type == RIBBON_WIN_CANVAS)) {
+        /* A full-screen canvas: no tiles, chrome or menu bar. Its picture
+         * from its store where it has one (the program draws an RGB565
+         * one itself), the overlay over it. */
+        if (fs != RIBBON_NONE) {
+            uint8_t cid = scr->ribbon.wins[fs].vterm_id;
+            if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->store &&
+                scr->canvases[cid].format != CANVAS_FMT_RGB565)
+                blit_canvas_backing(scr, cid, 0, 0, (int)cv->w, (int)cv->h);
+        }
+        draw_fs_overlay(scr);
         return;
     }
-    if (scr->animating) {
+    if (fs != RIBBON_NONE) {
+        canvas1_fill(cv, 0, 0, (int)cv->w - 1, (int)cv->h - 1, CANVAS1_WHITE);   /* a terminal or a view, alone */
+    } else if (scr->animating) {
         clear_ribbon_gaps(scr);
     } else {
         clear_ribbon_background(scr);
@@ -1207,30 +1287,12 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                 bool is_active = (i == scr->ribbon.active_idx);
                 if ((pass == 0 && is_active) || (pass == 1 && !is_active)) continue;
                 const ribbon_win_t *w = &scr->ribbon.wins[i];
-                if (screen_win_shown(scr, i)) {
+                if (screen_win_shown(scr, i) && i != fs) {
                     int x0, y0, x1, y1;
                     screen_win_frame(scr, i, &x0, &y0, &x1, &y1);
-                    const char *title = w->title;
+                    const char *title = win_title(scr, i);
                     bool can_close = !(w->type == RIBBON_WIN_TERM && w->vterm_id == 0) &&
                                      !(w->flags & RIBBON_FLAG_NO_CLOSE);
-                    if (w->type == RIBBON_WIN_CANVAS) {
-                        uint8_t cid = w->vterm_id;
-                        if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].name[0]) {
-                            title = scr->canvases[cid].name;
-                        } else if (scr->ctitle[0]) {
-                            title = scr->ctitle;
-                        }
-                    } else if (w->type == RIBBON_WIN_TERM) {
-                        int t = screen_find_term(scr, w->vterm_id);
-                        if (t >= 0 && scr->terms[t].vt.title[0]) {
-                            title = scr->terms[t].vt.title;
-                        }
-                    } else if (ribbon_is_view(w->type)) {
-                        uint8_t rid = w->vterm_id;
-                        if (rid < SCREEN_MAX_READERS && scr->readers[rid].title[0]) {
-                            title = scr->readers[rid].title;
-                        }
-                    }
                     draw_tile(cv, x0, y0, x1, y1, title, is_active, can_close);
                 }
             }
@@ -1290,7 +1352,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     }
     vtterm_t *avt = active_vt(scr);
     scr->title_drawn = avt->title_seq;
-    if (!scr->animating) {
+    if (!scr->animating && fs == RIBBON_NONE) {
         draw_menu(scr);
     }
     if (scr->ribbon.count > 0) {
@@ -1333,6 +1395,26 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     } else {
         vtterm_repaint(&scr->vt);
     }
+    draw_fs_overlay(scr);
+}
+
+/* Window i's title as its title bar shows it: a canvas's name, a
+ * terminal's own title, a view's. */
+LCDTERM_UTEXT static const char *win_title(const screen_t *scr, uint8_t i) {
+    const ribbon_win_t *w = &scr->ribbon.wins[i];
+    const char *title = w->title;
+    if (w->type == RIBBON_WIN_CANVAS) {
+        uint8_t cid = w->vterm_id;
+        if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].name[0]) title = scr->canvases[cid].name;
+        else if (scr->ctitle[0]) title = scr->ctitle;
+    } else if (w->type == RIBBON_WIN_TERM) {
+        int t = screen_find_term(scr, w->vterm_id);
+        if (t >= 0 && scr->terms[t].vt.title[0]) title = scr->terms[t].vt.title;
+    } else if (ribbon_is_view(w->type)) {
+        uint8_t rid = w->vterm_id;
+        if (rid < SCREEN_MAX_READERS && scr->readers[rid].title[0]) title = scr->readers[rid].title;
+    }
+    return title;
 }
 
 LCDTERM_UTEXT static void draw_all(screen_t *scr) {
@@ -1378,12 +1460,22 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         unsigned term_rows = SCREEN_TEXT_ROWS(scr->cv.h);
         int text_y = SCREEN_TEXT_Y;
 
-        if (!axis_y(scr)) {
+        bool full = i == fs_win(scr);
+        if (full) {
+            /* Full screen: the grid of the screen, from its top-left cell. */
+            c0 = 0;
+            win_c = (int)scr->cv.w / (int)FONT_CELL_W;
+            if (win_c > (int)scr->cap_cols) win_c = (int)scr->cap_cols;
+            term_rows = (unsigned)scr->cv.h / FONT_CELL_H;
+            if (term_rows > scr->cap_rows) term_rows = scr->cap_rows;
+            text_y = 0;
+        } else if (!axis_y(scr)) {
             /* Across: its rows in its column, from its own title bar. */
             term_rows = frame_rows(y0, y1);
             text_y = y0 + (SCREEN_TEXT_Y - SCREEN_TILE_Y);
         }
-        if (axis_y(scr)) {
+        if (full) {
+        } else if (axis_y(scr)) {
             /* Down the screen: the whole width, the window's rows. */
             win_c = (int)scr->full_cols;
             term_rows = w->size;
@@ -1411,7 +1503,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         }
         if (win_c < 1) win_c = 1;
 
-        vtterm_set_logical_cols(&scr->terms[t].vt, axis_y(scr) ? (uint8_t)win_c : w->size);
+        vtterm_set_logical_cols(&scr->terms[t].vt, (axis_y(scr) || full) ? (uint8_t)win_c : w->size);
         vtterm_set_col_offset(&scr->terms[t].vt, (uint16_t)col_off);
 
 #if defined(TOUCH_PRESENT)
@@ -1427,7 +1519,8 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         fbtext_init(&text, scr->cv.fb + (uint32_t)text_y * scr->cv.stride + (uint32_t)c0 * FONT_CELL_BYTES, scr->cv.stride,
                     (unsigned)win_c, term_rows);
         text.xbyte = (uint16_t)(c0 * FONT_CELL_BYTES);
-        text.whole_rows = (win_c == scr->full_cols && c0 == 1);
+        text.whole_rows = full ? (win_c * (int)FONT_CELL_BYTES == (int)scr->cv.stride)
+                               : (win_c == scr->full_cols && c0 == 1);
         vtterm_resize(&scr->terms[t].vt, &text);
         vtterm_set_hidden(&scr->terms[t].vt, false);
 
@@ -1444,7 +1537,12 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     if (c_idx >= 0) {
         int cx0, cy0, cx1, cy1;
         screen_win_frame(scr, (unsigned)c_idx, &cx0, &cy0, &cx1, &cy1);
-        if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+        if (scr->layout == SCREEN_LAYOUT_FULLSCREEN && fs_win(scr) != (uint8_t)c_idx) {
+            /* another window covers the screen: the canvas draws to its store only */
+            scr->cx0 = scr->cx1 = 0;
+            scr->cy0 = scr->cy1 = 0;
+            canvas1_window(&scr->cc, &scr->cv, 0, 0, 0, 0);
+        } else if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
             scr->cx0 = 0;
             scr->cx1 = (int16_t)(scr->cv.w - 1);
             scr->cy0 = 0;
@@ -1544,7 +1642,16 @@ LCDTERM_UTEXT int screen_osk_rows(const screen_t *scr, unsigned idx) {
 }
 
 LCDTERM_UTEXT bool screen_window_at(const screen_t *scr, int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
-    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) return false;
+    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+        uint8_t fs = fs_win(scr);
+        if (fs == RIBBON_NONE || !ribbon_is_view(scr->ribbon.wins[fs].type) || y < screen_overlay_band(scr)) return false;
+        if (y >= (int)scr->cv.h - screen_osk_rows(scr, fs)) return false;            /* the keyboard's */
+        *type = scr->ribbon.wins[fs].type;
+        *id = scr->ribbon.wins[fs].vterm_id;
+        *cx = x;
+        *cy = y;
+        return true;
+    }
     for (uint8_t i = 0; i < scr->ribbon.count; i++) {
         if (!screen_win_shown(scr, i)) continue;
         const ribbon_win_t *w = &scr->ribbon.wins[i];
@@ -1598,8 +1705,10 @@ LCDTERM_UTEXT bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w
 LCDTERM_UTEXT static void fullscreen_follow_focus(screen_t *scr) {
     if (scr->ribbon.count == 0 || scr->ribbon.active_idx >= scr->ribbon.count) return;
     const ribbon_win_t *w = &scr->ribbon.wins[scr->ribbon.active_idx];
-    bool fs = w->type == RIBBON_WIN_CANVAS && w->vterm_id < SCREEN_MAX_CANVASES &&
-              scr->canvases[w->vterm_id].in_use && scr->canvases[w->vterm_id].fullscreen;
+    bool fs = (w->flags & RIBBON_FLAG_FULLSCREEN) ||
+              (w->type == RIBBON_WIN_CANVAS && w->vterm_id < SCREEN_MAX_CANVASES &&
+               scr->canvases[w->vterm_id].in_use && scr->canvases[w->vterm_id].fullscreen);
+    if (!fs) scr->fs_overlay = 0;
     if (scr->layout == SCREEN_LAYOUT_FULLSCREEN && !fs) scr->layout = SCREEN_LAYOUT_CANVAS;
     else if (scr->layout != SCREEN_LAYOUT_FULLSCREEN && fs) scr->layout = SCREEN_LAYOUT_FULLSCREEN;
 }
@@ -1719,6 +1828,12 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
 
     uint16_t cap_cols = (uint16_t)SCREEN_SHADOW_COLS(w, h, rotates);
     uint16_t cap_rows = (uint16_t)SCREEN_SHADOW_ROWS(w, h, rotates);
+    scr->cap_cols = (uint8_t)cap_cols;
+    scr->cap_rows = (uint8_t)cap_rows;
+    scr->fs_overlay = 0;
+    scr->fs_told = 0;
+    scr->fs_until_ms = 0;
+    scr->fs_hint[0] = '\0';
     uint32_t term_cells = (uint32_t)cap_cols * cap_rows;
     for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {
         uint16_t *t_shadow = scr->shadow + t * term_cells;
@@ -2077,6 +2192,7 @@ LCDTERM_UTEXT static int minimap_hit(const screen_t *scr, int x) {
 
 /* 47.12: the ribbon window under screen (x, y) (below the menu bar), or -1. */
 LCDTERM_UTEXT static int window_at(const screen_t *scr, int x, int y) {
+    if (fs_win(scr) != RIBBON_NONE) return fs_win(scr);
     int32_t m = (int32_t)(axis_y(scr) ? y : x) + scr->ribbon.m_view;
     for (uint8_t i = 0; i < scr->ribbon.count; i++) {
         if (m < scr->ribbon.wins[i].m0 || m > scr->ribbon.wins[i].m1) continue;
@@ -2140,12 +2256,12 @@ LCDTERM_UTEXT static int canvas_for(const screen_t *scr, uint8_t vid) {
 LCDTERM_UTEXT static void canvas_size(const screen_t *scr, int cid, int *w, int *h) {
     *w = *h = 0;
     if (cid < 0 || !scr->canvases[cid].in_use) return;
-    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+    int c_win = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
+    if (c_win >= 0 && (uint8_t)c_win == fs_win(scr)) {
         *w = (int)scr->cv.w;
         *h = (int)scr->cv.h;
         return;
     }
-    int c_win = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
     if (c_win < 0) return;
     int cx, cy;
     screen_win_content(scr, (unsigned)c_win, &cx, &cy, w, h);
@@ -2324,6 +2440,24 @@ LCDTERM_UTEXT static bool osk_tap(screen_t *scr, uint8_t idx, int px, int py, ui
 }
 #endif
 
+/* The focused window full screen (on) or back in the ribbon: its flag (a
+ * canvas's own too, which its program may have asked for), the layout
+ * following it, everything drawn again. */
+LCDTERM_UTEXT static void set_fullscreen(screen_t *scr, bool on) {
+    uint8_t a = scr->ribbon.active_idx;
+    if (a >= scr->ribbon.count) return;
+    ribbon_win_t *w = &scr->ribbon.wins[a];
+    if (on) w->flags |= RIBBON_FLAG_FULLSCREEN;
+    else w->flags &= (uint8_t)~RIBBON_FLAG_FULLSCREEN;
+    if (w->type == RIBBON_WIN_CANVAS && w->vterm_id < SCREEN_MAX_CANVASES) scr->canvases[w->vterm_id].fullscreen = on;
+    scr->fs_overlay = 0;
+    fullscreen_follow_focus(scr);
+    scr->ribbon.m_target = ribbon_compute_viewport(&scr->ribbon, a, scr->ribbon.m_view);
+    scr->ribbon.m_view = scr->ribbon.m_target;
+    (void)place(scr, scr->layout);
+    draw_all_from(scr, true);
+}
+
 LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid) {
     uint8_t status = 0, pixel = 0;
     uint8_t op = n ? req[0] : 0;
@@ -2418,7 +2552,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             const ribbon_win_t *w = &scr->ribbon.wins[i];
             if (!ribbon_is_view(w->type) || w->vterm_id != rid) continue;
             status = 0;
-            if (scr->animating || scr->layout == SCREEN_LAYOUT_FULLSCREEN || !scr->readers[rid].in_use) break;
+            if (scr->animating || (fs_win(scr) != RIBBON_NONE && fs_win(scr) != i) || !scr->readers[rid].in_use) break;
             int ccx, ccy, cw_w, cw_h;
             screen_win_content(scr, i, &ccx, &ccy, &cw_w, &cw_h);
             cw_h -= screen_osk_rows(scr, i);
@@ -2664,12 +2798,30 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         } else {
             status = 1;
         }
+    } else if (op == 'P' && screen_overlay_band(scr) && (scr->fs_overlay & SCREEN_FS_REVEAL) &&
+               arg16(req, n, 1) >= SCREEN_MENU_H && arg16(req, n, 1) < (int)SCREEN_FS_BAND) {
+        /* A tap on a full-screen window's revealed title bar: its close box
+         * closes the window, anywhere else leaves full screen. */
+        int px = arg16(req, n, 0), py = arg16(req, n, 1);
+        uint8_t fs = fs_win(scr);
+        if (py >= CHROME_CLOSE_Y0 && py < CHROME_CLOSE_Y1 && px >= CHROME_CLOSE_X0(0) && px <= CHROME_CLOSE_X1(0) &&
+            !(scr->ribbon.wins[fs].flags & RIBBON_FLAG_NO_CLOSE) && close_window(scr, fs, reply)) {
+            reply[0] = 0;
+            reply[1] = window_vterm(scr, scr->ribbon.active_idx);
+            if (reply[8] != 0xCE) reply[8] = 0xCC;
+            return;
+        }
+        set_fullscreen(scr, false);
+        status = 0;
+        reply[1] = window_vterm(scr, scr->ribbon.active_idx);
     } else if (op == 'P') {
         /* 47.12: a tap at (x, y) in screen pixels. On the menu bar: the
          * minimap block nearest to it; below: the window under it. Focuses
-         * that window; tapping the focused one is a no-op that succeeds. */
+         * that window; tapping the focused one is a no-op that succeeds.
+         * Over a full-screen window the menu bar is there only revealed. */
         int px = arg16(req, n, 0), py = arg16(req, n, 1);
-        if (py < SCREEN_MENU_H) {
+        bool menu = fs_win(scr) == RIBBON_NONE || (scr->fs_overlay & SCREEN_FS_REVEAL);
+        if (py < SCREEN_MENU_H && menu) {
             int rx, icon_left, sx;
             menu_geometry(scr, &rx, &icon_left, &sx);
             if (px < sx - 8 * CHROME_SCALE) {
@@ -2679,7 +2831,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 return;
             }
         }
-        int idx = (py < SCREEN_MENU_H + 2 * (int)CHROME_SCALE) ? minimap_hit(scr, px) : window_at(scr, px, py);
+        int idx = (py < SCREEN_MENU_H + 2 * (int)CHROME_SCALE && menu) ? minimap_hit(scr, px) : window_at(scr, px, py);
         /* Check for Macintosh close box tap on title bar */
         int fx0 = 0, fy0 = 0, fx1 = 0, fy1 = 0;
         if (idx >= 0) screen_win_frame(scr, (unsigned)idx, &fx0, &fy0, &fx1, &fy1);
@@ -2928,10 +3080,12 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             reply[1] = w->type;
             reply[2] = w->vterm_id;
             reply[3] = w->size;
-            reply[4] = (uint8_t)(w->m0 & 0xff);
-            reply[5] = (uint8_t)((w->m0 >> 8) & 0xff);
-            reply[6] = (uint8_t)(w->m1 & 0xff);
-            reply[7] = (uint8_t)((w->m1 >> 8) & 0xff);
+            int32_t m0 = w->m0, m1 = w->m1;
+            if (i == fs_win(scr)) { m0 = 0; m1 = (int32_t)scr->cv.w + 1; }   /* full screen: content the screen's width */
+            reply[4] = (uint8_t)(m0 & 0xff);
+            reply[5] = (uint8_t)((m0 >> 8) & 0xff);
+            reply[6] = (uint8_t)(m1 & 0xff);
+            reply[7] = (uint8_t)((m1 >> 8) & 0xff);
             reply[8] = window_vterm(scr, i);
             uint8_t fmt = CANVAS_FMT_1BPP;
             if (w->type == RIBBON_WIN_CANVAS && w->vterm_id < SCREEN_MAX_CANVASES) {
@@ -2959,6 +3113,8 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         reply[5] = (uint8_t)(scr->ribbon.m_target & 0xff);
         reply[6] = (uint8_t)((scr->ribbon.m_target >> 8) & 0xff);
         reply[7] = RIBBON_AXIS(&scr->ribbon);
+        reply[8] = fs_win(scr) != RIBBON_NONE ? 1u : 0u;   /* the focused window covers the screen */
+        reply[9] = scr->fs_overlay;
         return;
     } else if (op == 'C') {
         /* Close active window (Cmd+W) */
@@ -3032,6 +3188,55 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         } else {
             status = 1;
         }
+    } else if (op == 'f') {
+        /* 'f' [on]: the focused window full screen or back (Cmd+Shift+F);
+         * without `on`, the other way from now. Replies as '<' does. */
+        bool on = n >= 2 ? req[1] != 0 : fs_win(scr) == RIBBON_NONE;
+        if (scr->ribbon.active_idx >= scr->ribbon.count) {
+            status = 1;
+        } else {
+            set_fullscreen(scr, on);
+            status = 0;
+            reply[1] = window_vterm(scr, scr->ribbon.active_idx);
+        }
+    } else if (op == 'H') {
+        /* 'H' mode now_ms[4] [text]: over a full-screen window, 0 nothing,
+         * 1 the hint `text` for SCREEN_FS_HINT_MS, 2 the menu bar and its
+         * title bar (revealed) for SCREEN_FS_REVEAL_MS; 3 the console's
+         * look: the overlay gone when its time is up, and [2] 1 when full
+         * screen began or ended since the last look ([3] 1: it is now).
+         * 1 and 2 are refused when no window is full screen. */
+        uint8_t mode = n >= 2 ? req[1] : 0;
+        uint32_t now = n >= 6 ? (uint32_t)req[2] | ((uint32_t)req[3] << 8) | ((uint32_t)req[4] << 16) | ((uint32_t)req[5] << 24) : 0u;
+        bool fs = fs_win(scr) != RIBBON_NONE;
+        uint8_t next = scr->fs_overlay;
+        status = 0;
+        if (mode == 3) {
+            uint8_t on = fs ? SCREEN_FS_ON : 0u;
+            reply[2] = on != scr->fs_told;
+            reply[3] = fs;
+            scr->fs_told = on;
+            if (!fs || (int32_t)(now - scr->fs_until_ms) >= 0) next = 0;
+        } else if (!fs) {
+            next = 0;
+            status = mode ? 1 : 0;
+        } else {
+            if (mode == 1) {
+                uint32_t k = 0;
+                while (6u + k < n && k + 1u < sizeof scr->fs_hint && req[6u + k]) { scr->fs_hint[k] = (char)req[6u + k]; k++; }
+                scr->fs_hint[k] = '\0';
+            }
+            next = mode == 1 ? SCREEN_FS_HINT : mode == 2 ? SCREEN_FS_REVEAL : 0u;
+            scr->fs_until_ms = now + (mode == 1 ? SCREEN_FS_HINT_MS : SCREEN_FS_REVEAL_MS);
+        }
+        if (next != scr->fs_overlay) {
+            scr->fs_overlay = next;
+            if (fs) draw_all_from(scr, true);
+        }
+        if (mode == 3) {                                 /* its answer, not the common tail's */
+            reply[0] = status;
+            return;
+        }
     } else if (op == 'Y') {
         /* 'Y' idx: window idx's place down the screen -- [1..2] frame y0,
          * [3..4] y1, [5] text rows, [6] its place in its column, [7] the
@@ -3073,7 +3278,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             if (c_win >= 0) {
                 const ribbon_win_t *w = &scr->ribbon.wins[c_win];
                 (void)w;
-                if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+                if ((uint8_t)c_win == fs_win(scr)) {
                     cw_w = (int)scr->cv.w;
                     cw_h = (int)scr->cv.h;
                 } else {

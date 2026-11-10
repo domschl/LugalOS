@@ -781,6 +781,7 @@ static struct {
     bool    waking;         /* a press that only woke the panel: nothing until every button is up */
 } g_ptr = { .raw = -1 };
 
+
 static uint32_t pack_xy(int x, int y) { return ((uint32_t)x << 16) | ((uint32_t)y & 0xFFFFu); }
 
 /* The cursor as the panel draws it: where, and whether it shows (after a
@@ -862,9 +863,16 @@ void console_pointer(int x, int y, uint8_t buttons) {
         return;
     }
 
+    /* Over a full-screen window, the pointer at the top edge reveals the
+     * menu bar and its title bar, and keeps them while it stays on them;
+     * a press there is the title bar's, not a program's that takes the
+     * pointer. */
+    bool on_bars = (lcdterm_fs_state() & SCREEN_FS_REVEAL) && y < (int)SCREEN_FS_BAND;
+    if (moved && !buttons && lcdterm_fullscreen() && (y <= 1 || on_bars)) console_hotkey(CONSOLE_HOTKEY_REVEAL);
+
     /* A press of a window that claims the pointer: the raw stream, every
      * button, until the last one is let go. */
-    if (g_ptr.raw < 0 && went_down && !was && pointer_claimed()) {
+    if (g_ptr.raw < 0 && went_down && !was && !on_bars && pointer_claimed()) {
         for (uint8_t m = WIN_BUTTON_LEFT; m <= WIN_BUTTON_MIDDLE; m <<= 1)
             if (went_down & m) pointer_raw(WIN_EV_POINTER_DOWN, button_number(m), x, y, x, y);
         return;
@@ -1180,13 +1188,9 @@ static void sys_tell(const win_event_t *ev) {
     for (unsigned i = 0; i < n; i++) ws_send(w[i].type, w[i].id, ev);
 }
 
-/* A panel that turns (the P4's DSI panels): its rotation watched too. */
-#if defined(CONFIG_BOARD_ESP32P4) && defined(LCDTERM_PRESENT)
-#define SYS_ROTATES 1
-static int g_sys_rot = -1;                  /* guarded by: g_sys_busy */
-
-/* After a rotation: each canvas window's new content size (the views get
- * theirs from console_sync_readers()). */
+/* After a rotation, or a window going full screen or back: each canvas
+ * window's content size now (the views get theirs from
+ * console_sync_readers()). */
 static void sys_resize_canvases(void) {
     uint8_t req[2] = { 'R', 0 }, reply[SCREEN_REPLY_LEN];
     if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
@@ -1203,6 +1207,11 @@ static void sys_resize_canvases(void) {
         window_post((win_t)reply[2], &ev);
     }
 }
+
+/* A panel that turns (the P4's DSI panels): its rotation watched too. */
+#if defined(CONFIG_BOARD_ESP32P4) && defined(LCDTERM_PRESENT)
+#define SYS_ROTATES 1
+static int g_sys_rot = -1;                  /* guarded by: g_sys_busy */
 #endif
 
 static void sys_check(void) {
@@ -1284,6 +1293,44 @@ static void sys_hello(uint8_t type, uint8_t id) {
 #if defined(CONFIG_BOARD_TAB5)
 static void reader_update_cb(void *arg) { (void)arg; reader_update(); }
 #endif
+
+
+/* 'H' mode now [text]: the overlay over a full-screen window (drivers/
+ * screen.c keeps it and its time); its reply. */
+static bool fs_overlay(uint8_t mode, uint8_t *reply) {
+    uint32_t now = (uint32_t)time_get_ms();
+    uint8_t req[6 + 64] = { 'H', mode, (uint8_t)now, (uint8_t)(now >> 8), (uint8_t)(now >> 16), (uint8_t)(now >> 24) };
+    uint32_t n = 6;
+    if (mode == 1) {
+        /* The ways out this board has: the touch one where there is touch,
+         * the mouse's where there is one; the key always works. */
+        uint32_t in = sys_input_mode();
+        const char *t = (in & WIN_INPUT_TOUCH) ? "Swipe down from the top to leave full screen"
+                      : (in & WIN_INPUT_POINTER) ? "Cmd+Shift+F or point at the top to leave"
+                      : "Cmd+Shift+F leaves full screen";
+        for (; *t && n < sizeof req - 1u; t++) req[n++] = (uint8_t)*t;
+        req[n++] = 0;
+    }
+    return console_canvas(req, n, reply) && reply[0] == 0;
+}
+
+/* After anything that may have changed which window covers the screen: its
+ * windows' sizes to their programs and the hint when one has just gone full
+ * screen or come back, the overlay away when its time is up. Asks the screen
+ * only when there is something to look at. */
+static void fs_check(void) {
+    uint8_t st = lcdterm_fs_state();
+    bool fs = lcdterm_fullscreen();
+    if (fs == ((st & SCREEN_FS_ON) != 0) && !(st & (SCREEN_FS_HINT | SCREEN_FS_REVEAL))) return;
+    uint8_t reply[SCREEN_REPLY_LEN];
+    int px, py;
+    if (fs && (st & SCREEN_FS_REVEAL) && console_pointer_shown(&px, &py) && py < (int)SCREEN_FS_BAND)
+        (void)fs_overlay(2, reply);                      /* the pointer rests on the bars: they stay */
+    if (!fs_overlay(3, reply) || !reply[2]) return;
+    console_sync_readers();
+    sys_resize_canvases();
+    if (reply[3]) (void)fs_overlay(1, reply);
+}
 
 /* A focus change's reply ('<', '>', 'J', '^'): the window that has the
  * focus now gets the keys, and the keyboard if it wants it. */
@@ -1524,9 +1571,20 @@ static void run_hotkey(void) {
             console_sync_readers();
             continue;
         }
+        if (hk == CONSOLE_HOTKEY_FULLSCREEN) {
+            uint8_t req[1] = { 'f' }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 1, reply);
+            continue;                                    /* fs_check(), below, tells the programs */
+        }
+        if (hk == CONSOLE_HOTKEY_REVEAL) {
+            uint8_t reply[SCREEN_REPLY_LEN];
+            if (lcdterm_fullscreen()) (void)fs_overlay(2, reply);
+            continue;
+        }
         /* Any other code is a key whose action is not built: it is still the
          * window manager's, so it does nothing rather than reach a program. */
     }
+    fs_check();
     run_release();
 }
 

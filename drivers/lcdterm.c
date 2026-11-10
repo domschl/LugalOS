@@ -854,6 +854,20 @@ bool lcdterm_ribbon_down(void) {
 }
 #endif
 
+/* accepted: read without the screen's task, as lcdterm_ribbon_down(); a
+ * change in between is seen at the next contact or frame. */
+bool lcdterm_fullscreen(void) {
+    return g_scr && screen_fullscreen(g_scr);
+}
+
+int lcdterm_overlay_band(void) {
+    return g_scr ? screen_overlay_band(g_scr) : 0;
+}
+
+uint8_t lcdterm_fs_state(void) {
+    return g_scr ? screen_fs_state(g_scr) : 0;
+}
+
 bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
     return g_scr && screen_window_at(g_scr, x, y, type, id, cx, cy);
 }

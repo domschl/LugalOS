@@ -128,6 +128,15 @@ bool ramscreen_ribbon_down(void) {
     return g_rs && RIBBON_AXIS(&g_rs->ribbon) == RIBBON_AXIS_Y;
 }
 
+/* accepted: as ramscreen_ribbon_down(). */
+bool ramscreen_fullscreen(void) {
+    return g_rs && screen_fullscreen(g_rs);
+}
+
+uint8_t ramscreen_fs_state(void) {
+    return g_rs ? screen_fs_state(g_rs) : 0;
+}
+
 void ramscreen_size(unsigned *w, unsigned *h) {
     *w = g_rs_w;
     *h = g_rs_h;

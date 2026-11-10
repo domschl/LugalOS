@@ -1563,6 +1563,8 @@ typedef struct {
     int nt;
     lcdterm_visible_term_t terms[4];
     bool force, rearm;
+    int16_t top;                 /* rows at the top the surfaces leave to the frame (lcdterm_overlay_band()) */
+    int16_t top_drawn;           /* ... at the last pass (both in the padding before t0) */
     uint64_t t0;
 } term_snap_t;
 static term_snap_t g_snap;   /* guarded by: g_frame_lock */
@@ -1723,8 +1725,8 @@ typedef enum {
 
 /* A window's extent clipped to the screen; false when nothing is left. */
 static bool srf_clip(const int *x0, const int *y0, const int *x1, const int *y1,
-                     int *ox0, int *oy0, int *ox1, int *oy1) {
-    int a = *x0 < 0 ? 0 : *x0, b = *y0 < 0 ? 0 : *y0;
+                     int *ox0, int *oy0, int *ox1, int *oy1, int top) {
+    int a = *x0 < 0 ? 0 : *x0, b = *y0 < top ? top : *y0;
     int c = *x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : *x1;
     int d = *y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : *y1;
     if (a > c || b > d) return false;
@@ -1893,6 +1895,14 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
     sn->force = g_t_force;
     sn->rearm = rearm;
     sn->t0 = t0;
+    /* An overlay over a full-screen window (its hint, its revealed title
+     * bar) is in the frame: the surfaces start below it, and every one is
+     * drawn again when it comes or goes. */
+    sn->top = (int16_t)lcdterm_overlay_band();
+    if (sn->top != sn->top_drawn) {
+        sn->force = true;
+        sn->top_drawn = sn->top;
+    }
 
     /* An RGB565 canvas on a GRAY8 frame switches the frame first: fb_start()
      * marks every row and cell dirty, so the drawing repaints it whole. */
@@ -1954,7 +1964,7 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
         int x1 = sn->rx1[i], y1 = sn->ry1[i];
         if (sn->rw[i] > 0 && sn->rx0[i] + sn->rw[i] - 1 < x1) x1 = sn->rx0[i] + sn->rw[i] - 1;
         if (sn->rh[i] > 0 && sn->ry0[i] + sn->rh[i] - 1 < y1) y1 = sn->ry0[i] + sn->rh[i] - 1;
-        if (!srf_clip(&sn->rx0[i], &sn->ry0[i], &x1, &y1, &ss->sx0[k], &ss->sy0[k], &ss->sx1[k], &ss->sy1[k])) continue;
+        if (!srf_clip(&sn->rx0[i], &sn->ry0[i], &x1, &y1, &ss->sx0[k], &ss->sy0[k], &ss->sx1[k], &ss->sy1[k], sn->top)) continue;
         ss->sid[k] = 0x100u | rids[i];
         ss->rslot[k] = (int8_t)i;
         ss->ns++;
@@ -1966,7 +1976,7 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
         int x1 = sn->cx1[i], y1 = sn->cy1[i];
         if (sn->cx0[i] + sn->cw[i] * sc - 1 < x1) x1 = sn->cx0[i] + sn->cw[i] * sc - 1;
         if (sn->cy0[i] + sn->ch[i] * sc - 1 < y1) y1 = sn->cy0[i] + sn->ch[i] * sc - 1;
-        if (!srf_clip(&sn->cx0[i], &sn->cy0[i], &x1, &y1, &ss->sx0[k], &ss->sy0[k], &ss->sx1[k], &ss->sy1[k])) continue;
+        if (!srf_clip(&sn->cx0[i], &sn->cy0[i], &x1, &y1, &ss->sx0[k], &ss->sy0[k], &ss->sx1[k], &ss->sy1[k], sn->top)) continue;
         ss->sid[k] = 0x200u | (uint32_t)i;
         ss->rslot[k] = -1;
         ss->ns++;
@@ -2310,7 +2320,7 @@ static void term_draw(void) {
 
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
-        int cl_y0 = y0 < 0 ? 0 : y0;
+        int cl_y0 = y0 < sn->top ? sn->top : y0;   /* the overlay's band is the frame's */
         int cl_y1 = y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : y1;
         if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
 
@@ -2435,7 +2445,7 @@ static void term_draw(void) {
 
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
-        int cl_y0 = y0 < 0 ? 0 : y0;
+        int cl_y0 = y0 < sn->top ? sn->top : y0;   /* the overlay's band is the frame's */
         int cl_y1 = y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : y1;
         if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
 

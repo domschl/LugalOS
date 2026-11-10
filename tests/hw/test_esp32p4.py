@@ -66,6 +66,7 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 from mqttbroker import MqttBroker  # noqa: E402
 import longnames  # noqa: E402
 import hello_ugui  # noqa: E402
+import stacks_fullscreen  # noqa: E402
 
 # The port the test broker listens on: the board connects to this host, so it is the one
 # inbound port a test machine needs open (doc/dev/testing.md).
@@ -1447,6 +1448,17 @@ def test_long_names(b: Board) -> tuple[str, bool, str]:
         return name, False, f"{type(e).__name__}: {e}"
 
 
+def test_stacks_fullscreen(b: Board) -> tuple[str, bool, str]:
+    """76.4a: a stack of two, its focus and height, and full screen left by
+    the board's own way out (touch where it has it). See stacks_fullscreen.py."""
+    name = "Stacks and full screen by the window manager's keys (76.4a)"
+    try:
+        ok, detail = stacks_fullscreen.check(_io(b)[1])
+        return name, ok, detail
+    except Exception as e:
+        return name, False, f"{type(e).__name__}: {e}"
+
+
 def test_hello_ugui(b: Board) -> tuple[str, bool, str]:
     """76.2: the `ui-` sample in a window of its own, driven by the mouse,
     a finger and keys at the places it reports. See hello_ugui.py."""
@@ -2348,6 +2360,7 @@ TESTS = [
     test_sd0_mounted,
     test_long_names,
     test_hello_ugui,
+    test_stacks_fullscreen,
     test_sd_goes_through_the_task,
     test_sd_write_survives_reboot,
     test_psram_up,

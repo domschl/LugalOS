@@ -6253,8 +6253,10 @@ static void cmd_ribbon(const char *cmd_line) {
         int32_t m_target = (int32_t)(reply[5] | (reply[6] << 8));
         bool down = reply[7] == RIBBON_AXIS_Y;
         const char *unit = down ? "rows" : "cols";
-        cprintf("Ribbon Status: %d windows, active idx %d, axis %c, view %ld, target %ld\n",
-                count, active, down ? 'Y' : 'X', (long)m_view, (long)m_target);
+        cprintf("Ribbon Status: %d windows, active idx %d, axis %c, view %ld, target %ld%s%s\n",
+                count, active, down ? 'Y' : 'X', (long)m_view, (long)m_target,
+                reply[8] ? ", full screen" : "",
+                (reply[9] & SCREEN_FS_REVEAL) ? " (bars revealed)" : (reply[9] & SCREEN_FS_HINT) ? " (hint)" : "");
         for (uint8_t i = 0; i < count; i++) {
             req[1] = i;
             if (!console_canvas(req, 2, reply) || reply[0] != 0) break;

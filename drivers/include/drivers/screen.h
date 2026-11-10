@@ -128,6 +128,12 @@ typedef struct {
     canvas1_t c_backing;                /* persistent backing store for primary canvas */
     uint8_t   layout;
     uint8_t   full_cols;                /* the text window's width in TEXT */
+    uint8_t   cap_cols;                 /* every terminal's shadow: columns ... */
+    uint8_t   cap_rows;                 /* ... and rows (SCREEN_SHADOW_*; slot t at t * cols * rows) */
+    uint8_t   fs_overlay;               /* over a full-screen window: SCREEN_FS_HINT | SCREEN_FS_REVEAL */
+    uint8_t   fs_told;                  /* SCREEN_FS_ON: full screen when the console last looked ('H' 3) */
+    uint32_t  fs_until_ms;              /* when the overlay goes */
+    char      fs_hint[64];              /* the hint's text */
     uint8_t   locked;                   /* 37.5a: 'w' and 'X' may not change the split */
     uint8_t   swapped;                  /* 37.5a: the canvas on the right, text left */
     uint16_t  damage;                   /* bumped whenever the canvas is lost */
@@ -168,13 +174,26 @@ typedef struct {
 /* What a screen of w x h pixels needs, shadow included for all 4 terminals. */
 #define SCREEN_BYTES(w, h) SCREEN_BYTES_ROT(w, h, false)
 
-/* A terminal's shadow: the grid of its screen, or on a panel that turns
- * (`rotates`: w and h trade places at run time) the wider and the taller of
- * both, so a turn never indexes past a terminal's share into the next one. */
+/* A terminal's shadow: the grid of the whole screen (a terminal full
+ * screen has no chrome), or on a panel that turns (`rotates`: w and h trade
+ * places at run time) the wider and the taller of both, so a turn never
+ * indexes past a terminal's share into the next one. */
+#define SCREEN_GRID_COLS(w) ((unsigned)(w) / (unsigned)FONT_CELL_W)
+#define SCREEN_GRID_ROWS(h) ((unsigned)(h) / (unsigned)FONT_CELL_H)
 #define SCREEN_SHADOW_COLS(w, h, rotates) \
-    ((rotates) && SCREEN_TEXT_COLS(h) > SCREEN_TEXT_COLS(w) ? SCREEN_TEXT_COLS(h) : SCREEN_TEXT_COLS(w))
+    ((rotates) && SCREEN_GRID_COLS(h) > SCREEN_GRID_COLS(w) ? SCREEN_GRID_COLS(h) : SCREEN_GRID_COLS(w))
 #define SCREEN_SHADOW_ROWS(w, h, rotates) \
-    ((rotates) && SCREEN_TEXT_ROWS(w) > SCREEN_TEXT_ROWS(h) ? SCREEN_TEXT_ROWS(w) : SCREEN_TEXT_ROWS(h))
+    ((rotates) && SCREEN_GRID_ROWS(w) > SCREEN_GRID_ROWS(h) ? SCREEN_GRID_ROWS(w) : SCREEN_GRID_ROWS(h))
+
+/* What shows over a full-screen window (screen_t.fs_overlay): the hint how
+ * to leave it, and the menu bar with the window's title bar, revealed from
+ * the top edge. Both in the top SCREEN_FS_BAND rows. */
+#define SCREEN_FS_HINT    0x01u
+#define SCREEN_FS_REVEAL  0x02u
+#define SCREEN_FS_ON      0x80u     /* screen_fs_state(): full screen when last told */
+#define SCREEN_FS_HINT_MS   2500u
+#define SCREEN_FS_REVEAL_MS 4000u
+#define SCREEN_FS_BAND    (SCREEN_TILE_Y + SCREEN_TITLEBAR_H)
 #define SCREEN_BYTES_ROT(w, h, rotates) \
     (sizeof(screen_t) + SCREEN_MAX_TERMS * SCREEN_SHADOW_COLS(w, h, rotates) * \
      SCREEN_SHADOW_ROWS(w, h, rotates) * sizeof(uint16_t))
@@ -304,8 +323,9 @@ bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w, int *h);
  * request: in a full-screen layout only the focused window shows. */
 void screen_report_windows(const screen_t *scr);
 /* The window under screen point (x, y): its ribbon type, its id and the
- * point in its content; false off every window (the menu bar, the chrome)
- * and in full screen. The caller holds console_lock or accepts a layout
+ * point in its content; false off every window (the menu bar, the chrome),
+ * and in full screen off the full-screen view (a canvas is reached through
+ * its origin). The caller holds console_lock or accepts a layout
  * that changes under it (a pointer event one window off, once). */
 bool screen_window_at(const screen_t *scr, int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy);
 /* How many pixel rows at the bottom of window idx's content the on-screen
@@ -322,6 +342,15 @@ void screen_win_content(const screen_t *scr, unsigned idx, int *cx, int *cy, int
 bool screen_win_shown(const screen_t *scr, unsigned idx);
 /* The focused window's ribbon type and id; false when there is none. */
 bool screen_focused_window(const screen_t *scr, uint8_t *type, uint8_t *id);
+/* Whether a window covers the screen now (the focused one, full screen). */
+bool screen_fullscreen(const screen_t *scr);
+/* The rows at the top an overlay takes over a full-screen window now
+ * (SCREEN_FS_BAND), else 0: a compositor leaves them to the frame. */
+int  screen_overlay_band(const screen_t *scr);
+/* For the console's look at full screen without a request: the overlay now
+ * (SCREEN_FS_HINT | SCREEN_FS_REVEAL, 0 unless full screen) and
+ * SCREEN_FS_ON if it was full screen at its last 'H' 3. */
+uint8_t screen_fs_state(const screen_t *scr);
 void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid);
 
 #endif /* LUGALOS_DRIVERS_SCREEN_H */

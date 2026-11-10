@@ -94,6 +94,7 @@ enum {
     RIBBON_FLAG_NO_CLOSE  = (1u << 2),   /* no close box (the launcher: always there) */
     RIBBON_FLAG_STACKED   = (1u << 3),   /* in the column of the window before it */
     RIBBON_FLAG_COL_FOCUS = (1u << 4),   /* the window its column last had focused */
+    RIBBON_FLAG_FULLSCREEN = (1u << 5),  /* covers the screen while it has the focus (Cmd+Shift+F) */
 };
 
 /* A stacked window's height preset (ribbon_win_t.share): of the rows its

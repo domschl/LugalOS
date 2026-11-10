@@ -42,6 +42,17 @@ Across a landscape screen the ribbon is a row of **columns**, and a column holds
 * **Turning to portrait** lays a stack out window by window down the ribbon (a stack of two is a top/bottom pair); turning back restores it. The minimap shows a stack as one block, split.
 * `ribbon list` shows each stacked window's place: `stack: 2 of 2, 13 rows, y 244..471`.
 
+### Full screen
+**`Cmd+Shift+F`** gives the focused window -- a terminal, a canvas, a reader, the launcher, any view -- the whole screen, with no menu bar, title bar or other window; a terminal gets the screen's full text grid (100 x 30 on the RP2350-LCD-7). Full screen follows the focus: going to another window (`Cmd+Left` / `Right`, a swipe from a side edge, a minimap tap) shows the ribbon again, and coming back covers the screen again.
+
+The ways out:
+* **Keyboard**: `Cmd+Shift+F` again.
+* **Mouse**: point at the screen's top edge. The menu bar and the window's title bar come over it (for 4 seconds, longer while the pointer stays on them); a click on the title bar leaves full screen, its close box closes the window.
+* **Touch**: a swipe down from the top edge shows the same bars; a tap on the title bar leaves full screen.
+* Going full screen shows a hint for 2.5 seconds naming the way out for the board's input: the swipe where there is touch, the pointer where there is a mouse, the key otherwise.
+
+`Cmd+F` (maximize) is different: the column at the full width, its title bar and the menu bar kept.
+
 ### Portrait: the ribbon runs down the screen (Tab5)
 On a screen turned to portrait (the Tab5, `Cmd+O` or the IMU), the ribbon runs from top to bottom instead: every window is as wide as the screen, and its size is counted in text rows. A window is either alone on the screen (37 rows on the Tab5) or one of a **top/bottom pair** (17 rows each) -- never a narrow slice side by side.
 
@@ -81,13 +92,12 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 | `Cmd+Shift+R` | In a stack: the next height (1/3, 1/2, 2/3, round) |
 | `Cmd+Shift+-` / `Cmd+Shift+=` | In a stack: the next lower / taller height |
 | `Cmd+F` | Maximize: the full width and back |
+| `Cmd+Shift+F` | Full screen and back (any window) |
 | `Cmd+Enter` | New terminal |
 | `Cmd+O` | Turn the display between portrait and landscape (Tab5) |
 | `Cmd+W` | Close the focused non-root window |
 | `Cmd+1`..`Cmd+9` | Jump to window 1..9 |
 | `Cmd+Shift+3` | Screenshot (PBM) to `/sd0/screenshots/` |
-
-`Cmd+Shift+F` is taken by the window manager for full screen, which is being built (phase 76.4a) and does nothing yet.
 
 ### Touch Gestures (GT911 / ST7121 Capacitive Touch)
 * **Tap Window**: Tapping anywhere inside a window pane transfers focus to it.

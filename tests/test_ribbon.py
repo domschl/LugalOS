@@ -172,6 +172,67 @@ def _stacks(session: QemuSession) -> bool:
     return ok
 
 
+def _fullscreen(session: QemuSession) -> bool:
+    """Cmd+Shift+F on a view and on a terminal: the window covers the screen
+    (its content the screen's width), the hint shows and goes, the pointer at
+    the top edge reveals the bars and a click on the title bar leaves; the
+    key leaves too; full screen follows the focus."""
+    import time
+    steps: list[tuple[str, bool, str]] = []
+
+    def check(what: str, ok: bool, got: object) -> None:
+        steps.append((what, ok, str(got)))
+
+    def status() -> tuple[str, list[tuple[str, int, str, int, int, bool]]]:
+        _, log = session.send_and_expect("ribbon list", r"lsh> ", timeout=5.0)
+        head = re.search(r"Ribbon Status: [^\n]*", log)
+        wins = [(m.group(2), int(m.group(3)), m.group(4), int(m.group(5)), int(m.group(6)), bool(m.group(7)))
+                for m in WIN.finditer(log)]
+        return (head.group(0) if head else "?"), wins
+
+    session.send_and_expect("viewtest open", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-shift-f", r"lsh> ", timeout=5.0)
+    head, wins = status()
+    view = [w for w in wins if w[0] == "View"]
+    check("Cmd+Shift+F: the view covers the screen, the hint over it",
+          "full screen (hint)" in head and view and view[0][3:5] == (0, 801), (head, wins))
+    time.sleep(3.0)
+    head, _ = status()
+    check("the hint goes after a while", "full screen" in head and "hint" not in head, head)
+    session.send_and_expect("ms move 300 100", r"lsh> ", timeout=5.0)
+    session.send_and_expect("ms move 300 0", r"lsh> ", timeout=5.0)
+    head, _ = status()
+    check("the pointer at the top edge reveals the bars", "bars revealed" in head, head)
+    session.send_and_expect("ms click 400 30", r"lsh> ", timeout=5.0)
+    head, wins = status()
+    view = [w for w in wins if w[0] == "View"]
+    check("a click on the revealed title bar leaves full screen",
+          "full screen" not in head and view and view[0][3:5] != (0, 801), (head, wins))
+    session.send_and_expect("key cmd-shift-f", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-left", r"lsh> ", timeout=5.0)
+    head, _ = status()
+    check("full screen follows the focus: another window, the ribbon", "full screen" not in head, head)
+    session.send_and_expect("key cmd-right", r"lsh> ", timeout=5.0)
+    head, _ = status()
+    check("... and back to the view, full screen again", "full screen" in head, head)
+    session.send_and_expect("key cmd-shift-f", r"lsh> ", timeout=5.0)
+    head, _ = status()
+    check("Cmd+Shift+F again leaves", "full screen" not in head, head)
+    session.send_and_expect("key cmd-w", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-shift-f", r"lsh> ", timeout=5.0)
+    head, wins = status()
+    term = [w for w in wins if w[5]]
+    check("a terminal full screen too", "full screen" in head and term and term[0][0] == "Term" and term[0][3:5] == (0, 801),
+          (head, wins))
+    session.send_and_expect("key cmd-shift-f", r"lsh> ", timeout=5.0)
+    head, _ = status()
+    check("... and back", "full screen" not in head, head)
+    ok = all(st_[1] for st_ in steps)
+    for what, good, got in steps:
+        print(f"    [{'PASS' if good else 'FAIL'}] {what}" + ("" if good else f": {got}"))
+    return ok
+
+
 def run_tests() -> int:
     elf_path = REPO_ROOT / "build" / "rv32" / "lugalos.elf"
     img_path = REPO_ROOT / "build" / "rv32" / "lugalos_sd.img"
@@ -287,6 +348,9 @@ def run_tests() -> int:
 
         print("  Testing stacks (Cmd+[ / ], Cmd+Up/Down, Cmd+Shift+R, a turn)...")
         all_passed = _stacks(session) and all_passed
+
+        print("  Testing full screen (Cmd+Shift+F, the hint, the pointer at the top edge)...")
+        all_passed = _fullscreen(session) and all_passed
 
     finally:
         session.close()

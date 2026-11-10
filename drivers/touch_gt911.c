@@ -73,6 +73,7 @@ typedef struct {
     uint32_t          polls, reports, presses, taps, swipes, longs, drags, nothings, errors;
     uint32_t          ends_lifted, ends_quiet;   /* how contacts ended: a lift report, or reports stopping */
     bool              edge;                      /* this contact began in the edge band */
+    bool              top_edge;                  /* full screen: this contact began at the top edge */
     bool              wm_stroke;                 /* a vertical stroke here steps the ribbon (portrait) or the stack */
     win_t             owner;                     /* the window it is posted to raw, or -1 (gestures) */
     int               owner_x0, owner_y0;        /* that window's content origin when it began */
@@ -169,6 +170,17 @@ static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
  * fling, a tap taps, a long press opens the context menu (a mouse's right
  * click) and starts a held key's repeat. */
 static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
+    /* Over a full-screen window, a stroke down from the top edge reveals
+     * the menu bar and the window's title bar (the way out by touch). */
+    if (g_t.top_edge) {
+        int dy = g_t.gs.y - g_t.gs.y0;
+        if (kind == GESTURE_SWIPE_DOWN || (kind == GESTURE_DRAG_END && dy >= gesture_mm_px(8u, CONFIG_PANEL_DPI))) {
+            g_t.swipes++;
+            console_hotkey(CONSOLE_HOTKEY_REVEAL);
+            return;
+        }
+        if (kind == GESTURE_DRAG || kind == GESTURE_DRAG_END || kind == GESTURE_SWIPE_UP) return;
+    }
     /* A vertical stroke that began on a window's chrome (or, down a
      * portrait screen, in the edge band) goes to the window below or above
      * (up brings the one below) and scrolls nothing: down a portrait screen
@@ -356,6 +368,12 @@ static void touch_task_body(void *arg) {
                 if (g_t.edge) g_t.edge_contacts++;
                 bool down_axis = console_ribbon_down();
                 if (down_axis && g_t.scr_h && (y < band || y >= (int)g_t.scr_h - band)) g_t.edge = true;
+                /* Full screen: the top edge, and the overlay's band while it
+                 * shows (the revealed bars, the hint), are the window
+                 * manager's, whatever the window claims. */
+                bool fs = lcdterm_fullscreen();
+                g_t.top_edge = fs && y < band;
+                if (g_t.top_edge || (fs && y < lcdterm_overlay_band())) g_t.edge = true;
                 {
                     uint8_t wt, wid;
                     int wcx, wcy, ox, oy, ow, oh;
@@ -485,7 +503,7 @@ int touch_start(void) {
     return pid;
 }
 
-/* `touch tap X Y`, `touch swipe left|right|up|down`: what the gesture code
+/* `touch tap X Y`, `touch swipe left|right|up|down|top`: what the gesture code
  * hands the console for a real tap or swipe, so a test or a person at the
  * serial console can drive the touch paths without a finger. */
 static bool touch_inject(const char *args) {
@@ -546,7 +564,8 @@ static bool touch_inject(const char *args) {
         else if (strcmp(p, "right") == 0) console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT);
         else if (strcmp(p, "up") == 0) console_touch_scroll(-200, 150);
         else if (strcmp(p, "down") == 0) console_touch_scroll(200, 150);
-        else { cprintf("usage: touch swipe left|right|up|down\n"); return true; }
+        else if (strcmp(p, "top") == 0) console_hotkey(CONSOLE_HOTKEY_REVEAL);   /* down from the top edge, full screen */
+        else { cprintf("usage: touch swipe left|right|up|down|top\n"); return true; }
         cprintf("touch: swipe %s\n", p);
         return true;
     }

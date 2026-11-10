@@ -193,6 +193,14 @@ typedef struct {
 } lcdterm_visible_term_t;
 
 int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms);
+/* Whether a window covers the screen now (full screen, Cmd+Shift+F). */
+bool lcdterm_fullscreen(void);
+/* The rows at the top a hint or the revealed title bar takes over a
+ * full-screen window, else 0: the compositor leaves them to the frame. */
+int  lcdterm_overlay_band(void);
+/* screen_fs_state(): the overlay over a full-screen window, and whether it
+ * was full screen when the console last looked. */
+uint8_t lcdterm_fs_state(void);
 /* 76.3: whether the ribbon runs down the screen now (a portrait Tab5). */
 #if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
 static inline bool lcdterm_ribbon_down(void) { return false; }
@@ -241,6 +249,9 @@ static inline bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, i
 }
 static inline bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) { (void)cid; (void)x0; (void)y0; return false; }
 static inline bool lcdterm_ribbon_down(void) { return ramscreen_ribbon_down(); }
+static inline bool lcdterm_fullscreen(void) { return ramscreen_fullscreen(); }
+static inline int  lcdterm_overlay_band(void) { return 0; }
+static inline uint8_t lcdterm_fs_state(void) { return ramscreen_fs_state(); }
 static inline bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     (void)cid; (void)buf;
     return false;
