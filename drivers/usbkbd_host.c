@@ -474,7 +474,7 @@ static void kbd_fill(void) {
         g_ev_tail++;
         kq_put(out, usbkbd_translate(&g_xl, e, now, out));
         if (g_xl.hotkey) {                      /* 37.5a: the screen's, not a program's */
-            console_hotkey(g_xl.hotkey);        /* USBKBD_HOTKEY_* == CONSOLE_HOTKEY_* */
+            console_hotkey(g_xl.hotkey);
             g_xl.hotkey = USBKBD_HOTKEY_NONE;
         }
     }

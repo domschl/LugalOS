@@ -1,6 +1,6 @@
 # Phase 76 — Touch UX Foundation III: Long File Names, `ugui` for Lisp, the Portrait Ribbon
 
-**Status: IN PROGRESS (split from phase 71 on 2026-11-09; its milestones were 71.6b, 71.4b and 71.5 there). 76.1 started 2026-11-09.**
+**Status: IN PROGRESS (split from phase 71 on 2026-11-09; its milestones were 71.6b, 71.4b and 71.5 there). 76.1 started 2026-11-09. 76.4 split into 76.4a and 76.4b on 2026-11-10.**
 **Target Hardware**:
 - **Primary**: M5Stack Tab5 (`esp32p4-tab5`, portrait and landscape), Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`)
 - **Also**: Waveshare RP2350-LCD-7 (`rp2350-terminal`: long names and Lisp `ugui`, no portrait), StarFive VisionFive 2 (`visionfive2`: long names on `/sd0` and `/nvme0`)
@@ -15,7 +15,8 @@
 | 71.6b FAT32 long file names | 76.1 |
 | 71.4b `ugui` for Lisp programs | 76.2 |
 | 71.5 Portrait major-axis ribbon | 76.3 |
-| — (new, 2026-11-09) window controls by touch and mouse | 76.4 |
+| — (new, 2026-11-10) stacked columns, Niri keys, full screen for every window | 76.4a |
+| — (new, 2026-11-09) window controls by touch and mouse | 76.4b |
 | 71.4's damage tracking (optional) | 76.5 |
 | 71.11, for this phase's items | 76.6 |
 
@@ -31,14 +32,51 @@
 - **Rotation keeps the window order and focus.** Landscape pairs become portrait stacks. A one-up portrait window stays one-up.
 - The 7B and RP2350 never use `AXIS_Y`. On RP2350 the field is constant and folds away.
 
-### 1.2 Window size and order by touch and mouse
+### 1.2 Columns, stacks and full screen (owner, 2026-11-10)
 
-Sizing (`Cmd+[`, `Cmd+]`, `Cmd+\`) and order (`Ctrl+Cmd+Arrows`) are keyboard-only today. Everything below sits on the title bar, which is chrome: by phase 71 §2.2 rule 1 its gestures always go to the window manager, so no view claim is affected. It stays in the Classic Mac look, so it is not the deferred touch-first chrome (§3).
+The landscape ribbon becomes Niri's: a row of **columns**, each holding one window or a **stack** of windows one above the other. A column down a landscape screen is laid out as the portrait ribbon already is (76.3: the whole width, sizes in rows), so the two share one model: portrait is one tall column.
 
-- **Zoom box** at the right end of the title bar, opposite the close box: a tap or click is `Cmd+\` (`ribbon_toggle_maximize()`). In portrait it switches between one-up and the top/bottom pair.
-- **Title-bar menu:** a long press or right click on a title bar opens a menu: **Width** 2/5 · 1/2 · 2/3 · Full (the current one ticked; in portrait: One-up · Pair), **Move Left / Move Right** (portrait: Up / Down), **Close**. Each item shows its shortcut, Mac-style, so the menu teaches the keyboard. Items that cannot apply (Move Left on the first window) are dimmed. The menu uses the action-sheet code the launcher already has.
+- **Model:** `wins[]` stays flat, ordered column by column and top to bottom within one. `RIBBON_FLAG_STACKED` on a window means "in the same column as the one before it"; its height share is kept in the unused `ribbon_win_t.reserved`. A column's width is its first window's `size`, shared by the others. `RIBBON_MAX_WINDOWS` stays 8 and `ribbon_t` does not grow (RP2350 SRAM).
+- **Depth:** a stack is as deep as the screen gives windows of `RIBBON_ROWS_MIN` rows with their title bars, at most 3 (RP2350-LCD-7 27 rows, 7B 34: 3; Tab5 landscape 19: 2).
+- **Heights:** shared equally by default; a preset (1/3, 1/2, 2/3 of the column) sets one window, and the others share the rest.
+- **Landscape only.** Down a portrait screen a stack would be windows side by side, which 76.3 rules out. Turning to portrait lays a column's windows out one after another down the ribbon (a stack of two is the top/bottom pair); the flags stay, so turning back restores the stacks.
+- **Focus:** each column remembers the window last focused in it; `Cmd+Left/Right` return to it.
+- **On-screen keyboard in a stack:** the focused window takes the whole column above the keyboard while it is up; the others return when it goes.
+- **Full screen, for every window type** (terminals, canvases, views): the window covers the screen, with no menu bar or title bar. It follows the focus, as a full-screen canvas does today: focusing another window shows the ribbon, coming back shows the window full screen again. Ways out, one per modality, all discoverable:
+  - Keyboard: `Cmd+Shift+F` again.
+  - Mouse: the pointer at the screen's top edge shows the menu bar and the window's title bar over it, with the zoom box and the title-bar menu.
+  - Touch: a swipe down from the top edge shows the same; in full screen the top edge does this instead of stepping the ribbon (portrait).
+  - Entering full screen shows a hint for two seconds naming the ways out the board has (keyboard, mouse, touch).
+- **Maximize** (`Cmd+F`, the zoom box) is the column at the full width, with its chrome; it is not full screen.
+
+#### Keys
+
+The window manager's keys are Niri's, adapted. **Rule (owner):** applications use few Cmd keys beyond the agreed ones (`Cmd+A C V X Z S Q`, `Shift+Cmd+S`, `Cmd+G`); everything else under Cmd belongs to the system. One table decodes them (today three copies: `drivers/usbkbd.c`, `kernel/console.c`, `kernel/line_editor.c`), matching the unshifted key so a USB usage and a serial CSI-u sequence agree.
+
+| Key | Action |
+| :--- | :--- |
+| `Cmd+Left` / `Right` | focus the column left / right (unchanged) |
+| `Cmd+Up` / `Down` | focus the window above / below in the stack (portrait: the window above / below, unchanged) |
+| `Cmd+Ctrl+Left` / `Right` | move the column (unchanged, now the whole column) |
+| `Cmd+Ctrl+Up` / `Down` | move the window within its stack (portrait: unchanged) |
+| `Cmd+[` / `Cmd+]` | a window alone joins the column to its left / right (at its bottom); a stacked window leaves its stack as its own column on that side |
+| `Cmd+R` / `Cmd+Shift+R` | next width preset (2/5, 1/2, 2/3, Full; portrait: alone, pair) / next height preset in a stack |
+| `Cmd+-` / `Cmd+=` | width to the next smaller / larger preset; with `Shift`, the height in a stack |
+| `Cmd+F` | maximize the column on and off (the zoom box) |
+| `Cmd+Shift+F` | full screen on and off |
+| `Cmd+W`, `Cmd+O`, `Cmd+Enter`, `Cmd+1..9`, `Cmd+Shift+3` | unchanged |
+
+`Cmd+\` goes. The editor `e` gives up `Cmd+F`, `Cmd+R` and `Alt+Cmd+F` (its `Ctrl+S` search and `Alt+%` replace stay) and `Cmd+O`, which the system's rotation already took (`Ctrl+X Ctrl+F` opens a file).
+
+### 1.3 Window size and order by touch and mouse
+
+Sizing and order are keyboard-only today. Everything below sits on the title bar, which is chrome: by phase 71 §2.2 rule 1 its gestures always go to the window manager, so no view claim is affected. It stays in the Classic Mac look, so it is not the deferred touch-first chrome (§3).
+
+- **Zoom box** at the right end of the title bar, opposite the close box: a tap or click is `Cmd+F`. In portrait it switches between one-up and the top/bottom pair.
+- **Title-bar menu:** a long press or right click on a title bar opens a menu: **Width** 2/5 · 1/2 · 2/3 · Full (the current one ticked; in portrait: One-up · Pair), **Height** 1/3 · 1/2 · 2/3 (in a stack), **Move Left / Move Right** (portrait: Up / Down), **Join Left / Join Right**, **Leave Stack**, **Full Screen**, **Close**. Each item shows its shortcut, Mac-style, so the menu teaches the keyboard. Items that cannot apply (Move Left on the first column, Join in portrait) are dimmed. The menu uses the action-sheet code the launcher already has.
 - **Grow box (optional part):** a grip at the far end of the title bar along the major axis. Dragging it draws a gray outline that snaps to the width steps; the width is applied on release (`ribbon_layout()` once). Only the outline and chrome are redrawn during the drag, no view. Its hit area is enlarged beyond what is drawn; on the 7B (`CHROME_SCALE = 1`, title bar about 3 mm) it is measured on the device first, and dropped there if it cannot be hit reliably next to the zoom box.
-- **Not in this phase:** reordering by dragging a title bar or minimap blocks. The menu covers order; drag reorder is reconsidered after 76.4 is in use.
+- **Height handle:** the gap between two stacked windows; dragging it snaps to the height presets, as the grow box does to widths. Its hit area extends past the 10 px gap, measured on the 7B as the grow box is.
+- **Not in this phase:** moving a window by dragging its title bar or minimap blocks. When it comes, a long press that is let go opens the menu and a long press that moves drags the window; a plain swipe on a title bar keeps panning the ribbon.
 
 ---
 
@@ -85,10 +123,16 @@ Sizing (`Cmd+[`, `Cmd+]`, `Cmd+\`) and order (`Ctrl+Cmd+Arrows`) are keyboard-on
   - Tests: `ribbonselftest` Y cases; `tests/test_ribbon.py` turns QEMU's RAM screen (`ramscreen turn`) and checks the pair, the canvas size, `Cmd+Up/Down` and the round trip; Tab5 portrait: terminal + reader pair, `hello_ugui` by mouse, touch and keys; LCD-7B and Tab5 landscape ribbon tests unchanged.
   - Found: a P4 `p9share` session drops after ~340 KB (a 2.7 MB Tab5 screenshot needed eight resumed sessions).
 
-### 76.4 — Window size and order by touch and mouse
-- **Why:** the ribbon's width steps, maximise and window order are keyboard-only, which leaves the Tab5 and the 7B without a keyboard unable to change them (owner, 2026-11-09).
-- **Scope:** zoom box, title-bar menu (width, move, close) by long press and right click, and the optional grow box, on both ribbon axes (§1.2). Built on 76.3's major-axis fields, so it is written once for landscape and portrait. Shared by every panel with chrome: Tab5, 7B, RP2350-LCD-7 (mouse; touch where present), VisionFive 2 (mouse).
-- **Acceptance:** `tests/test_ribbon.py`: the menu's width and move actions give the same layout as their shortcuts on both axes. Runner test on QEMU's RAM screen with `ms click` / `ms click right` / `ms drag` and `ts tap` / `ts` long press: zoom box, every menu item, grow-box snapping to each step, dimmed items. On the Tab5 (both orientations) and the 7B: every action by finger and by mouse; a horizontal swipe on a title bar away from the grow box still pans the ribbon. RP2350 SRAM does not grow.
+### 76.4a — Columns, stacks, the Niri keys and full screen
+- **Why:** the landscape ribbon has one window per column, its keys were set one at a time (`Cmd+[`, `]`, `\`), and only a canvas can go full screen (owner, 2026-11-10).
+- **Scope (§1.2):** the one key table, used by the USB keyboard, the line editor and the views; the new keys; the editor's keys moved off Cmd; the stack model in `drivers/ribbon.c` (join, leave, move within, height presets, per-column focus, the depth limit); rotation laying stacks out and restoring them; the on-screen keyboard taking the column; full screen for every window type, its three ways out and the hint. Docs: `doc/user/ribbon.md`, `doc/user/editors.md`, `doc/user/reader.md`, `doc/user/shell.md` where commands change.
+- **Acceptance:** `ribbonselftest`: join, leave, move within a stack, the presets in both directions, the depth limit, the rotation round trip with stacks. `tests/test_ribbon.py` on QEMU's RAM screen: every key in the table by `key` and over serial (CSI-u), the same layout either way; a terminal, a view and a canvas full screen and out again by `key`, `ms` at the top edge and a `ts` swipe from it. Hardware: the 7B, the Tab5 (landscape stacks, portrait turning) and the RP2350-LCD-7 (USB keyboard and mouse). RP2350 SRAM does not grow.
+- **Status:** planned.
+
+### 76.4b — Window size and order by touch and mouse
+- **Why:** the ribbon's sizes, order and stacks are keyboard-only, which leaves the Tab5 and the 7B without a keyboard unable to change them (owner, 2026-11-09).
+- **Scope:** zoom box, title-bar menu (width, height, move, join, leave, full screen, close) by long press and right click, the optional grow box and the height handle, on both ribbon axes (§1.3). Built on 76.4a. Shared by every panel with chrome: Tab5, 7B, RP2350-LCD-7 (mouse; touch where present), VisionFive 2 (mouse).
+- **Acceptance:** `tests/test_ribbon.py`: each menu action gives the same layout as its key on both axes. Runner test on QEMU's RAM screen with `ms click` / `ms click right` / `ms drag` and `ts tap` / `ts` long press: zoom box, every menu item, grow box and height handle snapping to each step, dimmed items. On the Tab5 (both orientations) and the 7B: every action by finger and by mouse; a horizontal swipe on a title bar away from the grow box still pans the ribbon. RP2350 SRAM does not grow.
 - **Status:** planned.
 
 ### 76.5 — Damage tracking in `ugui` (optional)

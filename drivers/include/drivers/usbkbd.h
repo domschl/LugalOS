@@ -85,8 +85,8 @@ bool usbmouse_decode(const usbmouse_layout_t *l, const uint8_t *r, uint32_t n, u
  * Super with an arrow, Home, End or a ~ key is xterm's ESC [ 1 ; m X or
  * ESC [ n ; m ~ (m = 1 + Shift 1 + Alt 2 + Ctrl 4 + Super 8); Super with
  * anything else is CSI-u, ESC [ cp ; m u with the unshifted key's code
- * point; Ctrl-Space is NUL. Super+[ , Super+] , Super+\\ and Super+Shift+3
- * are the screen's (USBKBD_HOTKEY_*) and send nothing. **Caps Lock is the compose key**: Caps, then two keys, gives
+ * point; Ctrl-Space is NUL. The window manager's Super keys (kernel/wmkeys.h)
+ * are the screen's and send nothing. **Caps Lock is the compose key**: Caps, then two keys, gives
  * one character as UTF-8 -- `Caps " a` is ä, `Caps = e` is € -- by X11's
  * compose conventions, in either order. An unknown pair gives nothing; Esc
  * or Caps again cancels; any other key (Enter, an arrow) cancels and does
@@ -107,28 +107,13 @@ typedef struct {
     uint8_t  repeat_usage;  /* 0: nothing repeating */
     uint8_t  compose_first; /* the first key's character, in state 2 */
     uint32_t repeat_at;     /* ms: when it next repeats */
-    uint8_t  hotkey;        /* 37.5a: USBKBD_HOTKEY_*, for the caller to take */
+    uint8_t  hotkey;        /* CONSOLE_HOTKEY_* (wm_hotkey()), for the caller to take */
     uint8_t  _pad[3];
 } usbkbd_xlate_t;
 
-/* 37.5a: keys the screen takes before any program sees them -- they
- * produce no bytes, only `hotkey`, which the caller hands to the console. */
+/* Keys the screen takes before any program sees them produce no bytes, only
+ * `hotkey`, which the caller hands to console_hotkey(). */
 #define USBKBD_HOTKEY_NONE         0u
-#define USBKBD_HOTKEY_LEFT         1u   /* Super+[ : shrink window column / divider left */
-#define USBKBD_HOTKEY_RIGHT        2u   /* Super+] : expand window column / divider right */
-#define USBKBD_HOTKEY_SCREENSHOT   3u   /* Super+Shift+3, as on the Mac */
-#define USBKBD_HOTKEY_SWAP         4u   /* Super+\\ : swap active window with neighbor */
-#define USBKBD_HOTKEY_NEW_TERM     5u   /* Super+Enter : spawn new terminal window */
-#define USBKBD_HOTKEY_FOCUS_LEFT   6u   /* Super+Left : focus left window */
-#define USBKBD_HOTKEY_FOCUS_RIGHT  7u   /* Super+Right : focus right window */
-#define USBKBD_HOTKEY_MOVE_LEFT    8u   /* Super+Ctrl+Left : move window left in ribbon */
-#define USBKBD_HOTKEY_MOVE_RIGHT   9u   /* Super+Ctrl+Right : move window right in ribbon */
-#define USBKBD_HOTKEY_CLOSE        10u  /* Super+W : close active window */
-#define USBKBD_HOTKEY_JUMP_BASE    11u  /* Super+1 .. Super+9 (codes 11..19) */
-#define USBKBD_HOTKEY_JUMP(n)      (USBKBD_HOTKEY_JUMP_BASE + ((unsigned)(n) - 1u))
-#define USBKBD_HOTKEY_ORIENT       23u  /* Super+O : toggle display orientation (landscape/portrait) */
-/* The same numbers as kernel/console.h's CONSOLE_HOTKEY_*, which the
- * keyboard source hands them to unchanged. */
 
 /* The bytes for one event at time `now_ms` (for typematic); returns how many
  * were written to out[USBKBD_SEQ_MAX], 0 for keys that produce nothing. */

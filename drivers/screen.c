@@ -2424,8 +2424,8 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == 'w') {
-        int dir = n >= 2 ? (int)(int8_t)req[1] : 0;
-        if (ribbon_resize_active(&scr->ribbon, dir > 0)) {
+        int dir = n >= 2 ? (int)(int8_t)req[1] : 0;   /* -1 / 1 a step, 2 the next preset round */
+        if (dir == 2 ? ribbon_cycle_active(&scr->ribbon) : ribbon_resize_active(&scr->ribbon, dir > 0)) {
             scr->ribbon.m_view = scr->ribbon.m_target;
             (void)place(scr, scr->layout);
             draw_all_from(scr, true);

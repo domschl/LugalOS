@@ -955,7 +955,7 @@ static key_event_t ed_isearch(ed_t *e, bool fwd) {
         ed_draw(e);
         key_event_t k = ed_key(e);
         e->msg[0] = '\0';
-        bool next = k.key == 0x13u || (is_super(k, 'g') && !is_shifted(k)) || is_super(k, 'f');
+        bool next = k.key == 0x13u || (is_super(k, 'g') && !is_shifted(k));
         bool prev = k.key == 0x12u || (is_super(k, 'g') && is_shifted(k));
         if (is_text_key(k)) {
             char enc[4];
@@ -1206,12 +1206,6 @@ static int ed_key_cmd(ed_t *e, key_event_t k) {
         else if (is_super(k, 'v')) ed_paste(e);
         else if (is_super(k, 'a')) { e->mark = 0; e->mark_sticky = true; e->pos = e->len; }
         else if (is_super(k, 'z')) ed_undo(e);
-        else if (is_super(k, 'f') && alt) ed_replace(e);
-        else if (is_super(k, 'r')) ed_replace(e);
-        else if (is_super(k, 'f')) {
-            key_event_t r = ed_isearch(e, true);
-            if (r.key != KEY_UNKNOWN) return ed_key_cmd(e, r);
-        }
         else if (is_super(k, 'g')) ed_find_again(e, !is_shifted(k));
         else if (is_super(k, 's')) {
             if (is_shifted(k)) {
@@ -1219,13 +1213,6 @@ static int ed_key_cmd(ed_t *e, key_event_t k) {
                 if (ed_prompt(e, "Write file: ", fn, sizeof(fn)) > 0) (void)ed_save(e, fn);
             } else {
                 (void)ed_save(e, e->file);
-            }
-        }
-        else if (is_super(k, 'o')) {
-            char fn[128];
-            if (ed_confirm_discard(e) && ed_prompt(e, "Find file: ", fn, sizeof(fn)) > 0) {
-                (void)ed_load(e, fn);
-                e->drawn = false;
             }
         }
         else if (is_super(k, 'q')) { if (ed_confirm_discard(e)) return ED_QUIT; }

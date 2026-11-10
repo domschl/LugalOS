@@ -5,6 +5,7 @@
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/keyseq.h"
+#include "kernel/wmkeys.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "kernel/clipboard.h"
@@ -534,19 +535,11 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
         else if (key == 'x') { clip_copy(st, out_buf); (void)sel_delete(st, out_buf); }
         else if (key == 'v') clip_paste(st, out_buf, max_len);
         else if (key == 'a') { st->mark = 0; st->mark_sticky = true; st->pos = st->len; }
-        else if (key == '\r' || key == '\n') console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
-        else if (key == KEY_LEFT) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_LEFT : CONSOLE_HOTKEY_FOCUS_LEFT);
-        else if (key == KEY_RIGHT) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_RIGHT : CONSOLE_HOTKEY_FOCUS_RIGHT);
-        else if (key == KEY_UP && console_ribbon_down()) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_LEFT : CONSOLE_HOTKEY_FOCUS_LEFT);
-        else if (key == KEY_DOWN && console_ribbon_down()) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_RIGHT : CONSOLE_HOTKEY_FOCUS_RIGHT);
-        else if (key == 'w' || key == 'W') console_hotkey(CONSOLE_HOTKEY_CLOSE);
-        else if (key == 'o' || key == 'O') console_hotkey(CONSOLE_HOTKEY_ORIENT);
-        else if (key == '[') console_hotkey(CONSOLE_HOTKEY_LEFT);
-        else if (key == ']') console_hotkey(CONSOLE_HOTKEY_RIGHT);
-        else if (key == '\\') console_hotkey(CONSOLE_HOTKEY_TOGGLE_MAX);
-        else if (shift && key == '3') console_hotkey(CONSOLE_HOTKEY_SCREENSHOT);   /* before the jumps */
-        else if (!shift && key >= '1' && key <= '9') console_hotkey(CONSOLE_HOTKEY_JUMP((unsigned)(key - '0')));
-        else return LINE_INCOMPLETE;            /* other Super keys: not ours */
+        else {
+            unsigned hk = wm_hotkey(key, k.mods);
+            if (hk == CONSOLE_HOTKEY_NONE) return LINE_INCOMPLETE;   /* other Super keys: not ours */
+            console_hotkey(hk);
+        }
         line_show(st, prompt, out_buf);
         return LINE_INCOMPLETE;
     }

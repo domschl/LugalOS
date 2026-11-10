@@ -8,6 +8,8 @@
 
 #include "drivers/usbkbd.h"
 #include "kernel/console.h"
+#include "kernel/keyseq.h"
+#include "kernel/wmkeys.h"
 
 KBD_UTEXT bool usb_parse_config(const uint8_t *cfg, uint32_t len, usb_cfg_info_t *out) {
     uint8_t *o = (uint8_t *)out;
@@ -439,43 +441,18 @@ uint32_t usbkbd_translate(usbkbd_xlate_t *x, uint32_t ev, uint32_t now_ms, uint8
         if (u == x->repeat_usage) x->repeat_usage = 0;
         return 0;
     }
-    /* the window manager / screen's keys, before anything else sees them. */
+    /* the window manager's keys (kernel/wmkeys.h), before anything else sees them. */
     if (x->mods & MOD_GUI) {
-        bool sh = (x->mods & MOD_SHIFT) != 0;
-        bool ct = (x->mods & MOD_CTRL) != 0;
-        bool alt = (x->mods & MOD_ALT) != 0;
-        if (!alt) {
-            uint8_t hk = USBKBD_HOTKEY_NONE;
-            if (ct) {
-                /* Cmd + Ctrl + Left / Right: move window left / right */
-                if (u == 0x50) hk = USBKBD_HOTKEY_MOVE_LEFT;
-                else if (u == 0x4f) hk = USBKBD_HOTKEY_MOVE_RIGHT;
-                else if (u == 0x52 && console_ribbon_down()) hk = USBKBD_HOTKEY_MOVE_LEFT;   /* Up, portrait */
-                else if (u == 0x51 && console_ribbon_down()) hk = USBKBD_HOTKEY_MOVE_RIGHT;  /* Down */
-            } else if (sh) {
-                /* Cmd + Shift + 3: screenshot */
-                if (u == 0x20) hk = USBKBD_HOTKEY_SCREENSHOT;
-            } else {
-                /* Cmd without Shift / Ctrl / Alt */
-                if (u == 0x28) hk = USBKBD_HOTKEY_NEW_TERM;         /* Enter: new terminal */
-                else if (u == 0x50) hk = USBKBD_HOTKEY_FOCUS_LEFT;  /* Left: focus left */
-                else if (u == 0x4f) hk = USBKBD_HOTKEY_FOCUS_RIGHT; /* Right: focus right */
-                else if (u == 0x52 && console_ribbon_down()) hk = USBKBD_HOTKEY_FOCUS_LEFT;   /* Up, portrait: the window above */
-                else if (u == 0x51 && console_ribbon_down()) hk = USBKBD_HOTKEY_FOCUS_RIGHT;  /* Down: the one below */
-                else if (u == 0x1a) hk = USBKBD_HOTKEY_CLOSE;       /* 'w' / 'W': close window */
-                else if (u == 0x12) hk = USBKBD_HOTKEY_ORIENT;      /* 'o' / 'O': toggle orientation */
-                else if (u == 0x2f) hk = USBKBD_HOTKEY_LEFT;        /* '[': shrink column */
-                else if (u == 0x30) hk = USBKBD_HOTKEY_RIGHT;       /* ']': expand column */
-                else if (u == 0x31) hk = USBKBD_HOTKEY_SWAP;        /* '\': swap */
-                else if (u >= 0x1e && u <= 0x26) {                  /* '1' .. '9': direct jump */
-                    hk = (uint8_t)(USBKBD_HOTKEY_JUMP_BASE + (u - 0x1e));
-                }
-            }
-            if (hk) {
-                x->hotkey = hk;
-                x->repeat_usage = 0;
-                return 0;
-            }
+        uint8_t m = KMOD_SUPER;
+        if (x->mods & MOD_SHIFT) m |= KMOD_SHIFT;
+        if (x->mods & MOD_CTRL) m |= KMOD_CTRL;
+        if (x->mods & MOD_ALT) m |= KMOD_ALT;
+        uint32_t key = wm_usage_key(u);
+        unsigned hk = key ? wm_hotkey(key, m) : CONSOLE_HOTKEY_NONE;
+        if (hk != CONSOLE_HOTKEY_NONE) {
+            x->hotkey = (uint8_t)hk;
+            x->repeat_usage = 0;
+            return 0;
         }
     }
     if (u == 0x39) {                            /* Caps Lock: compose, or cancel it */
@@ -752,14 +729,31 @@ int usbkbd_selftest(void) {
     uint8_t hk_o = c.hotkey; c.hotkey = 0;
     (void)KEY(0x1e, 0x08);                      /* Super-1 */
     uint8_t hk_1 = c.hotkey; c.hotkey = 0;
-    CHECK("Super window hotkeys: Enter/Left/Right/Ctrl-Left/Right/w/o/1/screenshot",
-          m == 0 && m2 == 0 && m6 == 0 && hk1 == USBKBD_HOTKEY_LEFT &&
-          hk2 == USBKBD_HOTKEY_RIGHT && hk6 == USBKBD_HOTKEY_SCREENSHOT &&
-          hk_ent == USBKBD_HOTKEY_NEW_TERM && hk_l == USBKBD_HOTKEY_FOCUS_LEFT &&
-          hk_r == USBKBD_HOTKEY_FOCUS_RIGHT && hk_cl == USBKBD_HOTKEY_MOVE_LEFT &&
-          hk_cr == USBKBD_HOTKEY_MOVE_RIGHT && hk_w == USBKBD_HOTKEY_CLOSE &&
-          hk_o == USBKBD_HOTKEY_ORIENT &&
-          hk_1 == USBKBD_HOTKEY_JUMP(1));
+    (void)KEY(0x09, 0x08);                      /* Super-f */
+    uint8_t hk_f = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x09, 0x0a);                      /* Super-Shift-f */
+    uint8_t hk_sf = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x15, 0x08);                      /* Super-r */
+    uint8_t hk_rr = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x2d, 0x08);                      /* Super-- */
+    uint8_t hk_min = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x2e, 0x0a);                      /* Super-Shift-= */
+    uint8_t hk_hup = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x52, 0x08);                      /* Super-Up */
+    uint8_t hk_up = c.hotkey; c.hotkey = 0;
+    uint32_t m_bs = KEY(0x31, 0x08);            /* Super-\\: a program's now */
+    uint8_t hk_bs = c.hotkey; c.hotkey = 0;
+    CHECK("Super window hotkeys: Enter/arrows/Ctrl-arrows/w/o/1/screenshot/[/]/f/F/r/-/+",
+          m == 0 && m2 == 0 && m6 == 0 && hk1 == CONSOLE_HOTKEY_JOIN_LEFT &&
+          hk2 == CONSOLE_HOTKEY_JOIN_RIGHT && hk6 == CONSOLE_HOTKEY_SCREENSHOT &&
+          hk_ent == CONSOLE_HOTKEY_NEW_TERM && hk_l == CONSOLE_HOTKEY_FOCUS_LEFT &&
+          hk_r == CONSOLE_HOTKEY_FOCUS_RIGHT && hk_cl == CONSOLE_HOTKEY_MOVE_LEFT &&
+          hk_cr == CONSOLE_HOTKEY_MOVE_RIGHT && hk_w == CONSOLE_HOTKEY_CLOSE &&
+          hk_o == CONSOLE_HOTKEY_ORIENT && hk_1 == CONSOLE_HOTKEY_JUMP(1) &&
+          hk_f == CONSOLE_HOTKEY_TOGGLE_MAX && hk_sf == CONSOLE_HOTKEY_FULLSCREEN &&
+          hk_rr == CONSOLE_HOTKEY_WIDTH_NEXT && hk_min == CONSOLE_HOTKEY_WIDTH_DOWN &&
+          hk_hup == CONSOLE_HOTKEY_HEIGHT_UP && hk_up == CONSOLE_HOTKEY_FOCUS_UP &&
+          m_bs > 0 && hk_bs == CONSOLE_HOTKEY_NONE);
 #undef SEQ_IS
 #undef KEY
 #undef CHECK

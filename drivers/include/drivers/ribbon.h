@@ -223,6 +223,10 @@ int ribbon_visible_range(const ribbon_t *r, int32_t view, uint8_t *first_idx, ui
  * Returns true if m_view changed (needs redraw), false if already at target. */
 bool ribbon_step_scroll(ribbon_t *r, int32_t step_px);
 
+/* The active window's next width preset, from the widest back to the
+ * narrowest (in Y: alone and half of a pair). False when there is one only. */
+bool ribbon_cycle_active(ribbon_t *r);
+
 /* Toggle the active window between full and half (one-up and a pair). */
 bool ribbon_toggle_maximize(ribbon_t *r);
 

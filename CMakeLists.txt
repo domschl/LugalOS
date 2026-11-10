@@ -756,6 +756,8 @@ set(SOURCES
     kernel/editor.c
     # one parser for every text input's keys, and the clipboard.
     kernel/keyseq.c
+    # the window manager's Cmd keys, one table for every input path.
+    kernel/wmkeys.c
     kernel/clipboard.c
     # the screen to a PBM file.
     kernel/screenshot.c

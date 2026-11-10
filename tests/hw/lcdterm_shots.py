@@ -84,7 +84,7 @@ KEYS: dict[str, bytes] = {
     "cmd-ctrl-left": b"\x1b[1;13D",
     "cmd-ctrl-right": b"\x1b[1;13C",
     "cmd-w": b"\x1b[119;9u",
-    "cmd-backslash": b"\x1b[92;9u",
+    "cmd-f": b"\x1b[102;9u",
     **{f"cmd-{n}": b"\x1b[%d;9u" % (48 + n) for n in range(1, 10)},
 }
 

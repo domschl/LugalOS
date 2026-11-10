@@ -344,6 +344,18 @@ LCDTERM_UTEXT bool ribbon_resize_active(ribbon_t *r, bool expand) {
     return true;
 }
 
+LCDTERM_UTEXT bool ribbon_cycle_active(ribbon_t *r) {
+    if (!r || r->count == 0 || r->active_idx >= r->count) return false;
+    if (ribbon_resize_active(r, true)) return true;
+    ribbon_win_t *w = &r->wins[r->active_idx];
+    uint8_t first = AXIS_Y(r) ? ribbon_size_half(r) : RIBBON_COLS_TWO_FIFTHS(r->screen_w);
+    if (w->size == first) return false;
+    w->size = first;
+    ribbon_layout(r);
+    r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
+    return true;
+}
+
 LCDTERM_UTEXT bool ribbon_toggle_maximize(ribbon_t *r) {
     if (!r || r->count == 0 || r->active_idx >= r->count) return false;
     ribbon_win_t *w = &r->wins[r->active_idx];
@@ -628,6 +640,9 @@ void ribbon_selftest(void) {
     ribbon_resize_active(&r, true);
     st_expect("D7 at 1024: resize steps 62 -> 49, then 62 -> 82 -> 126",
               c49 && c82 && r.wins[0].size == 126 && r.wins[0].m1 == 1018, &fails);
+    bool round = ribbon_cycle_active(&r) && r.wins[0].size == 49 && ribbon_cycle_active(&r) &&
+                 r.wins[0].size == 62 && ribbon_cycle_active(&r) && r.wins[0].size == 82;
+    st_expect("Cmd+R at 1024: 126 -> 49 -> 62 -> 82, round", round, &fails);
 
 #if RIBBON_AXIS_Y_SUPPORTED
     /* 76.3: down the screen, at the Tab5's portrait geometry (16 x 32 cells,
@@ -667,6 +682,9 @@ void ribbon_selftest(void) {
                   ribbon_resize_active(&r, true) && r.wins[2].size == full &&
                   ribbon_resize_active(&r, false) && r.wins[2].size == half &&
                   !ribbon_resize_active(&r, false), &fails);
+        st_expect("axis Y: Cmd+R goes half -> full -> half",
+                  ribbon_cycle_active(&r) && r.wins[2].size == full &&
+                  ribbon_cycle_active(&r) && r.wins[2].size == half, &fails);
         (void)ribbon_insert(&r, 3, RIBBON_WIN_READER, 1, full, "Last, alone");
         v = ribbon_compute_viewport(&r, 3, 0);
         st_expect("axis Y: the last window, alone, is shown whole below the menu bar",

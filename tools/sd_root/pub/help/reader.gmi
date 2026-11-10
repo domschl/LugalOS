@@ -49,7 +49,7 @@ lsh> reader list
 
 Every Reader window includes a classic Macintosh-style close box ([X]) at the left edge of its title bar:
 * Close Box Tap / Click: Tapping or clicking the close box closes that specific Reader instance immediately, releasing its PSRAM backing store and refocusing the ribbon.
-* Maximize / Restore: Pressing Super+\ / Cmd+\ toggles the focused Reader window between half-screen and full-screen ribbon width.
+* Maximize / Restore: Pressing Cmd+F toggles the focused Reader window between half-screen and full-screen ribbon width.
 * Keyboard Close: Pressing q or Cmd-W closes the active Reader window and returns focus to the terminal.
 
 ## Keyboard Navigation
@@ -70,7 +70,7 @@ When the Reader window has focus, standard keyboard navigation shortcuts are act
 * Ctrl-H / ? / h: Open this Reader Help manual.
 * r: Reload and redraw the current document.
 * Super+O / Cmd+O / o: Toggle display orientation between Portrait and Landscape (Tab5).
-* Super+\ / Cmd+\: Toggle Maximize / Restore window width.
+* Cmd+F: Toggle Maximize / Restore window width.
 * q / Cmd-W: Close the reader window and return focus to the terminal.
 
 ## Touch & Gestures

@@ -250,34 +250,46 @@ enum {
 bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride);
 bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format);
 
-/* 37.5a: keys the screen takes before any program sees them -- the USB
- * keyboard's Super+[ , Super+] , Super+\\ and Super+Shift+3. An input source hands one
- * over here while it is being drained (under the input lock); the console
- * runs it from its next input wait, outside every lock, where it may draw
- * and write files. */
+/* Keys and gestures the screen takes before any program sees them. The Cmd
+ * keys are decoded by wm_hotkey() (kernel/wmkeys.h); an input source hands
+ * one over here while it is being drained (under the input lock), and the
+ * console runs it from its next input wait, outside every lock, where it may
+ * draw and write files. The Up/Down codes are the ribbon's: down a portrait
+ * screen the window above / below, across a landscape one the window above /
+ * below in its column's stack. */
 #define CONSOLE_HOTKEY_NONE         0u
-#define CONSOLE_HOTKEY_LEFT         1u  /* Super+[ : shrink window column / divider left */
-#define CONSOLE_HOTKEY_RIGHT        2u  /* Super+] : expand window column / divider right */
-#define CONSOLE_HOTKEY_SCREENSHOT   3u  /* Super+Shift+3 : save screenshot */
-#define CONSOLE_HOTKEY_TOGGLE_MAX   4u  /* Super+\ : toggle maximize / restore active window */
-#define CONSOLE_HOTKEY_NEW_TERM     5u  /* Super+Enter : spawn new terminal window */
-#define CONSOLE_HOTKEY_FOCUS_LEFT   6u  /* Super+Left : focus left window */
-#define CONSOLE_HOTKEY_FOCUS_RIGHT  7u  /* Super+Right : focus right window */
-#define CONSOLE_HOTKEY_MOVE_LEFT    8u  /* Super+Ctrl+Left : move window left in ribbon */
-#define CONSOLE_HOTKEY_MOVE_RIGHT   9u  /* Super+Ctrl+Right : move window right in ribbon */
-#define CONSOLE_HOTKEY_CLOSE        10u /* Super+W : close active window */
-#define CONSOLE_HOTKEY_JUMP_BASE    11u /* Super+1 .. Super+9 (codes 11..19) */
+#define CONSOLE_HOTKEY_WIDTH_DOWN   1u  /* Cmd+- : the next smaller width preset */
+#define CONSOLE_HOTKEY_WIDTH_UP     2u  /* Cmd+= : the next larger width preset */
+#define CONSOLE_HOTKEY_SCREENSHOT   3u  /* Cmd+Shift+3 : save screenshot */
+#define CONSOLE_HOTKEY_TOGGLE_MAX   4u  /* Cmd+F : maximize the column on / off */
+#define CONSOLE_HOTKEY_NEW_TERM     5u  /* Cmd+Enter : spawn new terminal window */
+#define CONSOLE_HOTKEY_FOCUS_LEFT   6u  /* Cmd+Left : focus the column left */
+#define CONSOLE_HOTKEY_FOCUS_RIGHT  7u  /* Cmd+Right : focus the column right */
+#define CONSOLE_HOTKEY_MOVE_LEFT    8u  /* Cmd+Ctrl+Left : move the column left */
+#define CONSOLE_HOTKEY_MOVE_RIGHT   9u  /* Cmd+Ctrl+Right : move the column right */
+#define CONSOLE_HOTKEY_CLOSE        10u /* Cmd+W : close active window */
+#define CONSOLE_HOTKEY_JUMP_BASE    11u /* Cmd+1 .. Cmd+9 (codes 11..19) */
 #define CONSOLE_HOTKEY_JUMP(n)      (CONSOLE_HOTKEY_JUMP_BASE + ((unsigned)(n) - 1u))
 #define CONSOLE_HOTKEY_TAP          20u /* 47.12: a touch tap, at console_touch_tap()'s point */
 #define CONSOLE_HOTKEY_SCROLL_UP    21u /* Vertical swipe / scroll up */
 #define CONSOLE_HOTKEY_SCROLL_DOWN  22u /* Vertical swipe / scroll down */
-#define CONSOLE_HOTKEY_ORIENT       23u /* Super+O : toggle display orientation (landscape/portrait) */
+#define CONSOLE_HOTKEY_ORIENT       23u /* Cmd+O : toggle display orientation (landscape/portrait) */
 #define CONSOLE_HOTKEY_DRAG         24u /* a vertical touch drag moved: console_touch_drag() */
 #define CONSOLE_HOTKEY_DRAG_END     25u /* ... and ended: console_touch_drag_end() */
+#define CONSOLE_HOTKEY_WIDTH_NEXT   26u /* Cmd+R : the next width preset, round */
+#define CONSOLE_HOTKEY_HEIGHT_NEXT  27u /* Cmd+Shift+R : the next height preset in a stack */
+#define CONSOLE_HOTKEY_HEIGHT_DOWN  28u /* Cmd+Shift+- */
+#define CONSOLE_HOTKEY_HEIGHT_UP    29u /* Cmd+Shift+= */
+#define CONSOLE_HOTKEY_JOIN_LEFT    30u /* Cmd+[ : join the column left, or leave the stack leftwards */
+#define CONSOLE_HOTKEY_JOIN_RIGHT   31u /* Cmd+] : the same rightwards */
+#define CONSOLE_HOTKEY_FOCUS_UP     32u /* Cmd+Up */
+#define CONSOLE_HOTKEY_FOCUS_DOWN   33u /* Cmd+Down */
+#define CONSOLE_HOTKEY_MOVE_UP      34u /* Cmd+Ctrl+Up */
+#define CONSOLE_HOTKEY_MOVE_DOWN    35u /* Cmd+Ctrl+Down */
+#define CONSOLE_HOTKEY_FULLSCREEN   36u /* Cmd+Shift+F : full screen on / off */
 void console_hotkey(unsigned code);
-/* 76.3: whether the screen's ribbon runs down it now (portrait): then
- * Cmd+Up / Down are the previous and next window, as Cmd+Left / Right are
- * always, and with Ctrl they move it. */
+/* Whether the screen's ribbon runs down it now (portrait): then Cmd+Up /
+ * Down are the previous and next window, and with Ctrl they move it. */
 bool console_ribbon_down(void);
 
 /* 47.12: a tap on the panel at (x, y), screen pixels: focuses the window

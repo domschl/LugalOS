@@ -33,7 +33,7 @@ The top of the screen displays a persistent status bar featuring:
 On a screen turned to portrait (the Tab5, `Cmd+O` or the IMU), the ribbon runs from top to bottom instead: every window is as wide as the screen, and its size is counted in text rows. A window is either alone on the screen (37 rows on the Tab5) or one of a **top/bottom pair** (17 rows each) -- never a narrow slice side by side.
 
 * **Turning keeps the windows**: their order, the focus, and their shape. A window alone stays alone; two side by side become the two of a top/bottom pair, and turning back makes them a side-by-side pair again.
-* **`Cmd+\`** switches the focused window between alone and half of a pair; `Cmd+[` / `Cmd+]` do the same in one step each.
+* **`Cmd+F`** switches the focused window between alone and half of a pair; `Cmd+R`, `Cmd+-` and `Cmd+=` do the same in one step each.
 * **`Cmd+Up` / `Cmd+Down`** focus the window above / below (`Cmd+Left` / `Cmd+Right` still work, as previous / next); with `Ctrl` they move the focused window up / down.
 * **Touch**: a vertical swipe that starts on a title bar (or the menu bar, or within 3 mm of the screen's edge) moves to the window above or below. A vertical swipe inside a window scrolls it, as in landscape.
 * A window shows only when the whole of it is on the screen; the ribbon jumps to the next window rather than sliding.
@@ -46,7 +46,7 @@ On a screen turned to portrait (the Tab5, `Cmd+O` or the IMU), the ribbon runs f
 ### Window Controls & Macintosh Close Box
 Every non-root window on the ribbon (terminals, canvases, and readers) features a classic Macintosh-style close box (`[X]`) at the left of its title bar:
 * **Tap / Click Close Box**: Immediately closes the window, reclaims its backing store and layout slot, and smoothly reflows the ribbon.
-* **Toggle Maximize (`Super+\` / `Cmd+\`)**: Toggles the active window between full-screen ribbon width and half-screen width.
+* **Maximize (`Cmd+F`)**: Toggles the active window between the full ribbon width and half of it.
 * **Close Window (`Super+W` / `Cmd+W`)**: Closes the active non-root window from keyboard.
 * **A program's window** (a game, chess): the close box and `Cmd+W` ask the program to close it, and it closes it itself -- ending, or saving first. A program that has not read the request after 200 ms -- or read it and still has its window 5 seconds later -- gets an alert over the launcher, with a bomb: "*Ceres* is not responding." A game shutting its sound down takes longer than 200 ms; having read the request, it is answering.
   * **Wait** (the default; `Enter` or `Esc`): the window stays, and the alert comes back after 5 seconds if the program still has not answered. It goes away by itself as soon as the program closes its window.
@@ -54,15 +54,23 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
   * A window no program reads (a canvas opened with `canvas open`, or one whose program has ended) closes at once, as before.
 
 ### Keyboard Shortcuts
-| Hotkey | Serial ANSI Sequence | Function |
-| :--- | :--- | :--- |
-| `Cmd+Right` | `ESC [ 1 ; 9 C` | Pan ribbon right, focusing next window |
-| `Cmd+Left` | `ESC [ 1 ; 9 D` | Pan ribbon left, focusing previous window |
-| `Cmd+\` / `Super+\` | `ESC [ 92 ; 9 u` | Toggle Maximize / Restore width of active window |
-| `Cmd+O` / `Super+O` | `ESC [ 111 ; 9 u` | Toggle display orientation between Portrait and Landscape (Tab5) |
-| `Cmd+W` / `Super+W` | `ESC [ 119 ; 9 u` | Close focused non-root window |
-| `Cmd+1`..`Cmd+9` | `ESC [ 49 ; 9 u` | Jump directly to window index 1..9 |
-| `Cmd+Shift+3` | `Super+Shift+3` | Capture full-screen PBM screenshot to `/sd0/screenshots/` |
+`Cmd` is the keyboard's Super / Windows key. These keys belong to the window manager whatever has the focus; programs keep to the agreed ones (`Cmd+A`, `C`, `V`, `X`, `Z`, `S`, `Q`, `G`). A serial terminal sends them as CSI-u (`ESC [ code ; 9 u`, `10` with Shift, `13` with Ctrl) or, for the arrows, as xterm's `ESC [ 1 ; 9 X`.
+
+| Hotkey | Function |
+| :--- | :--- |
+| `Cmd+Left` / `Cmd+Right` | Focus the window left / right |
+| `Cmd+Up` / `Cmd+Down` | Portrait: focus the window above / below |
+| `Cmd+Ctrl+Left` / `Right` (portrait: `Up` / `Down`) | Move the focused window |
+| `Cmd+R` | The next width (2/5, 1/2, 2/3, full, then round again; portrait: alone, pair) |
+| `Cmd+-` / `Cmd+=` | The next narrower / wider width |
+| `Cmd+F` | Maximize: the full width and back |
+| `Cmd+Enter` | New terminal |
+| `Cmd+O` | Turn the display between portrait and landscape (Tab5) |
+| `Cmd+W` | Close the focused non-root window |
+| `Cmd+1`..`Cmd+9` | Jump to window 1..9 |
+| `Cmd+Shift+3` | Screenshot (PBM) to `/sd0/screenshots/` |
+
+Taken by the window manager for stacked windows and full screen, which are being built (phase 76.4a) and do nothing yet: `Cmd+[` / `Cmd+]`, `Cmd+Up` / `Cmd+Down` across a landscape screen, `Cmd+Ctrl+Up` / `Down` there, `Cmd+Shift+R`, `Cmd+Shift+-` / `Cmd+Shift+=`, and `Cmd+Shift+F`.
 
 ### Touch Gestures (GT911 / ST7121 Capacitive Touch)
 * **Tap Window**: Tapping anywhere inside a window pane transfers focus to it.

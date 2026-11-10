@@ -89,6 +89,35 @@ def _portrait(session: QemuSession) -> bool:
     return ok
 
 
+def _wm_keys(session: QemuSession) -> bool:
+    """The window manager's width keys (kernel/wmkeys.c) give the same widths
+    through a view's keys (`key`) and over the serial line (CSI-u through the
+    line editor); Cmd+\\ no longer is one. 800 px: 38, 48, 64, 98 columns."""
+    steps: list[tuple[str, bool, str]] = []
+
+    def width() -> int:
+        _, wins = _ribbon(session)
+        focused = [w for w in wins if w[5]]
+        return focused[0][1] if focused else -1
+
+    session.send_and_expect("key cmd-f", r"lsh> ", timeout=5.0)
+    if width() != 98:
+        session.send_and_expect("key cmd-f", r"lsh> ", timeout=5.0)
+    seq = [
+        ("key cmd-f", 48), ("key cmd-=", 64), ("key cmd--", 48), ("key cmd-r", 64), ("key cmd-r", 98),
+        ("key cmd-r", 38), ("\x1b[114;9u", 48), ("\x1b[61;9u", 64), ("\x1b[45;9u", 48),
+        ("\x1b[102;9u", 98), ("\x1b[102;9u", 48), ("\x1b[92;9u", 48),
+    ]
+    for how, want in seq:
+        session.send_and_expect(how, r"lsh> ", timeout=5.0)
+        got = width()
+        steps.append((f"{how!r} -> {want} columns", got == want, str(got)))
+    ok = all(st[1] for st in steps)
+    for what, good, got in steps:
+        print(f"    [{'PASS' if good else 'FAIL'}] {what}" + ("" if good else f": got {got}"))
+    return ok
+
+
 def run_tests() -> int:
     elf_path = REPO_ROOT / "build" / "rv32" / "lugalos.elf"
     img_path = REPO_ROOT / "build" / "rv32" / "lugalos_sd.img"
@@ -198,6 +227,9 @@ def run_tests() -> int:
         print("  Testing the portrait ribbon (ramscreen turn)...")
         portrait_ok = _portrait(session)
         all_passed = all_passed and portrait_ok
+
+        print("  Testing the window manager's width keys (key and serial CSI-u)...")
+        all_passed = _wm_keys(session) and all_passed
 
     finally:
         session.close()

@@ -1,6 +1,7 @@
 #include "kernel/orient.h"
 #include "kernel/time.h"
 #include "kernel/console.h"
+#include "kernel/wmkeys.h"
 #include "drivers/view.h"
 #include "kernel/keyseq.h"
 #include "kernel/screenshot.h"
@@ -548,31 +549,13 @@ bool console_ribbon_down(void) {
     return lcdterm_ribbon_down();
 }
 
-/* The system's Cmd shortcuts, whatever has the focus: Cmd-1..9 a window,
- * Cmd-W close, Cmd-\\ maximise, Cmd-[ / ] move the window, Cmd-Left / Right
- * the focus (and Cmd-Up / Down down a portrait screen), Cmd-Shift-3 a
- * screenshot. True when k was one. */
+/* The window manager's Cmd keys (kernel/wmkeys.h), whatever has the
+ * focus. True when k was one. */
 static bool system_shortcut(key_event_t k) {
-    if (!(k.mods & KMOD_SUPER)) return false;
-    if ((k.mods & KMOD_SHIFT) && k.key == '3') { console_hotkey(CONSOLE_HOTKEY_SCREENSHOT); return true; }
-    if (k.key >= '1' && k.key <= '9') { console_hotkey(CONSOLE_HOTKEY_JUMP((unsigned)(k.key - '0'))); return true; }
-    switch (k.key) {
-    case 'w': case 'W': console_hotkey(CONSOLE_HOTKEY_CLOSE); return true;
-    case '\\':         console_hotkey(CONSOLE_HOTKEY_TOGGLE_MAX); return true;
-    case '[':           console_hotkey(CONSOLE_HOTKEY_LEFT); return true;
-    case ']':           console_hotkey(CONSOLE_HOTKEY_RIGHT); return true;
-    case KEY_LEFT:      console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT); return true;
-    case KEY_RIGHT:     console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT); return true;
-    case KEY_UP:
-    case KEY_DOWN:
-        if (!console_ribbon_down()) return false;
-        if (k.mods & KMOD_CTRL)
-            console_hotkey(k.key == KEY_UP ? CONSOLE_HOTKEY_MOVE_LEFT : CONSOLE_HOTKEY_MOVE_RIGHT);
-        else
-            console_hotkey(k.key == KEY_UP ? CONSOLE_HOTKEY_FOCUS_LEFT : CONSOLE_HOTKEY_FOCUS_RIGHT);
-        return true;
-    default:            return false;
-    }
+    unsigned hk = wm_hotkey(k.key, k.mods);
+    if (hk == CONSOLE_HOTKEY_NONE) return false;
+    console_hotkey(hk);
+    return true;
 }
 
 bool console_touch_captures(unsigned x, unsigned y) {
@@ -1312,6 +1295,12 @@ static void run_hotkey(void) {
     for (int iter = 0; iter < 4; iter++) {
         unsigned hk = __atomic_exchange_n(&g_hotkey, 0u, __ATOMIC_ACQ_REL);
         if (!hk) break;
+        if (console_ribbon_down()) {             /* down the screen, Up/Down are the ribbon's steps */
+            if (hk == CONSOLE_HOTKEY_FOCUS_UP) hk = CONSOLE_HOTKEY_FOCUS_LEFT;
+            else if (hk == CONSOLE_HOTKEY_FOCUS_DOWN) hk = CONSOLE_HOTKEY_FOCUS_RIGHT;
+            else if (hk == CONSOLE_HOTKEY_MOVE_UP) hk = CONSOLE_HOTKEY_MOVE_LEFT;
+            else if (hk == CONSOLE_HOTKEY_MOVE_DOWN) hk = CONSOLE_HOTKEY_MOVE_RIGHT;
+        }
         if (hk == CONSOLE_HOTKEY_SCREENSHOT) {
             char path[48];
             (void)screenshot_save(NULL, path, sizeof(path));
@@ -1526,9 +1515,16 @@ static void run_hotkey(void) {
 #endif
             continue;
         }
-        uint8_t req[2] = { 'w', (uint8_t)(hk == CONSOLE_HOTKEY_RIGHT ? 1 : -1) }, reply[SCREEN_REPLY_LEN];
-        (void)console_canvas(req, 2, reply);
-        console_sync_readers();
+        if (hk == CONSOLE_HOTKEY_WIDTH_DOWN || hk == CONSOLE_HOTKEY_WIDTH_UP || hk == CONSOLE_HOTKEY_WIDTH_NEXT) {
+            /* 'w': -1 smaller, 1 larger, 2 the next preset round */
+            int8_t dir = hk == CONSOLE_HOTKEY_WIDTH_DOWN ? -1 : hk == CONSOLE_HOTKEY_WIDTH_UP ? 1 : 2;
+            uint8_t req[2] = { 'w', (uint8_t)dir }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 2, reply);
+            console_sync_readers();
+            continue;
+        }
+        /* Any other code is a key whose action is not built: it is still the
+         * window manager's, so it does nothing rather than reach a program. */
     }
     run_release();
 }

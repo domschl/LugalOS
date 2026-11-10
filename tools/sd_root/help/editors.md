@@ -50,7 +50,7 @@ The editor dynamically allocates its text buffer from the physical page heap on 
 `Ctrl+K` / `Ctrl+Y` and the Cmd keys below use the one system clipboard, shared with the line editor, Lisp, text fields and `/dev/clipboard`.
 
 #### The System's Cmd Keys
-`e` takes the shortcuts every LugalOS text field takes, beside its Emacs keys (`Cmd` is the keyboard's Super / Windows key, or the on-screen keyboard's Cmd):
+`e` takes the shortcuts every LugalOS text field takes, beside its Emacs keys (`Cmd` is the keyboard's Super / Windows key, or the on-screen keyboard's Cmd). The other Cmd keys are the window manager's ([ribbon](ribbon.md#keyboard-shortcuts)): search, replace and opening a file are the Emacs keys below.
 
 | Keybinding | Function |
 | :--- | :--- |
@@ -59,10 +59,8 @@ The editor dynamically allocates its text buffer from the physical page heap on 
 | `Cmd+X` | Cut the selection |
 | `Cmd+V` | Paste |
 | `Cmd+Z` | Undo |
-| `Cmd+F` / `Cmd+G` / `Shift+Cmd+G` | Find; find next; find previous |
-| `Cmd+R` or `Alt+Cmd+F` | Replace |
+| `Cmd+G` / `Shift+Cmd+G` | Find next; find previous (after a search) |
 | `Cmd+S` / `Shift+Cmd+S` | Save; save as |
-| `Cmd+O` | Open a file |
 | `Cmd+L` | Go to line |
 | `Cmd+E` | Evaluate (Lisp) |
 | `Cmd+Q` | Quit (asks if there are unsaved changes) |
@@ -72,13 +70,17 @@ The editor dynamically allocates its text buffer from the physical page heap on 
 | :--- | :--- |
 | `Ctrl+X Ctrl+S` | Save current buffer to disk |
 | `Ctrl+X Ctrl+W` | Write buffer to a new filename (Save As) |
+| `Ctrl+X Ctrl+F` | Open a file |
 | `Ctrl+X Ctrl+C` | Exit editor (prompts if unsaved changes exist) |
 | `Ctrl+G` | Cancel current command or search prompt |
 
 #### Search
 | Keybinding | Function |
 | :--- | :--- |
-| `Ctrl+S` | Incremental forward search (enter search string in status bar) |
+| `Ctrl+S` | Incremental forward search (enter search string in status bar); again for the next match |
+| `Ctrl+R` | Incremental backward search |
+| `Alt+%` | Replace |
+| `Alt+G` | Go to line |
 
 ---
 
