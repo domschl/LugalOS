@@ -168,7 +168,7 @@ LCDTERM_UTEXT static bool cstr_eq(const char *a, const char *b) {
 }
 
 LCDTERM_UTEXT static void shadow_clear(uint16_t *p, uint32_t n) {
-    for (uint32_t i = 0; i < n; i++) p[i] = 0;
+    for (uint32_t i = 0; i < n; i++) p[i] = ' ';          /* blank cells, as vtterm's own clears */
 }
 
 LCDTERM_UTEXT static int screen_find_term(const screen_t *scr, uint8_t vterm_id) {
@@ -1837,7 +1837,7 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
     uint32_t term_cells = (uint32_t)cap_cols * cap_rows;
     for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {
         uint16_t *t_shadow = scr->shadow + t * term_cells;
-        for (uint32_t j = 0; j < term_cells; j++) t_shadow[j] = 0;
+        shadow_clear(t_shadow, term_cells);
         fbtext_t t_text;
         fbtext_init(&t_text, (uint8_t *)fb + SCREEN_TEXT_Y * stride + SCREEN_TEXT_X / 8, stride,
                     SCREEN_TEXT_COLS(w), SCREEN_TEXT_ROWS(h));
@@ -1867,7 +1867,10 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
  * one of a top/bottom pair, and back. */
 void screen_reorient(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h) {
     uint8_t alone = 0;                               /* bit i: window i had the screen to itself */
+    bool was_y = axis_y(scr);
     uint8_t full = ribbon_size_full(&scr->ribbon);
+    for (uint8_t i = 0; i < scr->ribbon.count && !was_y; i++)
+        scr->ribbon.wins[i].x_size = scr->ribbon.wins[i].size;    /* a stack's width, for the turn back */
     for (uint8_t i = 0; i < scr->ribbon.count; i++)
         if (scr->ribbon.wins[i].size >= full && ribbon_col_end(&scr->ribbon, i) - ribbon_col_first(&scr->ribbon, i) == 1)
             alone |= (uint8_t)(1u << i);   /* alone on the screen; a stack's windows were not */
@@ -1879,8 +1882,14 @@ void screen_reorient(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
     screen_axis_from_shape(scr);
     full = ribbon_size_full(&scr->ribbon);
     uint8_t half = ribbon_size_half(&scr->ribbon);
-    for (uint8_t i = 0; i < scr->ribbon.count; i++)
-        scr->ribbon.wins[i].size = (alone & (1u << i)) ? full : half;
+    for (uint8_t i = 0; i < scr->ribbon.count; i++) {
+        ribbon_win_t *w = &scr->ribbon.wins[i];
+        w->size = (alone & (1u << i)) ? full : half;
+        /* Back across: a stack comes back as wide as it was (its windows
+         * were a pair down the screen, which says nothing of its width). */
+        if (!axis_y(scr) && was_y && w->x_size && ribbon_col_end(&scr->ribbon, i) - ribbon_col_first(&scr->ribbon, i) > 1)
+            w->size = w->x_size;
+    }
 
     /* Through vtterm_resize(), hidden terminals too: it keeps every grid
      * inside its shadow and the scroll region on the new screen. */

@@ -287,7 +287,8 @@ bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
 #define CONSOLE_HOTKEY_MOVE_UP      34u /* Cmd+Ctrl+Up */
 #define CONSOLE_HOTKEY_MOVE_DOWN    35u /* Cmd+Ctrl+Down */
 #define CONSOLE_HOTKEY_FULLSCREEN   36u /* Cmd+Shift+F : full screen on / off */
-#define CONSOLE_HOTKEY_REVEAL       37u /* full screen: the menu and title bars, from the top edge */
+#define CONSOLE_HOTKEY_REVEAL       37u /* full screen: the menu and title bars (the pointer at the top edge) */
+#define CONSOLE_HOTKEY_FS_LEAVE     38u /* full screen left (a swipe down from the top edge) */
 void console_hotkey(unsigned code);
 /* Whether the screen's ribbon runs down it now (portrait): then Cmd+Up /
  * Down are the previous and next window, and with Ctrl they move it. */

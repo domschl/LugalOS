@@ -127,7 +127,7 @@ typedef struct {
     uint8_t  flags;      /* RIBBON_FLAG_* */
     int16_t  owner_pid;  /* owning process PID, or -1 if unowned/kernel */
     uint8_t  share;      /* in a stack: RIBBON_SHARE_* */
-    uint8_t  reserved;
+    uint8_t  x_size;     /* down a portrait screen: its column's width across, for the turn back */
     int32_t  m0;         /* the frame's first pixel along the major axis, in ribbon coordinates */
     int32_t  m1;         /* ... and its last (the 2 px shadow follows) */
     char     title[RIBBON_TITLE_MAX];  /* window title */

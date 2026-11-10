@@ -199,6 +199,11 @@ LCDTERM_UTEXT void vtterm_resize(vtterm_t *vt, const fbtext_t *text) {
         region_scroll(vt, 0, vt->text.rows - 1u, n, true);
         vt->row = (uint16_t)(vt->row - n);
     }
+    /* Taller: the rows it gains are blank. The grid never wrote or scrolled
+     * past its rows, so they held what was there before -- nothing, which
+     * drew as '?', for a terminal never that tall (one gone full screen). */
+    if (vt->shadow && rows > vt->text.rows)
+        shadow_blank(vt, (unsigned)vt->text.rows * vt->shadow_cols, (rows - vt->text.rows) * vt->shadow_cols);
     vt->text.fb = text->fb;
     vt->text.stride = text->stride;
     vt->text.cols = (uint16_t)nc;

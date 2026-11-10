@@ -160,7 +160,9 @@ def _stacks(session: QemuSession) -> bool:
     check("portrait: no stacks, window by window", not stp and len(port) == len(wins), (port, stp))
     session.send_and_expect("ramscreen turn", r"ramscreen: 800 x 480", timeout=5.0)
     back, stb = listing()
-    check("landscape again: the stack is back", len(stb) == 2 and [w[0] for w in back] == [w[0] for w in wins], (back, stb))
+    check("landscape again: the stack is back, as wide as it was",
+          len(stb) == 2 and [w[0] for w in back] == [w[0] for w in wins] and [w[1] for w in back] == [w[1] for w in wins],
+          (back, wins, stb))
     session.send_and_expect("key cmd-]", r"lsh> ", timeout=5.0)
     out, sto = listing()
     check("Cmd+]: out of the stack, a column of its own on the right",

@@ -170,13 +170,13 @@ static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
  * fling, a tap taps, a long press opens the context menu (a mouse's right
  * click) and starts a held key's repeat. */
 static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
-    /* Over a full-screen window, a stroke down from the top edge reveals
-     * the menu bar and the window's title bar (the way out by touch). */
+    /* Over a full-screen window, a stroke down from the top edge leaves
+     * full screen (the way out by touch). */
     if (g_t.top_edge) {
         int dy = g_t.gs.y - g_t.gs.y0;
         if (kind == GESTURE_SWIPE_DOWN || (kind == GESTURE_DRAG_END && dy >= gesture_mm_px(8u, CONFIG_PANEL_DPI))) {
             g_t.swipes++;
-            console_hotkey(CONSOLE_HOTKEY_REVEAL);
+            console_hotkey(CONSOLE_HOTKEY_FS_LEAVE);
             return;
         }
         if (kind == GESTURE_DRAG || kind == GESTURE_DRAG_END || kind == GESTURE_SWIPE_UP) return;
@@ -564,7 +564,7 @@ static bool touch_inject(const char *args) {
         else if (strcmp(p, "right") == 0) console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT);
         else if (strcmp(p, "up") == 0) console_touch_scroll(-200, 150);
         else if (strcmp(p, "down") == 0) console_touch_scroll(200, 150);
-        else if (strcmp(p, "top") == 0) console_hotkey(CONSOLE_HOTKEY_REVEAL);   /* down from the top edge, full screen */
+        else if (strcmp(p, "top") == 0) console_hotkey(CONSOLE_HOTKEY_FS_LEAVE);  /* down from the top edge: out of full screen */
         else { cprintf("usage: touch swipe left|right|up|down|top\n"); return true; }
         cprintf("touch: swipe %s\n", p);
         return true;

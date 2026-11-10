@@ -47,8 +47,8 @@ Across a landscape screen the ribbon is a row of **columns**, and a column holds
 
 The ways out:
 * **Keyboard**: `Cmd+Shift+F` again.
+* **Touch**: a swipe down from the top edge leaves full screen.
 * **Mouse**: point at the screen's top edge. The menu bar and the window's title bar come over it (for 4 seconds, longer while the pointer stays on them); a click on the title bar leaves full screen, its close box closes the window.
-* **Touch**: a swipe down from the top edge shows the same bars; a tap on the title bar leaves full screen.
 * Going full screen shows a hint for 2.5 seconds naming the way out for the board's input: the swipe where there is touch, the pointer where there is a mouse, the key otherwise.
 
 `Cmd+F` (maximize) is different: the column at the full width, its title bar and the menu bar kept.

@@ -3,9 +3,9 @@
 The launcher and the root terminal make a column of two (Cmd+[), the focus
 moves within it (Cmd+Up/Down), a height preset changes the rows
 (Cmd+Shift+R), Cmd+] takes the launcher out again; then the launcher goes
-full screen (Cmd+Shift+F) and is left again: by the mouse at the top edge and
-a click on the revealed title bar where the board has a pointer, by `ts swipe
-top` and a tap where it has touch, else by the key. Every step is read back
+full screen (Cmd+Shift+F) and is left again by every way the board has: a
+swipe down from the top edge (`ts swipe top`) where it has touch, the pointer
+at the top edge and a click on the revealed title bar, and the key. Every step is read back
 from `ribbon list`.
 
 A suite passes `console(line)` (one shell line's output), as for
@@ -92,11 +92,7 @@ def check(console: Callable[[str], str]) -> tuple[bool, str]:
             console(f"ms click {w // 2 + 40} {title_y}")  # the pointer rests on the bars meanwhile
             console(f"ms move {w // 2} 200")
         elif way == "touch":
-            console("ts swipe top")
-            head, _, _ = listing()
-            step("a swipe down from the top reveals the bars", "bars revealed" in head, head)
-            console("ts swipe top")                      # again: a slow console takes the bars' time
-            console(f"ts tap {w // 2 + 40} {title_y}")
+            console("ts swipe top")                      # a swipe down from the top edge
         else:
             console("key cmd-shift-f")
         head, wins, _ = listing()

@@ -1306,7 +1306,7 @@ static bool fs_overlay(uint8_t mode, uint8_t *reply) {
          * the mouse's where there is one; the key always works. */
         uint32_t in = sys_input_mode();
         const char *t = (in & WIN_INPUT_TOUCH) ? "Swipe down from the top to leave full screen"
-                      : (in & WIN_INPUT_POINTER) ? "Cmd+Shift+F or point at the top to leave"
+                      : (in & WIN_INPUT_POINTER) ? "Cmd+Shift+F, or click the bar at the top"
                       : "Cmd+Shift+F leaves full screen";
         for (; *t && n < sizeof req - 1u; t++) req[n++] = (uint8_t)*t;
         req[n++] = 0;
@@ -1575,6 +1575,11 @@ static void run_hotkey(void) {
             uint8_t req[1] = { 'f' }, reply[SCREEN_REPLY_LEN];
             (void)console_canvas(req, 1, reply);
             continue;                                    /* fs_check(), below, tells the programs */
+        }
+        if (hk == CONSOLE_HOTKEY_FS_LEAVE) {
+            uint8_t req[2] = { 'f', 0 }, reply[SCREEN_REPLY_LEN];
+            if (lcdterm_fullscreen()) (void)console_canvas(req, 2, reply);
+            continue;
         }
         if (hk == CONSOLE_HOTKEY_REVEAL) {
             uint8_t reply[SCREEN_REPLY_LEN];
