@@ -47,6 +47,7 @@ sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import longnames  # noqa: E402
 import hello_ugui  # noqa: E402
+import launcher_faces  # noqa: E402
 import settings_app  # noqa: E402
 import stacks_fullscreen  # noqa: E402
 import titlebar_menu  # noqa: E402
@@ -420,6 +421,16 @@ def test_titlebar_menu(ser: serial.Serial) -> tuple[str, bool, str]:
         return (name, False, f"{type(e).__name__}: {e}")
 
 
+def test_launcher_faces(ser: serial.Serial) -> tuple[str, bool, str]:
+    """77.2: the launcher's faces by the mouse. See launcher_faces.py."""
+    name = "The launcher's Shortcuts and Files faces by touch and mouse (77.2)"
+    try:
+        ok, detail = launcher_faces.check(_io(ser)[1])
+        return (name, ok, detail)
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+
+
 def test_settings_app(ser: serial.Serial) -> tuple[str, bool, str]:
     """77.1: the paper warmth's colours read back from the display
     controller, and the Settings app by keys. See settings_app.py."""
@@ -610,6 +621,7 @@ def main() -> int:
             ("test_stacks_fullscreen", lambda: test_stacks_fullscreen(ser)),
             ("test_titlebar_menu", lambda: test_titlebar_menu(ser)),
             ("test_settings_app", lambda: test_settings_app(ser)),
+            ("test_launcher_faces", lambda: test_launcher_faces(ser)),
             ("test_ribbon_workstation_composition", lambda: test_ribbon_workstation_composition(ser)),
             ("test_stress", lambda: test_stress(ser)),
             ("test_pmic_cold_reboot", lambda: test_pmic_cold_reboot(ser)),

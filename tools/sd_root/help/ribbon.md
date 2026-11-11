@@ -102,6 +102,7 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 | `Cmd+1`..`Cmd+9` | Jump to window 1..9 |
 | `Cmd+Shift+3` | Screenshot (PBM) to `/sd0/screenshots/` |
 | `Cmd+,` | The Settings app, at the section it was left at |
+| `Cmd+Space` | The launcher, from anywhere |
 
 ### Touch Gestures (GT911 / ST7121 Capacitive Touch)
 * **Tap Window**: Tapping anywhere inside a window pane transfers focus to it.
@@ -119,16 +120,12 @@ A USB mouse works beside the keyboard, on its own or behind a hub, and beside to
 * **Right Click**: The context menu, as a long press.
 * **Wheel**: Scrolls the window under the pointer, even when another window has the focus (the reader by three lines a notch). A sideways wheel moves along the ribbon a window at a time. Scrolling is natural by default, as on a Macintosh: the content moves the way the wheel turns; `settings set input.natural_scroll off` turns it round.
 * **Games**: A game that takes the pointer (moonbase) gets the mouse's moves, buttons and wheel itself while it has the focus.
-* **Scrollbars**: the launcher's document scrollbar can be pressed or dragged, by the mouse or a finger: the list goes there.
+* **Scrollbars**: the launcher's file list scrollbar can be pressed or dragged, by the mouse or a finger: the list goes there.
 
 ### Touch UX Mode & Launcher (`RIBBON_WIN_LAUNCHER`)
 On touch-enabled terminal boards (such as the M5Stack Tab5 and Waveshare ESP32-P4-LCD-7B), LugalOS supports a **Touch UX Mode** powered by the classic Macintosh micro-toolkit (`ugui`):
 * **HiDPI Window Chrome (`CHROME_SCALE`)**: On high-DPI displays (`FONT_CELL_W == 16` on Tab5), the menu bar, window title bars, racing stripes, close boxes, and status icons automatically scale by $2\times$ (`CHROME_SCALE = 2`) for ergonomic finger touch targets.
-* **Touch Launcher (`launcher [open|close|status]`)**: A dedicated Ribbon window providing touch-friendly tabs:
-  * **Apps**: Icon cards to launch **Reader**, **Moonbase Lambda**, and **New Shell**.
-  * **Library**: Scrollable list of local documentation and handbooks (`/sd0/help/*.md`, `/sd0/pub/help/*.gmi`, `/sd0/docs/*.md`) that open directly in the Reader window.
-  * **Settings**: Touch steppers and toggles for audio **Volume** (`0-100%`), panel **Brightness** (`10-100%`), display **Orientation** (`Landscape` / `Portrait`), and IMU **Auto-Rotate** (`ON` / `OFF`).
-  * **More...**: opens the Settings app.
+* **The launcher (`launcher [open|close|status]`, `Cmd+Space`)**: the home window, with two faces -- **Shortcuts**, an icon grid of applications, documents and folders, and **Files**, the volumes and their folders with a path bar. A long press or a right click gives an item's actions. See [The Launcher](launcher.md).
 * **Settings app (`settings open`)**: a window of its own with the sections **Display** (backlight, paper warmth, text size, orientation on the Tab5), **Sound** (volume, click on each tap, a test sound), **Input** (what is attached, pointer speed, natural scrolling, the on-screen keyboard's key preview), **Power** (charge, charger, the pack's voltage, current and power), **Network** (interface, link, address), **Storage** (each volume's free space) and **About** (board, chip, version, build). Changes apply at once and are kept across a reboot.
   * **Text size**: Small, Medium or Large for the reader's text (13, 16 or 24 px on the LCD-7B, 24, 32 or 40 px on the Tab5); an open document is laid out again at about the same place. Code keeps its size. The RP2350-LCD-7 has one size.
   * **Paper warmth**: one slider from white paper (0) through a light warm paper (5) to a deep, aged sepia (10), as e-readers offer for reading in the evening. With **Warm ink with the paper** on, the text warms too, from black to a dark brown, which is softer on the eye than black on cream; turn it off for the most contrast. Every window follows, the terminal's text and the views alike.
@@ -138,8 +135,8 @@ On touch-enabled terminal boards (such as the M5Stack Tab5 and Waveshare ESP32-P
 * **Touch targets**: every control is touched over at least 7 mm square (47 px on the LCD-7B, 81 px on the Tab5), centred on it, even where it is drawn smaller; where two such areas meet, the control drawn nearer the finger has it. `launcher status` lists each control's touch area. What is drawn under the finger wins: a link just below the reader's action bar stays the link's. On the on-screen keyboard, a tap between keys or in its margin goes to the nearest key.
 * **Key click**: `settings set ui.click_sound on` makes each on-screen keyboard key click (ESP32-P4 boards; off by default). A game playing sound keeps it: the keys are silent meanwhile. `audiotest click` tries it.
 * **Dimmed controls**: a control that cannot act right now is drawn dimmed (gray, flat) -- the reader's Back with no history and Top at the top, a stepper's - or + at its limit, chess's Back / Fwd at either end of the game. It shows no press feedback, the keyboard focus skips it, and a tap on it does nothing. Toggles name what they will do (the reader's Contents reads Close while the contents are shown) instead of staying inverted: inverted means pressed.
-* **Launcher document list**: dragging a finger over the launcher scrolls the list with it, pixel by pixel; lifting while still moving glides it on a little.
-* **Launcher by keyboard**: Tab / Shift-Tab and the arrows move a dotted focus ring between the launcher's controls; Enter or Space acts as a tap on the focused one would; Up / Down walk the document list (scrolling it), PgUp / PgDn page it, `r` rescans it. The ring appears with the first key and hides again at the next touch.
+* **Launcher list and grid**: dragging a finger over the launcher scrolls its file list (or its shortcuts) with it, pixel by pixel; lifting while still moving glides it on a little.
+* **Launcher by keyboard**: Tab / Shift-Tab and the arrows move a dotted focus ring between the launcher's controls; Enter or Space acts as a tap on the focused one would; Ctrl+Tab switches its faces; in Files, Up / Down walk the list (scrolling it), PgUp / PgDn / Home / End move the focus a page or to an end, a letter jumps to a name ([The Launcher](launcher.md#keys)). The ring appears with the first key and hides again at the next touch.
 * **Reader Touch Sub-Header**: Every Reader window renders a fixed top action bar (`[< Back]`, `[Contents]`, `[Rotate]`, `[Top]`) for keyboard-free navigation.
 * **Automatic Keyboard Hot-Plug Detection**: If no USB keyboard is attached ~1.5 seconds after boot (or when a USB keyboard is unplugged), LugalOS automatically opens and focuses the Touch Launcher window. Plugging a keyboard back in leaves open windows undisturbed.
 

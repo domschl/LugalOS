@@ -2,6 +2,7 @@
 #include "kernel/apps.h"
 #include "kernel/settings.h"
 #include "drivers/settings_view.h"
+#include "drivers/shortcuts.h"
 #include "drivers/icons.h"
 #include "kernel/stress.h"
 #include "kernel/llp_node.h"
@@ -6820,6 +6821,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "settings") == 0 || strncmp(cmd_line, "settings ", 9) == 0) {
         cmd_settings(cmd_line + 8);
+        return;
+    } else if (strcmp(cmd_line, "shortcuts") == 0 || strncmp(cmd_line, "shortcuts ", 10) == 0) {
+        shortcuts_cmd(cmd_line + 9);
         return;
     } else if (strcmp(cmd_line, "icons") == 0 || strncmp(cmd_line, "icons ", 6) == 0) {
         cmd_icons(cmd_line + 5);

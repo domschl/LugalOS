@@ -263,6 +263,7 @@ DOC_MAPPINGS: dict[str, str] = {
     "doc/user/shell.md": "tools/sd_root/help/shell.gmi",
     "doc/user/editors.md": "tools/sd_root/help/editors.gmi",
     "doc/user/ribbon.md": "tools/sd_root/help/ribbon.gmi",
+    "doc/user/launcher.md": "tools/sd_root/help/launcher.gmi",
     "doc/user/chess.md": "tools/sd_root/help/chess.gmi",
     "doc/user/cas.md": "tools/sd_root/help/cas.gmi",
     "doc/user/calculus.md": "tools/sd_root/help/calculus.gmi",

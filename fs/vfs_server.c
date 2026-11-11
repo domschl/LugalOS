@@ -587,6 +587,20 @@ bool vfs_volume_mounted(const char *name) {
     return false;
 }
 
+int vfs_root_at(unsigned i, char *name, unsigned cap, char *label, unsigned label_cap) {
+    unsigned n = 0;
+    for (int k = 0; k < MAX_MOUNTS; k++) {
+        const mount_entry_t *m = &g_mounts[k];
+        if (!m->in_use || m->dying || !m->name[0] || !mount_is_active(m)) continue;
+        if (m->kind != MOUNT_FAT32 && m->kind != MOUNT_REMOTE9P) continue;
+        if (n++ != i) continue;
+        if (name && cap) { strncpy(name, m->name, cap - 1); name[cap - 1] = '\0'; }
+        if (label && label_cap) { strncpy(label, m->label, label_cap - 1); label[label_cap - 1] = '\0'; }
+        return m->kind == MOUNT_REMOTE9P ? 1 : 0;
+    }
+    return -1;
+}
+
 void vfs_volume_probe(const char *name) {
     if (!name) return;
     while (*name == '/') name++;

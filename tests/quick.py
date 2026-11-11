@@ -8,6 +8,8 @@ target, only what the change touches.
     python3 tests/quick.py --run "vtselftest" --run "settings view"
                                                      # commands, their output printed
     python3 tests/quick.py --build settings          # ninja the target first
+    python3 tests/quick.py --run "screenshot /sd0/a.pbm" --keep /tmp/sd.img
+                                                     # keep the image: mcopy -i /tmp/sd.img ::/a.pbm .
 
 Groups are tests/qemu_groups.py's, the same functions tests/runner.py (tier 3)
 runs, so a quick pass and the full pass check the same thing. The target's
@@ -43,6 +45,7 @@ def main() -> int:
     ap.add_argument("--run", action="append", default=[], metavar="CMD",
                     help="a shell command to send, its output printed (repeatable; after the groups)")
     ap.add_argument("--build", action="store_true", help="ninja -C build/<target> first")
+    ap.add_argument("--keep", metavar="IMG", help="save the run's SD image here afterwards (screenshots, files written)")
     ap.add_argument("--list", action="store_true", help="list the groups and exit")
     args = ap.parse_args()
 
@@ -93,6 +96,8 @@ def main() -> int:
                 print(f"### {cmd}\n{out}")
         finally:
             session.close()
+            if args.keep:
+                shutil.copyfile(copy, args.keep)
     if total:
         print(f"quick: {passed} / {total} passed on {args.target} ({time.time() - t0:.0f} s)")
     return 0 if passed == total else 1

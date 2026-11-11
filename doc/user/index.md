@@ -16,10 +16,11 @@ Welcome to the **LugalOS User Manual**. This guide covers interactive usage, dai
 2. **[Text Editors: Full-Screen & Line Editors](editors.md)**
    * Full-screen interactive editor (`e`): Emacs-style keybindings, buffer editing, search, save, and exit.
    * Teletype line editor (`ed`): Standard line-oriented editing for headless or low-bandwidth serial links.
-3. **[Window Ribbon & Terminal System](ribbon.md)**
+3. **[Window Ribbon & Terminal System](ribbon.md)** and **[The Launcher](launcher.md)**
    * The horizontal tiling window ribbon on 7" LCD displays (RP2350-LCD-7 and ESP32-P4-LCD-7B).
    * Touch gestures: window focus, panning, minimap tapping.
    * Keyboard shortcuts (`Cmd+Left/Right`, window splits), graphical canvases, and PBM screenshots.
+   * The launcher's Shortcuts and Files faces: starting applications, browsing volumes, managing shortcuts.
 4. **[LugalOS Chess Computer](chess.md)**
    * Interactive chess engine on RP2350 and display terminals.
    * Dual-core Lazy SMP parallel search, TM1638 keypad/LED controls, game storage, and opening book.

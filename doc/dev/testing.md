@@ -28,7 +28,8 @@ What a change in an area needs at tiers 1 and 2. `tests/quick.py --list` shows t
 | Area (files) | Tier 1: `quick.py` groups | Tier 2: boards, `--only` |
 | :--- | :--- | :--- |
 | Screen, ribbon, vterms (`drivers/screen.c`, `vtterm.c`, `ribbon.c`, `lcdterm.c`, `kernel/vterm.c`) | `screen` | each panel board: `titlebar_menu`, `stacks_fullscreen` |
-| `ugui`, views (`drivers/ugui.c`, `view.c`, `launcher_view.c`, `lispui_view.c`) | `screen`, `settings` | P4: `view_and_mouse`, `touch_launcher`; RP2350: `hello_ugui` |
+| `ugui`, views (`drivers/ugui.c`, `view.c`, `lispui_view.c`) | `screen`, `settings`, `launcher` | P4: `view_and_mouse`, `touch_launcher`; RP2350: `hello_ugui` |
+| The launcher, shortcuts (`drivers/launcher_view.c`, `drivers/shortcuts.c`, `fs/vfs_server.c`'s `vfs_root_at()`) | `launcher` | `launcher` on the P4s, `launcher_faces` on the RP2350 and the VF2 |
 | Settings, paper warmth, the Settings app (`kernel/settings.c`, `drivers/paper.c`, `settings_view.c`) | `settings` | `settings` on the P4s, `settings_app` on the RP2350 and the VF2 |
 | Reader, text sizes, Markdown (`drivers/reader_view.c`, `font_serif_faces.c`, `fs/markdown.c`) | `reader` | P4: `reader` |
 | Keys, USB input (`kernel/keyseq.c`, `drivers/usb*.c`, `kernel/console.c` input) | `input`, `screen` | the board whose input changed |

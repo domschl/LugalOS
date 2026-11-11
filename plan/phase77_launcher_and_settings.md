@@ -63,7 +63,13 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 - `Cmd+Space` global hotkey.
 - **Narrow windows** (owner, 2026-11-10, after 76.4b): the launcher's widgets run into each other when its window is made small (a 2/5 column, a third of a stack's height -- the sizes the menu and the handles give now). The redesigned faces lay out for every size the ribbon gives a window, down to `RIBBON_TERM_MIN_COLS` across and `RIBBON_ROWS_MIN` rows down: fewer columns of icons, then a list.
 - **Acceptance:** a scripted keyboard-only session (QEMU with the RAM screen) browses from `/sd0` to a Markdown file, opens it, adds it as a shortcut, removes the shortcut; the same sequence by `ts` on the Tab5 and by `ms` with a mouse; a directory with 500 entries scrolls at frame rate.
-- **Status:** planned; needs 76.1.
+- **Owner decisions (2026-11-11):**
+  - `Ctrl+Tab` / `Ctrl+Shift+Tab` switch the faces, not §1's `Cmd+1/2`: those are the window manager's jumps (Cmd+1..9).
+  - `Shift+Enter` opens the focused item's action sheet in both faces; `m` does too in Shortcuts. In Files the letters are type-ahead (a letter jumps to the next name with it), so §1's `m` cannot be the menu key there.
+  - The quick settings and the application cards left the launcher: the applications are default shortcuts (Settings among them), and the menu bar's gear opens Settings.
+  - The shortcuts file is lowercase, `/sd0/system/shortcuts` (else `/flash0/system/shortcuts`, else built-in defaults), per the card-naming rule.
+- **Done (2026-11-11), tiers 0-2:** the two faces (`drivers/launcher_view.c`), the shortcuts list and file (`drivers/shortcuts.c`, `shortcuts` in the shell), the roots from `vfs_root_at()`, `Cmd+Space`. Files: dirs first, natural order, Markdown by its first heading, up to 512 entries; type-ahead, PgUp/PgDn/Home/End move the focus. Narrow windows: fewer grid columns, a list below two. QEMU `quick.py launcher`: keys-only Files to a document, a shortcut added and removed; rename; 500 entries listed and paged; the mouse. Boards (`launcher_faces.py`, pointer only): Tab5, 7B and RP2350-LCD-7 24/24 steps by touch and mouse, VF2 12/12 by mouse. The 500-entry list's frame rate is 77.3's to measure.
+- **Status:** implemented; closes on the tier 3 run.
 
 ### 77.3 — Redraw only what changed in `ugui` (from 76.5)
 - **Why here** (owner, 2026-11-10): the settings app and the Files face are the first views with many controls and a long list; 76.5 had no use case to measure on.

@@ -31,6 +31,7 @@ static const wm_key_t k_wm_keys[] = {
     { '[',       0,            CONSOLE_HOTKEY_JOIN_LEFT },
     { ']',       0,            CONSOLE_HOTKEY_JOIN_RIGHT },
     { ',',       0,            CONSOLE_HOTKEY_SETTINGS },
+    { ' ',       0,            CONSOLE_HOTKEY_LAUNCHER },
     { KEY_LEFT,  0,            CONSOLE_HOTKEY_FOCUS_LEFT },
     { KEY_RIGHT, 0,            CONSOLE_HOTKEY_FOCUS_RIGHT },
     { KEY_UP,    0,            CONSOLE_HOTKEY_FOCUS_UP },

@@ -1,13 +1,20 @@
-/* drivers/launcher_view.c — Classic Mac Touch Launcher Window
+/* drivers/launcher_view.c -- the launcher (RIBBON_WIN_LAUNCHER), the home
+ * view, drawn with ugui. Two faces, a tab bar between them (launcher.face):
  *
- * Implements the touch-first Launcher ribbon window (RIBBON_WIN_LAUNCHER)
- * using the stateless Classic-Mac micro-toolkit (ugui):
- * - Application cards: Reader, Moonbase, Terminal
- * - Document Library browser: scans /sd0/pub, /sd0/help, /flash0/help
- * - Quick Settings: Volume stepper, Brightness stepper, Orientation selector,
- *   and More... for the Settings app
- * - Freestanding C, zero heap allocations, zero FPU in M-mode.
- */
+ * - Shortcuts: an icon grid -- a list in a narrow window -- of the shortcuts
+ *   (drivers/shortcuts.h): applications, documents, folders. A tap opens
+ *   one; a long press, a right click, Shift+Enter or `m` gives Open, Rename,
+ *   Remove, Move Left / Right.
+ * - Files: the mounted volumes, and the directories under them: a path bar
+ *   of tappable segments over a list (dirs first, then by name; a Markdown
+ *   file by its first heading). A tap opens by association; the sheet adds
+ *   Open in Editor / Reader, Add to Shortcuts, Info and Delete (confirmed);
+ *   Shift+Enter opens it. Backspace, Esc, or Left on a row goes up; a letter
+ *   jumps to the next entry with it.
+ *
+ * Ctrl+Tab switches the faces (Cmd+1..9 are the window manager's). Also the
+ * alerts over it (launcher_ask(): the not-responding alert's), and the
+ * control gallery (`launcher gallery`). */
 
 #include "kernel/keyseq.h"
 #include "drivers/view.h"
@@ -67,6 +74,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #include "drivers/ugui.h"
 #include "drivers/reader_view.h"
 #include "drivers/settings_view.h"
+#include "drivers/shortcuts.h"
 #include "drivers/ribbon.h"
 #include "drivers/screen.h"
 #include "drivers/lcdterm.h"
@@ -93,20 +101,17 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #include "drivers/lcd7.h"
 #endif
 
-#define LAUNCHER_MAX_DOCS       128     /* in BULK_BSS: ~20 KB, PSRAM on the panel boards */
-#define LAUNCHER_PATH_MAX       96      /* the help folders' paths; a longer one is left out */
+#define LAUNCHER_FILES_MAX      512     /* a directory's entries shown (more: the first ones, and said so) */
+#define LAUNCHER_NAME_MAX       96      /* a long name, as far as a row shows it */
+#define LAUNCHER_TITLES_MAX     64      /* Markdown files a listing reads a heading from */
 
-#define LAUNCHER_ID_APP_READER   1
-#define LAUNCHER_ID_APP_CHESS    2
-#define LAUNCHER_ID_APP_MOONBASE 3
-#define LAUNCHER_ID_APP_TERMINAL 4
-#define LAUNCHER_ID_VOL_STEP     10
-#define LAUNCHER_ID_BL_STEP      20
-#define LAUNCHER_ID_ORIENT_SEG   30
-#define LAUNCHER_ID_DOC_REFRESH  40
-#define LAUNCHER_ID_SCROLLBAR    41     /* the document list's: press or drag to scroll there */
-#define LAUNCHER_ID_SETTINGS     42     /* the Settings app (drivers/settings_view.h) */
-#define LAUNCHER_ID_DOC_BASE     100
+#define LAUNCHER_ID_TAB          1      /* + face */
+#define LAUNCHER_ID_SHORTCUT     10     /* index: the shortcut */
+#define LAUNCHER_ID_PATH         20     /* index: the path bar's segment */
+#define LAUNCHER_ID_FILE         30     /* index: the row */
+#define LAUNCHER_ID_SCROLLBAR    41     /* the list's: press or drag to scroll there */
+#define LAUNCHER_ID_RENAME       42     /* the rename dialog's text field */
+#define LAUNCHER_ID_RENAME_BTN   43     /* + 0 Cancel, + 1 Rename */
 /* The control gallery (`launcher gallery`): every ugui control, to try by
  * touch and keys before an app uses it. */
 #define GAL_ID_TAB       500     /* + tab */
@@ -123,14 +128,23 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define GAL_ID_EDIT      560     /* + item: the text field's edit menu */
 #define GAL_ID_ICONS     570     /* the icon grid (index: the icon) */
 #define LAUNCHER_ID_ALERT_OK 540     /* + button */
-#define LAUNCHER_ID_SHEET    550     /* + item: a document's action sheet */
+#define LAUNCHER_ID_SHEET    550     /* + item: an action sheet's */
 #define LAUNCHER_ALERT_MAX   4
+#define LAUNCHER_SHEET_MAX   8
+
+enum { FACE_SHORTCUTS, FACE_FILES };
+enum { ENTRY_FILE, ENTRY_DIR, ENTRY_ROOT };
+/* What an action sheet's item does. */
+enum { ACT_OPEN, ACT_OPEN_OTHER, ACT_RENAME, ACT_REMOVE, ACT_MOVE_LEFT, ACT_MOVE_RIGHT, ACT_ADD_SHORTCUT,
+       ACT_INFO, ACT_DELETE, ACT_CANCEL };
+enum { SHEET_NONE, SHEET_SHORTCUT, SHEET_FILE };
 
 typedef struct {
-    char path[LAUNCHER_PATH_MAX];
-    char label[48];
-    char badge[12];
-} launcher_doc_t;
+    char     name[LAUNCHER_NAME_MAX];  /* its name in the directory; a volume's name for a root */
+    char     title[48];                /* a Markdown file's first "# " heading, a root's label; "" none */
+    uint32_t size;
+    uint8_t  kind;                     /* ENTRY_* */
+} launcher_entry_t;
 
 typedef struct {
     bool           active;
@@ -151,15 +165,37 @@ typedef struct {
     uint8_t        slot_id;
     int            win_w;
     int            win_h;
-    int            scroll_px;      /* the document list's scroll, pixels */
+    int            face;           /* FACE_*: launcher.face */
+    /* The Shortcuts face: its scroll, and its grid's place as last drawn. */
+    int            sc_scroll, sc_content_h;
+    ugui_rect_t    sc_view;
+    /* The Files face: the directory shown ("" the roots), its entries in
+     * order (dirs first, then by name), the list's scroll and geometry. */
+    char           cwd[VFS_PATH_MAX];
+    launcher_entry_t entries[LAUNCHER_FILES_MAX];
+    int            n_entries;
+    bool           truncated;      /* the directory had more than LAUNCHER_FILES_MAX */
+    bool           files_loaded;
+    int            scroll_px;      /* the list's scroll, pixels */
     int            item_h, view_h; /* its row and viewport heights, as last drawn */
+    int            list_y;         /* its viewport's top, as last drawn */
     int            sb_y, sb_h;     /* its scrollbar's track, as last drawn (sb_h 0: none) */
-    int            list_x, list_y, list_w, list_avail;   /* draw_doc_list()'s place, as last drawn */
-    int            doc_count;
-    launcher_doc_t docs[LAUNCHER_MAX_DOCS];
-    int            sheet_doc;      /* a document's action sheet is up: its index + 1 (0: none) */
+    /* An action sheet over either face. */
+    int            sheet;          /* SHEET_* */
+    int            sheet_idx;      /* the shortcut's or the entry's index */
+    int            sheet_n;
+    const char    *sheet_items[LAUNCHER_SHEET_MAX];
+    uint8_t        sheet_act[LAUNCHER_SHEET_MAX];
+    char           sheet_title[LAUNCHER_NAME_MAX];
+    /* Renaming a shortcut: a dialog with a text field. */
+    bool           renaming;
+    int            rename_idx;
+    char           rename_buf[SHORTCUT_LABEL];
+    ugui_text_t    rename_field;
+    int            pending_delete; /* the entry a Delete confirmation is about, -1 none */
+    int            pending_remove; /* the shortcut a Remove confirmation is about, -1 none */
+    char           info[200];      /* the text of the alert up (Info, Remove, Delete): one at a time */
     bool           osk_want;       /* a text field has the focus: the on-screen keyboard asked for */
-    const char    *sheet_items[3]; /* Open, Open in <the other app>, Cancel */
     ugui_ctx_t     ui_ctx;
     uint8_t       *aa_buf;         /* GRAY8: what the panel composites (the front) */
     uint8_t       *aa_back;        /* the one a full draw goes into, then swapped in; NULL: draw in place */
@@ -181,12 +217,14 @@ static char       s_pending_cmd[64] BULK_BSS;           /* guarded by: s_pending
 static spinlock_t s_pending_lock = SPINLOCK_INIT;
 
 /* ASCII case folded: FAT names match in any case, and 8.3 names may come in capitals. */
+static char lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
 static bool same_name(const char *a, const char *b) {
     for (;; a++, b++) {
-        char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
-        char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
-        if (ca != cb) return false;
-        if (!ca) return true;
+        if (lower(*a) != lower(*b)) return false;
+        if (!*a) return true;
     }
 }
 
@@ -197,188 +235,6 @@ static bool str_ends_with(const char *s, const char *suffix) {
     return same_name(s + sl - xl, suffix);
 }
 
-static const char *find_last_char(const char *s, char ch) {
-    const char *last = NULL;
-    for (; *s; s++) {
-        if (*s == ch) last = s;
-    }
-    return last;
-}
-
-/* Whether a and b name the same document: equal up to their extensions,
- * without case (ADMIN.MD and ADMIN.GMI are one document in two forms). */
-static bool same_stem(const char *a, const char *b) {
-    for (;; a++, b++) {
-        char ca = *a == '.' ? '\0' : (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
-        char cb = *b == '.' ? '\0' : (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
-        if (ca != cb) return false;
-        if (!ca) return true;
-    }
-}
-
-/* The listed document with basename's stem, or -1. */
-static int doc_listed(const char *basename) {
-    for (int i = 0; i < s_launcher.doc_count; i++) {
-        const char *p = s_launcher.docs[i].path;
-        const char *slash = find_last_char(p, '/');
-        const char *b = slash ? (slash + 1) : p;
-        if (same_stem(b, basename)) return i;
-    }
-    return -1;
-}
-
-/* A document once: a second form of one already listed (the same name with
- * another extension) only replaces a Gemtext path by the Markdown one, the
- * reader's richer form. */
-static void add_doc_entry(const char *full_path, const char *name, const char *badge) {
-    int dup = doc_listed(name);
-    if (dup >= 0) {
-        launcher_doc_t *d = &s_launcher.docs[dup];
-        if (str_ends_with(d->path, ".gmi") && str_ends_with(name, ".md")) {
-            strncpy(d->path, full_path, sizeof(d->path) - 1);
-            d->path[sizeof(d->path) - 1] = '\0';
-        }
-        return;
-    }
-    if (s_launcher.doc_count >= LAUNCHER_MAX_DOCS) return;
-    launcher_doc_t *d = &s_launcher.docs[s_launcher.doc_count++];
-    strncpy(d->path, full_path, sizeof(d->path) - 1);
-    d->path[sizeof(d->path) - 1] = '\0';
-
-    /* Friendly label: strip extension and capitalize first letter */
-    strncpy(d->label, name, sizeof(d->label) - 1);
-    d->label[sizeof(d->label) - 1] = '\0';
-    for (int i = (int)strlen(d->label) - 1; i >= 0; i--) {
-        if (d->label[i] == '.') {
-            d->label[i] = '\0';
-            break;
-        }
-    }
-    /* An 8.3 name comes in capitals: shown as "Shell", not "SHELL". */
-    bool lower = false;
-    for (int i = 0; d->label[i]; i++)
-        if (d->label[i] >= 'a' && d->label[i] <= 'z') lower = true;
-    if (!lower)
-        for (int i = 1; d->label[i]; i++)
-            if (d->label[i] >= 'A' && d->label[i] <= 'Z') d->label[i] = (char)(d->label[i] + 32);
-    if (d->label[0] >= 'a' && d->label[0] <= 'z') {
-        d->label[0] = (char)(d->label[0] - ('a' - 'A'));
-    }
-    for (int i = 0; d->label[i]; i++) {
-        if (d->label[i] == '_') d->label[i] = ' ';
-    }
-
-    strncpy(d->badge, badge ? badge : "", sizeof(d->badge) - 1);
-    d->badge[sizeof(d->badge) - 1] = '\0';
-}
-
-static void scan_dir_docs(const char *dir_path, const char *badge) {
-    int fd = vfs_open(dir_path, VFS_O_READ);
-    if (fd < 0) return;
-    char name[VFS_NAME_MAX];
-    vfs_stat_t st;
-    for (uint32_t idx = 0; idx < 256 && s_launcher.doc_count < LAUNCHER_MAX_DOCS; idx++) {
-        if (vfs_readdir(fd, idx, name, sizeof(name), &st) < 0) break;
-        if (st.is_dir) continue;
-        if (str_ends_with(name, ".md") || str_ends_with(name, ".gmi")) {
-            char full[LAUNCHER_PATH_MAX];
-            /* A path cut short would open nothing, or another file: left out. */
-            if (strlen(dir_path) + 1u + strlen(name) >= sizeof(full)) continue;
-            ksnprintf(full, sizeof(full), "%s/%s", dir_path, name);
-            add_doc_entry(full, name, badge);
-        }
-    }
-    vfs_close(fd);
-}
-
-static void launcher_scan_docs(void) {
-    s_launcher.doc_count = 0;
-
-    /* Curated primary documentation first so new users see key guides at the top */
-    static const struct {
-        const char *file;
-        const char *title;
-        const char *badge;
-    } k_curated[] = {
-        { "index.md",   "Documentation Index", "Manual" },
-        { "about.md",   "About LugalOS",       "Manual" },
-        { "ribbon.md",  "Ribbon & Touch UX",   "Guide"  },
-        { "reader.md",  "Reader & Typography", "Guide"  },
-        { "shell.md",   "Shell & Commands",    "Ref"    },
-        { "cas.md",     "Computer Algebra",    "Math"   },
-        { "chess.md",   "Chess Engine",        "Game"   },
-        { "sensors.md", "Sensors & Telemetry", "Ref"    },
-    };
-
-    for (unsigned i = 0; i < sizeof(k_curated) / sizeof(k_curated[0]); i++) {
-        char path[96];
-        ksnprintf(path, sizeof(path), "/sd0/help/%s", k_curated[i].file);
-        int fd = vfs_open(path, VFS_O_READ);
-        if (fd < 0) {
-            ksnprintf(path, sizeof(path), "/flash0/help/%s", k_curated[i].file);
-            fd = vfs_open(path, VFS_O_READ);
-        }
-        if (fd >= 0) {
-            vfs_close(fd);
-            if (s_launcher.doc_count < LAUNCHER_MAX_DOCS) {
-                launcher_doc_t *d = &s_launcher.docs[s_launcher.doc_count++];
-                strncpy(d->path, path, sizeof(d->path) - 1);
-                d->path[sizeof(d->path) - 1] = '\0';
-                strncpy(d->label, k_curated[i].title, sizeof(d->label) - 1);
-                d->label[sizeof(d->label) - 1] = '\0';
-                strncpy(d->badge, k_curated[i].badge, sizeof(d->badge) - 1);
-                d->badge[sizeof(d->badge) - 1] = '\0';
-            }
-        }
-    }
-
-    scan_dir_docs("/sd0/docs", "Docs");                  /* the user's own, before the bundled */
-    scan_dir_docs("/sd0/pub", "Pub");
-    scan_dir_docs("/sd0/help", "Help");
-    scan_dir_docs("/flash0/help", "Flash");
-}
-
-/* The quick settings are the settings store's (kernel/settings.h): applied
- * there, kept across reboots. */
-static unsigned get_backlight_percent(void) {
-    return (unsigned)settings_get("display.brightness");
-}
-
-static void set_backlight_percent(int pct) {
-    (void)settings_set("display.brightness", pct);
-}
-
-static int get_volume_percent(void) {
-    return settings_get("audio.volume");
-}
-
-static void set_volume_percent(int pct) {
-    (void)settings_set("audio.volume", pct);
-}
-
-/* The steppers' parts that cannot act (ugui_disable_next(): bit 0 the -,
- * bit 1 the +): at a limit, or both where the board has no such control. */
-static uint8_t volume_limits(void) {
-#if defined(CONFIG_BOARD_ESP32P4)
-    int v = get_volume_percent();
-    return (uint8_t)((v <= 0 ? 1u : 0u) | (v >= 100 ? 2u : 0u));
-#else
-    return 3u;
-#endif
-}
-
-static uint8_t backlight_limits(void) {
-    unsigned b = get_backlight_percent();
-    return (uint8_t)((b <= 10u ? 1u : 0u) | (b >= 100u ? 2u : 0u));
-}
-
-#if defined(CONFIG_BOARD_TAB5)
-static int get_orient_mode(void) {
-    if (orient_is_auto()) return 2;
-    int rot = dsi_lcd_get_orientation();
-    return (rot == 90 || rot == 270) ? 0 : 1;
-}
-#endif
 
 static bool focus_window_by_title(const char *prefix) {
     if (!prefix || !*prefix) return false;
@@ -463,6 +319,8 @@ static void open_doc_in_reader(const char *doc_path) {
 
 void launcher_init(void) {
     memset(&s_launcher, 0, sizeof(s_launcher));
+    s_launcher.pending_delete = -1;
+    s_launcher.pending_remove = -1;
 }
 
 bool launcher_is_active(void) {
@@ -481,75 +339,323 @@ bool launcher_set_target(uint8_t slot_id, int w, int h) {
     return changed;
 }
 
-static void doc_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t row, int i, void *user) {
+/* --- The Files face's model -------------------------------------------------- */
+
+/* path + "/" + name into out; false when it does not fit (a path cut short
+ * would open another file, or none). */
+static bool join_path(char *out, unsigned cap, const char *dir, const char *name) {
+    unsigned dl = (unsigned)strlen(dir), nl = (unsigned)strlen(name);
+    if (dl + 1u + nl + 1u > cap) return false;
+    memcpy(out, dir, dl);
+    out[dl] = '/';
+    memcpy(out + dl + 1, name, nl + 1);
+    return true;
+}
+
+/* An entry's path ("/sd0" for a root). */
+static bool entry_path(int i, char *out, unsigned cap) {
+    const launcher_entry_t *e = &s_launcher.entries[i];
+    if (e->kind == ENTRY_ROOT) return join_path(out, cap, "", e->name);
+    return join_path(out, cap, s_launcher.cwd, e->name);
+}
+
+/* A Markdown file's first "# " heading, from its first 256 bytes. */
+static void read_title(const char *path, char *out, unsigned cap) {
+    out[0] = '\0';
+    char buf[257];
+    int fd = vfs_open(path, VFS_O_READ);
+    if (fd < 0) return;
+    int n = vfs_pread(fd, buf, sizeof buf - 1, 0);
+    vfs_close(fd);
+    if (n <= 0) return;
+    buf[n] = '\0';
+    for (char *p = buf; *p;) {
+        while (*p == '\n' || *p == '\r') p++;
+        if (p[0] == '#' && p[1] == ' ') {
+            p += 2;
+            unsigned k = 0;
+            while (p[k] && p[k] != '\n' && p[k] != '\r' && k + 1 < cap) { out[k] = p[k]; k++; }
+            out[k] = '\0';
+            return;
+        }
+        while (*p && *p != '\n') p++;
+    }
+}
+
+/* Directories first, then by name without case, a run of digits as its
+ * number: file2 before file10. */
+static bool entry_before(const launcher_entry_t *a, const launcher_entry_t *b) {
+    if ((a->kind == ENTRY_DIR) != (b->kind == ENTRY_DIR)) return a->kind == ENTRY_DIR;
+    const char *x = a->name, *y = b->name;
+    for (;;) {
+        if (*x >= '0' && *x <= '9' && *y >= '0' && *y <= '9') {
+            while (*x == '0') x++;                       /* leading zeros do not count */
+            while (*y == '0') y++;
+            const char *xe = x, *ye = y;
+            while (*xe >= '0' && *xe <= '9') xe++;
+            while (*ye >= '0' && *ye <= '9') ye++;
+            if (xe - x != ye - y) return xe - x < ye - y;   /* fewer digits: the smaller number */
+            for (; x < xe; x++, y++)
+                if (*x != *y) return *x < *y;
+            continue;
+        }
+        char cx = lower(*x), cy = lower(*y);
+        if (cx != cy) return cx < cy;
+        if (!cx) return false;
+        x++;
+        y++;
+    }
+}
+
+/* Shell sort on the entries in place: a directory of 500 sorts in a few
+ * thousand moves, where an insertion sort would make a hundred thousand. */
+static void sort_entries(void) {
+    launcher_entry_t *e = s_launcher.entries;
+    int n = s_launcher.n_entries;
+    static const int k_gaps[] = { 301, 132, 57, 23, 10, 4, 1 };
+    for (unsigned g = 0; g < sizeof k_gaps / sizeof k_gaps[0]; g++) {
+        int gap = k_gaps[g];
+        for (int i = gap; i < n; i++) {
+            launcher_entry_t t = e[i];
+            int j = i;
+            for (; j >= gap && entry_before(&t, &e[j - gap]); j -= gap) e[j] = e[j - gap];
+            e[j] = t;
+        }
+    }
+}
+
+/* The roots: every mounted storage volume. */
+static void load_roots(void) {
+    s_launcher.n_entries = 0;
+    s_launcher.truncated = false;
+    char name[LAUNCHER_NAME_MAX], label[48];
+    int kind;
+    for (unsigned i = 0; (kind = vfs_root_at(i, name, sizeof name, label, sizeof label)) >= 0; i++) {
+        if (s_launcher.n_entries >= LAUNCHER_FILES_MAX) break;
+        launcher_entry_t *e = &s_launcher.entries[s_launcher.n_entries++];
+        strncpy(e->name, name, sizeof e->name - 1);
+        e->name[sizeof e->name - 1] = '\0';
+        strncpy(e->title, label, sizeof e->title - 1);
+        e->title[sizeof e->title - 1] = '\0';
+        e->size = 0;
+        e->kind = ENTRY_ROOT;
+    }
+}
+
+/* The directory in cwd read again; false when it cannot be opened. */
+static bool load_dir(void) {
+    s_launcher.files_loaded = true;
+    s_launcher.n_entries = 0;
+    s_launcher.truncated = false;
+    if (!s_launcher.cwd[0]) {
+        load_roots();
+        return true;
+    }
+    int fd = vfs_open(s_launcher.cwd, VFS_O_READ);
+    if (fd < 0) return false;
+    char name[VFS_NAME_MAX];
+    vfs_stat_t st;
+    for (uint32_t idx = 0;; idx++) {
+        if (vfs_readdir(fd, idx, name, sizeof name, &st) < 0) break;
+        if (name[0] == '.' && (!name[1] || (name[1] == '.' && !name[2]))) continue;
+        if (strlen(name) >= LAUNCHER_NAME_MAX) continue;          /* not shown cut short: it would not open */
+        if (s_launcher.n_entries >= LAUNCHER_FILES_MAX) {
+            s_launcher.truncated = true;
+            break;
+        }
+        launcher_entry_t *e = &s_launcher.entries[s_launcher.n_entries++];
+        memcpy(e->name, name, strlen(name) + 1);
+        e->title[0] = '\0';
+        e->size = st.size;
+        e->kind = st.is_dir ? ENTRY_DIR : ENTRY_FILE;
+    }
+    vfs_close(fd);
+    sort_entries();
+    int titles = 0;
+    for (int i = 0; i < s_launcher.n_entries && titles < LAUNCHER_TITLES_MAX; i++) {
+        launcher_entry_t *e = &s_launcher.entries[i];
+        char path[VFS_PATH_MAX];
+        if (e->kind != ENTRY_FILE || !str_ends_with(e->name, ".md") || !entry_path(i, path, sizeof path)) continue;
+        read_title(path, e->title, sizeof e->title);
+        titles++;
+    }
+    return true;
+}
+
+/* cwd becomes path ("" the roots), listed from the top; on the keyboard's
+ * side the focus goes to its first row. */
+static void files_go(const char *path) {
+    char was[VFS_PATH_MAX];
+    strncpy(was, s_launcher.cwd, sizeof was - 1);
+    was[sizeof was - 1] = '\0';
+    strncpy(s_launcher.cwd, path, sizeof s_launcher.cwd - 1);
+    s_launcher.cwd[sizeof s_launcher.cwd - 1] = '\0';
+    if (!load_dir()) {
+        strncpy(s_launcher.cwd, was, sizeof s_launcher.cwd);
+        (void)load_dir();
+        launcher_alert("The folder did not open.", "It may be gone, or its volume unmounted.");
+        return;
+    }
+    s_launcher.scroll_px = 0;
+    if (s_launcher.n_entries > 0) ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_FILE, 0);
+}
+
+/* Up one directory; from a volume's top, to the roots. */
+static void files_up(void) {
+    if (!s_launcher.cwd[0]) return;
+    unsigned n = 0;                                      /* up to the last '/', not the leading one */
+    for (unsigned i = 1; s_launcher.cwd[i]; i++)
+        if (s_launcher.cwd[i] == '/') n = i;
+    char up[VFS_PATH_MAX];
+    memcpy(up, s_launcher.cwd, n);
+    up[n] = '\0';
+    files_go(up);
+}
+
+/* --- Drawing -------------------------------------------------------------------- */
+
+static const char *const k_faces[2] = { "Shortcuts", "Files" };
+
+/* A size as people read it: bytes, KB, MB. */
+static void size_text(uint32_t b, char *out, unsigned cap) {
+    if (b < 1024u) ksnprintf(out, cap, "%lu B", (unsigned long)b);
+    else if (b < 1024u * 1024u) ksnprintf(out, cap, "%lu KB", (unsigned long)((b + 512u) / 1024u));
+    else ksnprintf(out, cap, "%lu.%lu MB", (unsigned long)(b >> 20), (unsigned long)(((b & 0xFFFFFu) * 10u) >> 20));
+}
+
+/* What a row shows: the heading or the name, and on its right the name (when
+ * a heading took its place), the size, "folder", or a volume's label. */
+static void entry_texts(const launcher_entry_t *e, const char **main, char *meta, unsigned cap) {
+    *main = e->title[0] && e->kind == ENTRY_FILE ? e->title : e->name;
+    if (e->kind == ENTRY_ROOT) ksnprintf(meta, cap, "%s", e->title);
+    else if (e->kind == ENTRY_DIR) ksnprintf(meta, cap, "folder");
+    else if (e->title[0]) ksnprintf(meta, cap, "%s", e->name);
+    else size_text(e->size, meta, cap);
+}
+
+/* An icon (its 32-unit form) at x, y, drawn as on an armed row when inverted. */
+static void draw_icon(const ugui_surface_t *s, int x, int y, const char *name, const char *fallback, bool inverted) {
+    int sc = 1;
+    ugui_image_t img = icon_image(icon_or(name, fallback), 32 * s->scale, &sc);
+    if (img.px) ugui_image4(s, x, y, &img, sc, inverted);
+}
+
+static void file_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t row, int i, void *user) {
     (void)user;
-    int sc = s->scale;
-    ugui_list_row(s, ctx, (ugui_rect_t){ (int16_t)(row.x + 2 * sc), row.y, (int16_t)(row.w - 4 * sc), row.h },
-                  NULL, s_launcher.docs[i].label, s_launcher.docs[i].badge, LAUNCHER_ID_DOC_BASE, (int16_t)i, false);
+    const launcher_entry_t *e = &s_launcher.entries[i];
+    const int sc = s->scale;
+    bool armed = ugui_is_armed(ctx, LAUNCHER_ID_FILE, (int16_t)i);
+    ugui_fill(s, row, armed ? UGUI_GRAY_INK : UGUI_GRAY_CARD, armed ? CANVAS1_BLACK : CANVAS1_WHITE);
+    ugui_hline(s, row.x, row.x + row.w - 1, row.y + row.h - 1, 1, UGUI_GRAY_TRACK, CANVAS1_GREY);
+    int icon = 32 * sc;
+    draw_icon(s, row.x + 6 * sc, row.y + (row.h - icon) / 2,
+              e->kind == ENTRY_ROOT ? "files" : shortcuts_path_icon(e->name, e->kind == ENTRY_DIR), "doc", armed);
+    const char *main;
+    char meta[LAUNCHER_NAME_MAX];
+    entry_texts(e, &main, meta, sizeof meta);
+    int lh = ugui_serif_line_h(s), ty = row.y + (row.h - lh) / 2;
+    int mw = ugui_text_serif_width(s, meta, (uint32_t)strlen(meta)) + 3 * sc;   /* the italic's slant past its advance */
+    int text_x = row.x + icon + 14 * sc, right = row.x + row.w - 8 * sc;
+    if (mw > (right - text_x) / 2) mw = (right - text_x) / 2;              /* the name keeps half the row */
+    ugui_rect_t name_r = { (int16_t)text_x, row.y, (int16_t)(right - mw - 12 * sc - text_x), row.h };
+    if (name_r.w > 0) {
+        ugui_surface_t ns = ugui_clip(s, name_r);
+        ugui_text_serif(&ns, text_x, ty, main, (uint32_t)strlen(main), e->kind != ENTRY_FILE, false, armed);
+    }
+    ugui_surface_t ms = ugui_clip(s, (ugui_rect_t){ (int16_t)(right - mw), row.y, (int16_t)mw, row.h });
+    ugui_text_serif(&ms, right - mw, ty, meta, (uint32_t)strlen(meta), false, true, armed);
+    ugui_add_hit(ctx, row, LAUNCHER_ID_FILE, (int16_t)i);
 }
 
-/* The document list in x, y, w x avail_h: a framed virtual list of whole
- * rows' height, scrolled by pixels (s_launcher.scroll_px), and its
- * scrollbar. `frame` false: a scroll step -- the rows are drawn over what
- * shows (each fills its own background, so no frame shows them cleared),
- * only the space below the last one cleared. */
-static void draw_doc_list(const ugui_surface_t *surf, int x, int y, int w, int avail_h, bool frame) {
+static void draw_files(const ugui_surface_t *surf, ugui_rect_t r) {
     const int s = surf->scale;
-    s_launcher.list_x = x;
-    s_launcher.list_y = y;
-    s_launcher.list_w = w;
-    s_launcher.list_avail = avail_h;
-    int item_h = 30 * s, sb_w = 10 * s;
-    int list_w = w - sb_w - 4 * s;
-    int vis_rows = avail_h / item_h;
-    if (vis_rows < 1) vis_rows = 1;
-    int view_h = vis_rows * item_h;
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    if (!s_launcher.files_loaded) (void)load_dir();
+    ugui_path_bar(surf, ctx, ugui_cut_top(&r, 26 * s), s_launcher.cwd[0] ? s_launcher.cwd : "/", LAUNCHER_ID_PATH);
+    (void)ugui_cut_top(&r, 6 * s);
+    if (s_launcher.truncated) {
+        char t[64];
+        ksnprintf(t, sizeof t, "The first %d entries", s_launcher.n_entries);
+        ugui_rect_t note = ugui_cut_bottom(&r, ugui_serif_line_h(surf) + 4 * s);
+        ugui_text_serif(surf, note.x, note.y + 2 * s, t, (uint32_t)strlen(t), false, true, false);
+    }
+    int sb_w = 10 * s, item_h = 40 * s;
+    ugui_rect_t track = ugui_cut_right(&r, sb_w);
+    (void)ugui_cut_right(&r, 4 * s);
     s_launcher.item_h = item_h;
-    s_launcher.view_h = view_h - 2 * s;
-    if (frame) ugui_box_shadow(surf, (ugui_rect_t){ (int16_t)x, (int16_t)y, (int16_t)list_w, (int16_t)view_h }, false);
-    ugui_rect_t view = { (int16_t)(x + s), (int16_t)(y + s), (int16_t)(list_w - 2 * s), (int16_t)(view_h - 2 * s) };
-    ugui_vlist(surf, &s_launcher.ui_ctx, view, s_launcher.doc_count, item_h, &s_launcher.scroll_px, doc_row, NULL);
-    int rows_end = view.y + s_launcher.doc_count * item_h - s_launcher.scroll_px;
-    if (!frame && rows_end < view.y + view.h)
-        ugui_fill(surf, (ugui_rect_t){ view.x, (int16_t)rows_end, view.w, (int16_t)(view.y + view.h - rows_end) },
-                  UGUI_GRAY_CARD, CANVAS1_WHITE);
-    int total = s_launcher.doc_count * item_h;
-    if (total < view.h) total = view.h;
-    ugui_rect_t track = { (int16_t)(x + list_w + 4 * s), (int16_t)y, (int16_t)sb_w, (int16_t)view_h };
-    ugui_scrollbar(surf, track, s_launcher.scroll_px, total, view.h);
-    s_launcher.sb_y = y;
-    s_launcher.sb_h = total > view.h ? view_h : 0;
-    if (s_launcher.sb_h) ugui_add_drag_hit(&s_launcher.ui_ctx, track, LAUNCHER_ID_SCROLLBAR);
+    s_launcher.view_h = r.h;
+    s_launcher.list_y = r.y;
+    if (s_launcher.n_entries == 0) {
+        const char *t = s_launcher.cwd[0] ? "This folder is empty." : "No volumes are mounted.";
+        ugui_text_serif(surf, r.x + 8 * s, r.y + 8 * s, t, (uint32_t)strlen(t), false, true, false);
+        s_launcher.sb_h = 0;
+        return;
+    }
+    ugui_vlist(surf, ctx, r, s_launcher.n_entries, item_h, &s_launcher.scroll_px, file_row, NULL);
+    int total = s_launcher.n_entries * item_h;
+    s_launcher.sb_y = track.y;
+    s_launcher.sb_h = total > r.h ? track.h : 0;
+    if (s_launcher.sb_h) {
+        ugui_scrollbar(surf, track, s_launcher.scroll_px, total, r.h);
+        ugui_add_drag_hit(ctx, track, LAUNCHER_ID_SCROLLBAR);
+    }
 }
 
-static void launcher_update_list(void);
-
-/* The scrollbar pressed or dragged at y: the thumb's middle there. */
-static void launcher_scrollbar_to(int y) {
-    if (s_launcher.sb_h <= 0 || s_launcher.item_h <= 0) return;
-    int total = s_launcher.doc_count * s_launcher.item_h, view = s_launcher.view_h;
-    int range = total - view;
-    if (range <= 0) return;
-    int thumb = s_launcher.sb_h * view / total, min_thumb = 16 * (int)CHROME_SCALE;
-    if (thumb < min_thumb) thumb = min_thumb;
-    if (thumb > s_launcher.sb_h) thumb = s_launcher.sb_h;
-    int travel = s_launcher.sb_h - thumb;
-    int pos = travel > 0 ? (y - s_launcher.sb_y - thumb / 2) * range / travel : 0;
-    if (pos < 0) pos = 0;
-    if (pos > range) pos = range;
-    if (pos == s_launcher.scroll_px) return;
-    s_launcher.scroll_px = pos;
-    launcher_update_list();
+/* The Shortcuts face: an icon grid, or -- in a window narrower than two
+ * cells -- a list; scrolled when it is taller than the window. */
+static void draw_shortcuts(const ugui_surface_t *surf, ugui_rect_t r) {
+    const int s = surf->scale;
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    int n = shortcuts_count();
+    s_launcher.sc_view = r;
+    if (n == 0) {
+        const char *t = "No shortcuts. Add one from Files: a long press on it, Add to Shortcuts.";
+        ugui_text_serif(surf, r.x + 8 * s, r.y + 8 * s, t, (uint32_t)strlen(t), false, true, false);
+        return;
+    }
+    int cell_w = 96 * s, cell_h = 32 * s + ugui_serif_line_h(surf) + 14 * s;
+    bool grid = r.w >= 2 * cell_w;
+    int cols = grid ? r.w / cell_w : 1, rows = (n + cols - 1) / cols;
+    int row_h = grid ? cell_h : 40 * s;
+    s_launcher.sc_content_h = rows * row_h;
+    int most = s_launcher.sc_content_h - r.h;
+    if (s_launcher.sc_scroll > most) s_launcher.sc_scroll = most > 0 ? most : 0;
+    if (s_launcher.sc_scroll < 0) s_launcher.sc_scroll = 0;
+    ugui_surface_t cs = ugui_clip(surf, r);
+    if (grid) {
+        ugui_grid_item_t items[SHORTCUT_MAX];
+        for (int i = 0; i < n; i++) {
+            const shortcut_t *sc = shortcuts_at(i);
+            items[i].scale = 1;
+            items[i].img = icon_image(icon_or(shortcuts_icon(sc), "app"), 32 * s, &items[i].scale);
+            items[i].label = sc->label;
+        }
+        ugui_rect_t g = { r.x, (int16_t)(r.y - s_launcher.sc_scroll), (int16_t)(cols * cell_w), (int16_t)(rows * cell_h) };
+        (void)ugui_icon_grid(&cs, ctx, g, items, n, cell_w, cell_h, -1, LAUNCHER_ID_SHORTCUT);
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        const shortcut_t *sc = shortcuts_at(i);
+        ugui_rect_t row = { r.x, (int16_t)(r.y - s_launcher.sc_scroll + i * row_h), r.w, (int16_t)row_h };
+        bool armed = ugui_is_armed(ctx, LAUNCHER_ID_SHORTCUT, (int16_t)i);
+        ugui_fill(&cs, row, armed ? UGUI_GRAY_INK : UGUI_GRAY_CARD, armed ? CANVAS1_BLACK : CANVAS1_WHITE);
+        draw_icon(&cs, row.x + 6 * s, row.y + (row.h - 32 * s) / 2, shortcuts_icon(sc), "app", armed);
+        ugui_text_serif(&cs, row.x + 46 * s, row.y + (row.h - ugui_serif_line_h(surf)) / 2, sc->label,
+                        (uint32_t)strlen(sc->label), false, false, armed);
+        ugui_add_hit(ctx, row, LAUNCHER_ID_SHORTCUT, (int16_t)i);
+    }
 }
 
-static void draw_status(const ugui_surface_t *surf, ugui_rect_t r) {
-    char batt[16] = "";
-    (void)battery_indicator(batt, sizeof(batt));
-    bool sd_ok = vfs_volume_mounted("sd0");
-    char line[64];
-    if (batt[0]) ksnprintf(line, sizeof(line), "Batt: %s   SD: %s", batt, sd_ok ? "Mounted" : "Absent");
-    else ksnprintf(line, sizeof(line), "SD: %s   Touch UX Ready", sd_ok ? "Mounted" : "Absent");
-    ugui_text_serif(surf, r.x, r.y, line, (uint32_t)strlen(line), false, false, false);
+static const char *const k_rename_buttons[2] = { "Cancel", "Rename" };
+
+/* The rename dialog: a dialog's frame and buttons, the text field in it. */
+static void draw_rename(const ugui_surface_t *surf) {
+    const int s = surf->scale;
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    ugui_rect_t d = ugui_dialog(surf, ctx, "Rename the shortcut", "\n\n", k_rename_buttons, 2, LAUNCHER_ID_RENAME_BTN);
+    ugui_rect_t f = { (int16_t)(d.x + 16 * s), (int16_t)(d.y + 26 * s + ugui_serif_line_h(surf)), (int16_t)(d.w - 32 * s),
+                      (int16_t)(28 * s) };
+    ugui_textfield(surf, ctx, f, &s_launcher.rename_field, LAUNCHER_ID_RENAME);
 }
 
 static const char *const k_alert_ok[1] = { "OK" };
@@ -610,63 +716,7 @@ static void launcher_alert_answer(int choice) {
     if (done) done(choice, arg);
 }
 
-/* An application's card: its registered title and icon (32 units). */
-static void app_card(const ugui_surface_t *surf, ugui_rect_t r, const char *app_id, const char *subtitle, uint16_t id) {
-    const app_desc_t *a = app_find(app_id);
-    int scale = 1;
-    ugui_image_t img = icon_image(icon_or(a ? a->icon : NULL, "app"), 32 * surf->scale, &scale);
-    ugui_card_img(surf, &s_launcher.ui_ctx, r, &img, scale, a ? a->title : app_id, subtitle, id, false);
-}
-
-/* The applications and quick settings, cut off the top of *col (which is
- * left with what remains). One description for both orientations. */
-static void draw_apps_and_settings(const ugui_surface_t *surf, ugui_rect_t *col) {
-    const int s = surf->scale;
-    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
-    ugui_rect_t hdr = ugui_cut_top(col, 24 * s);
-    ugui_section_header(surf, hdr.x, hdr.y, hdr.w, "APPLICATIONS");
-    ugui_rect_t cards = ugui_cut_top(col, 2 * 56 * s + 8 * s);
-    app_card(surf, ugui_grid_cell(cards, 2, 2, 8 * s, 0), "reader", "Docs", LAUNCHER_ID_APP_READER);
-    app_card(surf, ugui_grid_cell(cards, 2, 2, 8 * s, 1), "chess", "Game", LAUNCHER_ID_APP_CHESS);
-    app_card(surf, ugui_grid_cell(cards, 2, 2, 8 * s, 2), "moonbase", "Game", LAUNCHER_ID_APP_MOONBASE);
-    app_card(surf, ugui_grid_cell(cards, 2, 2, 8 * s, 3), "term", "Shell", LAUNCHER_ID_APP_TERMINAL);
-    (void)ugui_cut_top(col, 14 * s);
-
-    hdr = ugui_cut_top(col, 26 * s);
-    ugui_rect_t more = ugui_cut_right(&hdr, 66 * s);
-    (void)ugui_cut_right(&hdr, 6 * s);
-    ugui_section_header(surf, hdr.x, hdr.y, hdr.w, "QUICK SETTINGS");
-    ugui_toolbar_button(surf, ctx, (ugui_rect_t){ more.x, (int16_t)(more.y - 2 * s), more.w, (int16_t)(20 * s) },
-                        "More...", LAUNCHER_ID_SETTINGS, false);
-    char vol_str[16];
-    ksnprintf(vol_str, sizeof(vol_str), "%d%%", get_volume_percent());
-    ugui_disable_next(ctx, volume_limits());
-    ugui_stepper(surf, ctx, ugui_cut_top(col, 30 * s), "Volume", vol_str, LAUNCHER_ID_VOL_STEP, LAUNCHER_ID_VOL_STEP + 1);
-    (void)ugui_cut_top(col, 8 * s);
-    char bl_str[16];
-    ksnprintf(bl_str, sizeof(bl_str), "%u%%", get_backlight_percent());
-    ugui_disable_next(ctx, backlight_limits());
-    ugui_stepper(surf, ctx, ugui_cut_top(col, 30 * s), col->w >= 320 * s ? "Brightness" : "Bright", bl_str,
-                 LAUNCHER_ID_BL_STEP, LAUNCHER_ID_BL_STEP + 1);
-    (void)ugui_cut_top(col, 10 * s);
-#if defined(CONFIG_BOARD_TAB5)
-    static const char *const k_orient_labels[3] = { "Landscape", "Portrait", "Auto" };
-    ugui_segmented(surf, ctx, ugui_cut_top(col, 28 * s), k_orient_labels, 3, get_orient_mode(), LAUNCHER_ID_ORIENT_SEG);
-    (void)ugui_cut_top(col, 10 * s);
-#endif
-}
-
-/* The documents: a header with Refresh, the list under it. */
-static void draw_documents(const ugui_surface_t *surf, ugui_rect_t r) {
-    const int s = surf->scale;
-    ugui_rect_t hdr = ugui_cut_top(&r, 24 * s);
-    ugui_rect_t btn = ugui_cut_right(&hdr, 66 * s);
-    (void)ugui_cut_right(&hdr, 6 * s);
-    ugui_section_header(surf, hdr.x, hdr.y, hdr.w, "DOCUMENTS");
-    ugui_toolbar_button(surf, &s_launcher.ui_ctx, (ugui_rect_t){ btn.x, (int16_t)(btn.y - 2 * s), btn.w, (int16_t)(20 * s) },
-                        "Refresh", LAUNCHER_ID_DOC_REFRESH, false);
-    draw_doc_list(surf, r.x, r.y, r.w, r.h, true);
-}
+static void launcher_scrollbar_to(int y);
 
 static const char *const k_gal_tabs[4] = { "Controls", "Text", "Dialogs", "Icons" };
 static const char *const k_gal_dlg[2] = { "Cancel", "Delete" };
@@ -875,30 +925,17 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         return;
     }
 
-    int pad = 12 * s;
-    ugui_rect_t area = ugui_inset((ugui_rect_t){ 0, 0, (int16_t)w, (int16_t)h }, pad, pad);
-    if (w >= h) {
-        /* Landscape: apps and settings in a column on the left, the
-         * status at its foot; the documents beside it. */
-        ugui_rect_t col = ugui_cut_left(&area, w * 46 / 100);
-        (void)ugui_cut_left(&area, 10 * s);
-        ugui_rect_t status = ugui_cut_bottom(&col, 20 * s);
-        draw_apps_and_settings(&surf, &col);
-        if (col.h > 0) draw_status(&surf, status);
-        draw_documents(&surf, area);
-    } else {
-        /* Portrait: the same column on top, the documents under it, the
-         * status at the foot. */
-        ugui_rect_t status = ugui_cut_bottom(&area, 16 * s);
-        (void)ugui_cut_bottom(&area, 4 * s);
-        draw_apps_and_settings(&surf, &area);
-        draw_documents(&surf, area);
-        draw_status(&surf, status);
-    }
+    ugui_rect_t area = ugui_inset((ugui_rect_t){ 0, 0, (int16_t)w, (int16_t)h }, 10 * s, 8 * s);
+    ugui_tab_bar(&surf, &s_launcher.ui_ctx, ugui_cut_top(&area, 26 * s), k_faces, 2, s_launcher.face, LAUNCHER_ID_TAB);
+    (void)ugui_cut_top(&area, 8 * s);
+    if (s_launcher.face == FACE_FILES) draw_files(&surf, area);
+    else draw_shortcuts(&surf, area);
 
-    if (s_launcher.sheet_doc > 0 && s_launcher.sheet_doc <= s_launcher.doc_count)
-        (void)ugui_action_sheet(&surf, &s_launcher.ui_ctx, s_launcher.docs[s_launcher.sheet_doc - 1].label,
-                                s_launcher.sheet_items, 3, LAUNCHER_ID_SHEET);
+    if (s_launcher.sheet != SHEET_NONE)
+        (void)ugui_action_sheet(&surf, &s_launcher.ui_ctx, s_launcher.sheet_title, s_launcher.sheet_items,
+                                s_launcher.sheet_n, LAUNCHER_ID_SHEET);
+    else if (s_launcher.renaming)
+        draw_rename(&surf);
     launcher_draw_alert(&surf);
     ugui_end(&surf, &s_launcher.ui_ctx);
     s_launcher.seq++;
@@ -911,32 +948,6 @@ static canvas1_t *launcher_backing(void) {
     canvas1_t *back = NULL;
 #endif
     return back ? back : ramscreen_get_reader_backing(s_launcher.slot_id);
-}
-
-/* A scroll step: only the document list drawn again, and shown. The rest
- * of the launcher stays as it is on the surface the panel composites from,
- * so it does not flicker; its rows' hit-boxes (the pass's last) are
- * replaced. With the focus ring showing, the whole launcher instead. */
-static void launcher_update_list(void) {
-    if (!s_launcher.active || s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
-    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
-    canvas1_t *back = launcher_backing();
-    if (ctx->focus_shown || s_launcher.alert_title[0] || s_launcher.list_avail <= 0 || (!back && !s_launcher.aa_buf)) {
-        launcher_update();
-        return;
-    }
-    ugui_surface_t surf = {
-        .c1 = back, .aa_fb = s_launcher.aa_buf, .aa_stride = s_launcher.aa_stride,
-        .w = s_launcher.win_w, .h = s_launcher.win_h, .scale = CHROME_SCALE,
-    };
-    int keep = 0;
-    for (int i = 0; i < ctx->count; i++)
-        if (ctx->hits[i].id != LAUNCHER_ID_DOC_BASE && ctx->hits[i].id != LAUNCHER_ID_SCROLLBAR) ctx->hits[keep++] = ctx->hits[i];
-    ctx->count = keep;
-    draw_doc_list(&surf, s_launcher.list_x, s_launcher.list_y, s_launcher.list_w, s_launcher.list_avail, false);
-    s_launcher.seq++;
-    uint8_t ureq[2] = { 'W', s_launcher.slot_id }, sreply[SCREEN_REPLY_LEN];
-    (void)console_canvas(ureq, 2, sreply);
 }
 
 /* A full draw. On the P4 the panel composites from the launcher's GRAY8
@@ -974,8 +985,9 @@ void launcher_update(void) {
 
     /* A text field with the focus and nothing over it: the on-screen
      * keyboard under it (where there is touch and no keyboard). */
-    bool want = s_launcher.gal.on && s_launcher.gal.tab == 1 && s_launcher.ui_ctx.focus_id == GAL_ID_TEXT &&
-                !s_launcher.gal.dialog && !s_launcher.gal.sheet && !s_launcher.gal.edit && !s_launcher.alert_title[0];
+    bool want = (s_launcher.gal.on && s_launcher.gal.tab == 1 && s_launcher.ui_ctx.focus_id == GAL_ID_TEXT &&
+                 !s_launcher.gal.dialog && !s_launcher.gal.sheet && !s_launcher.gal.edit && !s_launcher.alert_title[0]) ||
+                (s_launcher.renaming && s_launcher.ui_ctx.focus_id == LAUNCHER_ID_RENAME && !s_launcher.alert_title[0]);
     if (want != s_launcher.osk_want) {
         s_launcher.osk_want = want;
         console_osk_for_view(RIBBON_WIN_LAUNCHER, s_launcher.slot_id, want);
@@ -1006,7 +1018,17 @@ bool launcher_open(void) {
     }
 #endif
 
-    launcher_scan_docs();
+    s_launcher.face = settings_get("launcher.face") == FACE_FILES ? FACE_FILES : FACE_SHORTCUTS;
+    shortcuts_load();                                    /* the file may have changed (`shortcuts`, 9P) */
+    if (s_launcher.files_loaded) (void)load_dir();
+    if (s_launcher.face == FACE_FILES && !s_launcher.files_loaded) (void)load_dir();
+    /* Opened afresh (not brought to the front): the keyboard's focus on
+     * the face's first item, its ring hidden until a key. */
+    if (!s_launcher.active) {
+        if (s_launcher.face == FACE_FILES && s_launcher.n_entries > 0) ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_FILE, 0);
+        else if (s_launcher.face == FACE_SHORTCUTS && shortcuts_count() > 0) ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_SHORTCUT, 0);
+        s_launcher.ui_ctx.focus_shown = false;
+    }
 
     uint8_t req[2] = { 'U', 0 };
     uint8_t reply[SCREEN_REPLY_LEN];
@@ -1033,7 +1055,8 @@ bool launcher_open(void) {
 void launcher_close(void) {
     console_lock();
     s_launcher.active = false;
-    s_launcher.sheet_doc = 0;
+    s_launcher.sheet = SHEET_NONE;
+    s_launcher.renaming = false;
     s_launcher.ui_ctx.hover_id = 0;
     if (s_launcher.osk_want) {
         s_launcher.osk_want = false;
@@ -1052,6 +1075,24 @@ void launcher_close(void) {
     if (buf2) palloc_free(buf2, pages);
 }
 
+/* The list's scrollbar pressed or dragged at y: the thumb's middle there. */
+static void launcher_scrollbar_to(int y) {
+    if (s_launcher.sb_h <= 0 || s_launcher.item_h <= 0) return;
+    int total = s_launcher.n_entries * s_launcher.item_h, view = s_launcher.view_h;
+    int range = total - view;
+    if (range <= 0) return;
+    int thumb = s_launcher.sb_h * view / total, min_thumb = 16 * (int)CHROME_SCALE;
+    if (thumb < min_thumb) thumb = min_thumb;
+    if (thumb > s_launcher.sb_h) thumb = s_launcher.sb_h;
+    int travel = s_launcher.sb_h - thumb;
+    int pos = travel > 0 ? (y - s_launcher.sb_y - thumb / 2) * range / travel : 0;
+    if (pos < 0) pos = 0;
+    if (pos > range) pos = range;
+    if (pos == s_launcher.scroll_px) return;
+    s_launcher.scroll_px = pos;
+    launcher_update();
+}
+
 void launcher_press(int client_x, int client_y) {
     if (!s_launcher.active) return;
     if (ugui_arm(&s_launcher.ui_ctx, client_x, client_y)) launcher_update();
@@ -1067,8 +1108,14 @@ static bool launcher_tap_act(int client_x, int client_y);
 
 /* Application `id` (kernel/apps.h) on path (NULL: none): a single-instance
  * one that is running is focused instead; otherwise its command line is
- * left for the shell (shell_check_launcher_exec()). */
+ * left for the shell (shell_check_launcher_exec()). The Settings app, a view
+ * of the kernel's, opens directly. */
 static bool launch_app(const char *id, const char *path) {
+    if (strcmp(id, "settings") == 0) {
+        if (!settings_view_open())
+            launcher_alert("Settings did not open.", "There is no room for another window:\nclose one first (its close box, or Cmd-W).");
+        return true;
+    }
     const app_desc_t *a = app_find(id);
     if (!a) return false;
     if ((a->caps & APP_SINGLETON) && a->window &&
@@ -1080,6 +1127,14 @@ static bool launch_app(const char *id, const char *path) {
                        "Close a window first: its close box, or Cmd-W.");
         return false;
     }
+    if (strcmp(id, "term") == 0) {                       /* beside the launcher, focused */
+        if (lcdterm_room(&windows, NULL) && windows < 1) {
+            launcher_alert("No room for another window.", "Close a window first: its close box, or Cmd-W.");
+            return false;
+        }
+        console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
+        return true;
+    }
     char cmd[sizeof s_pending_cmd];
     if (!app_command(a, path, cmd, sizeof cmd)) return false;
     uintptr_t f = spin_lock_irqsave(&s_pending_lock);
@@ -1087,8 +1142,239 @@ static bool launch_app(const char *id, const char *path) {
     spin_unlock_irqrestore(&s_pending_lock, f);
     return true;
 }
-static bool launcher_activate(uint16_t id, int16_t hit_idx);
-static void launcher_sheet_answer(int choice);
+
+/* A document's other application: the editor for what the reader shows,
+ * the reader for the rest. */
+static const char *other_app(const char *path) {
+    const app_desc_t *a = app_for_path(path);
+    return a && strcmp(a->id, "reader") == 0 ? "editor" : "reader";
+}
+
+/* A file opened by its association: the reader in the ribbon for what it
+ * shows, the application for the rest; an alert when nothing opens it. */
+static void open_path(const char *path) {
+    const app_desc_t *a = app_for_path(path);
+    if (a && strcmp(a->id, "reader") == 0) {
+        open_doc_in_reader(path);
+        return;
+    }
+    if (!a || !launch_app(a->id, path))
+        launcher_alert("Nothing opens this file.", "No application is associated with its type:\nOpen With... offers the editor.");
+}
+
+static void open_shortcut(int i) {
+    const shortcut_t *sc = shortcuts_at(i);
+    if (!sc) return;
+    switch (sc->type) {
+    case SHORTCUT_APP:
+        if (!launch_app(sc->target, NULL)) launcher_alert("The application is not on this board.", sc->target);
+        return;
+    case SHORTCUT_DIR:
+        s_launcher.face = FACE_FILES;
+        (void)settings_set("launcher.face", FACE_FILES);
+        files_go(sc->target);
+        launcher_update();
+        return;
+    default:                                             /* a document, a book */
+        open_path(sc->target);
+        return;
+    }
+}
+
+static void open_entry(int i) {
+    if (i < 0 || i >= s_launcher.n_entries) return;
+    char path[VFS_PATH_MAX];
+    if (!entry_path(i, path, sizeof path)) {
+        launcher_alert("The path is too long.", "It does not fit the paths this board takes.");
+        return;
+    }
+    if (s_launcher.entries[i].kind == ENTRY_FILE) {
+        open_path(path);
+        return;
+    }
+    files_go(path);
+    launcher_update();
+}
+
+static void set_face(int face) {
+    if (face == s_launcher.face) return;
+    s_launcher.face = face;
+    (void)settings_set("launcher.face", face);
+    if (face == FACE_FILES && !s_launcher.files_loaded) (void)load_dir();
+    /* The keyboard's focus on the face's first item (shown as it was). */
+    if (face == FACE_FILES && s_launcher.n_entries > 0) ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_FILE, 0);
+    else if (face == FACE_SHORTCUTS && shortcuts_count() > 0) ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_SHORTCUT, 0);
+    else ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_TAB + face, (int16_t)face);
+    launcher_update();
+}
+
+/* --- Action sheets, confirmations, rename --- */
+
+static void sheet_add(const char *label, uint8_t act) {
+    if (s_launcher.sheet_n >= LAUNCHER_SHEET_MAX) return;
+    s_launcher.sheet_items[s_launcher.sheet_n] = label;
+    s_launcher.sheet_act[s_launcher.sheet_n++] = act;
+}
+
+static void sheet_for_shortcut(int i) {
+    const shortcut_t *sc = shortcuts_at(i);
+    if (!sc) return;
+    s_launcher.sheet = SHEET_SHORTCUT;
+    s_launcher.sheet_idx = i;
+    s_launcher.sheet_n = 0;
+    strncpy(s_launcher.sheet_title, sc->label, sizeof s_launcher.sheet_title - 1);
+    s_launcher.sheet_title[sizeof s_launcher.sheet_title - 1] = '\0';
+    sheet_add("Open", ACT_OPEN);
+    sheet_add("Rename", ACT_RENAME);
+    sheet_add("Remove", ACT_REMOVE);
+    if (i > 0) sheet_add("Move Left", ACT_MOVE_LEFT);
+    if (i + 1 < shortcuts_count()) sheet_add("Move Right", ACT_MOVE_RIGHT);
+    sheet_add("Cancel", ACT_CANCEL);
+    ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_SHEET, 0);
+}
+
+static void sheet_for_entry(int i) {
+    if (i < 0 || i >= s_launcher.n_entries) return;
+    const launcher_entry_t *e = &s_launcher.entries[i];
+    s_launcher.sheet = SHEET_FILE;
+    s_launcher.sheet_idx = i;
+    s_launcher.sheet_n = 0;
+    strncpy(s_launcher.sheet_title, e->name, sizeof s_launcher.sheet_title - 1);
+    s_launcher.sheet_title[sizeof s_launcher.sheet_title - 1] = '\0';
+    sheet_add("Open", ACT_OPEN);
+    if (e->kind == ENTRY_FILE)
+        sheet_add(strcmp(other_app(e->name), "editor") == 0 ? "Open in Editor" : "Open in Reader", ACT_OPEN_OTHER);
+    if (e->kind != ENTRY_ROOT) sheet_add("Add to Shortcuts", ACT_ADD_SHORTCUT);
+    sheet_add("Info", ACT_INFO);
+    if (e->kind == ENTRY_FILE) sheet_add("Delete", ACT_DELETE);
+    sheet_add("Cancel", ACT_CANCEL);
+    ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_SHEET, 0);
+}
+
+static const char *const k_remove_buttons[2] = { "Cancel", "Remove" };
+static const char *const k_delete_buttons[2] = { "Cancel", "Delete" };
+
+static void remove_answer(int choice, void *arg) {
+    (void)arg;
+    int i = s_launcher.pending_remove;
+    s_launcher.pending_remove = -1;
+    if (choice == 1 && !shortcuts_remove(i)) launcher_alert("The shortcut was not removed.", "Its file could not be written.");
+    launcher_update();
+}
+
+static void delete_answer(int choice, void *arg) {
+    (void)arg;
+    int i = s_launcher.pending_delete;
+    s_launcher.pending_delete = -1;
+    char path[VFS_PATH_MAX];
+    if (choice != 1 || i < 0 || i >= s_launcher.n_entries || !entry_path(i, path, sizeof path)) return;
+    if (vfs_remove(path) < 0) launcher_alert("The file was not deleted.", "The volume may be read-only.");
+    (void)load_dir();
+    launcher_update();
+}
+
+static void entry_info(int i) {
+    const launcher_entry_t *e = &s_launcher.entries[i];
+    char path[VFS_PATH_MAX], sz[24];
+    if (!entry_path(i, path, sizeof path)) path[0] = '\0';
+    size_text(e->size, sz, sizeof sz);
+    if (e->kind == ENTRY_ROOT) {
+        ksnprintf(s_launcher.info, sizeof s_launcher.info, "%s\n%s", path, e->title);
+    } else if (e->kind == ENTRY_DIR) {
+        ksnprintf(s_launcher.info, sizeof s_launcher.info, "%s\nA folder", path);
+    } else {
+        const app_desc_t *a = app_for_path(e->name);
+        ksnprintf(s_launcher.info, sizeof s_launcher.info, "%s\n%s%s%s\nOpens in %s", path, sz,
+                  e->title[0] ? ", titled " : "", e->title, a ? a->title : "nothing (no association)");
+    }
+    launcher_ask("doc", e->name, s_launcher.info, NULL, 1, 0, NULL, NULL);
+}
+
+/* The sheet's item `choice`: gone, then done. */
+static void launcher_sheet_answer(int choice) {
+    int kind = s_launcher.sheet, i = s_launcher.sheet_idx;
+    int act = choice >= 0 && choice < s_launcher.sheet_n ? s_launcher.sheet_act[choice] : ACT_CANCEL;
+    s_launcher.sheet = SHEET_NONE;
+    launcher_update();
+    if (kind == SHEET_SHORTCUT) {
+        const shortcut_t *sc = shortcuts_at(i);
+        if (!sc) return;
+        switch (act) {
+        case ACT_OPEN: open_shortcut(i); return;
+        case ACT_RENAME:
+            s_launcher.renaming = true;
+            s_launcher.rename_idx = i;
+            strncpy(s_launcher.rename_buf, sc->label, sizeof s_launcher.rename_buf - 1);
+            s_launcher.rename_buf[sizeof s_launcher.rename_buf - 1] = '\0';
+            ugui_text_init(&s_launcher.rename_field, s_launcher.rename_buf, (uint16_t)sizeof s_launcher.rename_buf);
+            s_launcher.rename_field.len = (uint16_t)strlen(s_launcher.rename_buf);
+            s_launcher.rename_field.anchor = 0;                  /* all of it selected: typing replaces it */
+            s_launcher.rename_field.caret = s_launcher.rename_field.len;
+            ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_RENAME, 0);
+            launcher_update();
+            return;
+        case ACT_REMOVE: {
+            ksnprintf(s_launcher.info, sizeof s_launcher.info, "\"%s\" leaves the Shortcuts.\nWhat it opens stays where it is.",
+                      sc->label);
+            s_launcher.pending_remove = i;
+            launcher_ask(NULL, "Remove the shortcut?", s_launcher.info, k_remove_buttons, 2, 0, remove_answer, NULL);
+            return;
+        }
+        case ACT_MOVE_LEFT:
+        case ACT_MOVE_RIGHT:
+            (void)shortcuts_move(i, act == ACT_MOVE_LEFT ? -1 : 1);
+            ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_SHORTCUT, (int16_t)(i + (act == ACT_MOVE_LEFT ? -1 : 1)));
+            launcher_update();
+            return;
+        default:
+            return;
+        }
+    }
+    if (kind != SHEET_FILE || i < 0 || i >= s_launcher.n_entries) return;
+    const launcher_entry_t *e = &s_launcher.entries[i];
+    char path[VFS_PATH_MAX];
+    if (!entry_path(i, path, sizeof path)) return;
+    switch (act) {
+    case ACT_OPEN: open_entry(i); return;
+    case ACT_OPEN_OTHER:
+        if (strcmp(other_app(path), "reader") == 0) open_doc_in_reader(path);
+        else (void)launch_app("editor", path);
+        return;
+    case ACT_ADD_SHORTCUT: {
+        const char *label = e->title[0] && e->kind == ENTRY_FILE ? e->title : e->name;
+        shortcut_type_t t = e->kind == ENTRY_DIR ? SHORTCUT_DIR : SHORTCUT_DOC;
+        if (!shortcuts_add(t, path, label, NULL)) launcher_alert("The shortcut was not added.", "The list is full, or its file could not be written.");
+        return;
+    }
+    case ACT_INFO: entry_info(i); return;
+    case ACT_DELETE: {
+        ksnprintf(s_launcher.info, sizeof s_launcher.info, "\"%s\" will be removed from %s.\nThis cannot be undone.", e->name,
+                  s_launcher.cwd);
+        s_launcher.pending_delete = i;
+        launcher_ask("bomb", "Delete the file?", s_launcher.info, k_delete_buttons, 2, 0, delete_answer, NULL);
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+static void rename_done(bool ok) {
+    if (ok && s_launcher.rename_buf[0] && !shortcuts_rename(s_launcher.rename_idx, s_launcher.rename_buf))
+        launcher_alert("The shortcut was not renamed.", "Its file could not be written.");
+    s_launcher.renaming = false;
+    ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_SHORTCUT, (int16_t)s_launcher.rename_idx);
+    launcher_update();
+}
+
+/* The context menu (a right click, a long press, `m`) on (id, index). */
+static void launcher_context_on(uint16_t id, int16_t idx) {
+    if (id == LAUNCHER_ID_SHORTCUT) sheet_for_shortcut(idx);
+    else if (id == LAUNCHER_ID_FILE) sheet_for_entry(idx);
+    else return;
+    (void)ugui_disarm(&s_launcher.ui_ctx);
+    launcher_update();
+}
 
 /* A tap: the pressed control lets go first, then acts; drawn once, by the
  * action if it redraws, here if it does not (the release that follows finds
@@ -1102,6 +1388,8 @@ bool launcher_tap(int client_x, int client_y) {
     return acted;
 }
 
+static bool launcher_activate(uint16_t id, int16_t hit_idx);
+
 static bool launcher_tap_act(int client_x, int client_y) {
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
@@ -1111,24 +1399,15 @@ static bool launcher_tap_act(int client_x, int client_y) {
         return id != 0;
     }
     if (s_launcher.gal.on) return id && launcher_gallery_act(id, hit_idx, client_x);
-    if (s_launcher.sheet_doc > 0) {                      /* modal: a choice, or away */
-        launcher_sheet_answer(id >= LAUNCHER_ID_SHEET && id < LAUNCHER_ID_SHEET + 3 ? id - LAUNCHER_ID_SHEET : 2);
+    if (s_launcher.sheet != SHEET_NONE) {                /* modal: a choice, or away */
+        launcher_sheet_answer(id >= LAUNCHER_ID_SHEET && id < LAUNCHER_ID_SHEET + s_launcher.sheet_n ? id - LAUNCHER_ID_SHEET : -1);
         return true;
     }
     return launcher_activate(id, hit_idx);
 }
 
-/* A document's other application: the editor for what the reader shows,
- * the reader for the rest. */
-static const char *other_app(const char *path) {
-    const app_desc_t *a = app_for_path(path);
-    return a && strcmp(a->id, "reader") == 0 ? "editor" : "reader";
-}
-
-/* The context menu (a right click, a long press) at (x, y): a document's
- * action sheet; nothing elsewhere yet. */
 static void launcher_context(int client_x, int client_y) {
-    if (!s_launcher.active || s_launcher.alert_title[0] || s_launcher.sheet_doc > 0) return;
+    if (!s_launcher.active || s_launcher.alert_title[0] || s_launcher.sheet != SHEET_NONE || s_launcher.renaming) return;
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
     if (s_launcher.gal.on) {                             /* the text field's edit menu; an icon's name */
@@ -1145,122 +1424,70 @@ static void launcher_context(int client_x, int client_y) {
         launcher_update();
         return;
     }
-    if (id != LAUNCHER_ID_DOC_BASE || hit_idx < 0 || hit_idx >= s_launcher.doc_count) return;
-    s_launcher.sheet_items[0] = "Open";
-    s_launcher.sheet_items[1] = strcmp(other_app(s_launcher.docs[hit_idx].path), "editor") == 0 ? "Open in Editor" : "Open in Reader";
-    s_launcher.sheet_items[2] = "Cancel";
-    s_launcher.sheet_doc = hit_idx + 1;
-    (void)ugui_disarm(&s_launcher.ui_ctx);
-    launcher_update();
-}
-
-/* The sheet's item `choice`: gone, then done. */
-static void launcher_sheet_answer(int choice) {
-    int i = s_launcher.sheet_doc - 1;
-    s_launcher.sheet_doc = 0;
-    launcher_update();
-    if (i < 0 || i >= s_launcher.doc_count) return;
-    const char *path = s_launcher.docs[i].path;
-    if (choice == 0) {
-        (void)launcher_activate(LAUNCHER_ID_DOC_BASE, (int16_t)i);
-    } else if (choice == 1) {
-        if (strcmp(other_app(path), "reader") == 0) open_doc_in_reader(path);
-        else (void)launch_app("editor", path);
-    }
+    launcher_context_on(id, hit_idx);
 }
 
 /* What a tap on widget id (hit_idx: its index) does; the keyboard's Enter
- * does the same. An app card leaves its command in pending_cmd for the
- * shell (shell_check_launcher_exec()). */
+ * does the same. */
 static bool launcher_activate(uint16_t id, int16_t hit_idx) {
     if (id == 0) return false;
-
-    if (id == LAUNCHER_ID_APP_READER) {
-        const char *doc = (s_launcher.doc_count > 0) ? s_launcher.docs[0].path : "index.md";
-        for (int i = 0; i < s_launcher.doc_count; i++) {
-            if (reader_find_by_path(s_launcher.docs[i].path) < 0) {
-                doc = s_launcher.docs[i].path;
-                break;
-            }
+    if (s_launcher.renaming) {
+        if (id == LAUNCHER_ID_RENAME) ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_RENAME, 0);
+        else if (id == LAUNCHER_ID_RENAME_BTN || id == LAUNCHER_ID_RENAME_BTN + 1) rename_done(id == LAUNCHER_ID_RENAME_BTN + 1);
+        else return false;
+        launcher_update();
+        return true;
+    }
+    if (id >= LAUNCHER_ID_TAB && id < LAUNCHER_ID_TAB + 2) {
+        set_face(id - LAUNCHER_ID_TAB);
+        return true;
+    }
+    if (id == LAUNCHER_ID_SHORTCUT) {
+        open_shortcut(hit_idx);
+        return true;
+    }
+    if (id == LAUNCHER_ID_FILE) {
+        open_entry(hit_idx);
+        return true;
+    }
+    if (id == LAUNCHER_ID_PATH) {                        /* segment 0 is the roots */
+        if (hit_idx <= 0) {
+            files_go("");
+        } else {
+            char pre[VFS_PATH_MAX];
+            int n = ugui_path_prefix(s_launcher.cwd, hit_idx);
+            memcpy(pre, s_launcher.cwd, (size_t)n);
+            pre[n] = '\0';
+            files_go(pre);
         }
-        open_doc_in_reader(doc);
-        return true;
-    }
-    if (id == LAUNCHER_ID_APP_CHESS) return launch_app("chess", NULL);
-    if (id == LAUNCHER_ID_APP_MOONBASE) return launch_app("moonbase", NULL);
-    if (id == LAUNCHER_ID_APP_TERMINAL) {
-        int windows = 1;
-        if (lcdterm_room(&windows, NULL) && windows < 1) {
-            launcher_alert("No room for another window.", "Close a window first: its close box, or Cmd-W.");
-            return false;
-        }
-        console_hotkey(CONSOLE_HOTKEY_NEW_TERM);         /* beside the launcher, focused */
-        return true;
-    }
-    if (id == LAUNCHER_ID_VOL_STEP) {
-        set_volume_percent(get_volume_percent() - 10);
         launcher_update();
         return true;
     }
-    if (id == LAUNCHER_ID_VOL_STEP + 1) {
-        set_volume_percent(get_volume_percent() + 10);
-        launcher_update();
-        return true;
-    }
-    if (id == LAUNCHER_ID_BL_STEP) {
-        set_backlight_percent((int)get_backlight_percent() - 10);
-        launcher_update();
-        return true;
-    }
-    if (id == LAUNCHER_ID_BL_STEP + 1) {
-        set_backlight_percent((int)get_backlight_percent() + 10);
-        launcher_update();
-        return true;
-    }
-#if defined(CONFIG_BOARD_TAB5)
-    /* ugui_segmented() gives each segment its own id, base + index. */
-    if (id >= LAUNCHER_ID_ORIENT_SEG && id < LAUNCHER_ID_ORIENT_SEG + 3) {
-        hit_idx = (int16_t)(id - LAUNCHER_ID_ORIENT_SEG);   /* landscape, portrait, auto: display.orient's */
-        (void)settings_set("display.orient", hit_idx);
-        if (hit_idx == 2) launcher_update();             /* a rotation redraws it anyway */
-        return true;
-    }
-#endif
-    if (id == LAUNCHER_ID_SETTINGS) {
-        if (!settings_view_open())
-            launcher_alert("Settings did not open.", "There is no room for another window:\nclose one first (its close box, or Cmd-W).");
-        return true;
-    }
-    if (id == LAUNCHER_ID_SCROLLBAR) return true;     /* launcher_press() moved it already */
-    if (id == LAUNCHER_ID_DOC_REFRESH) {
-        launcher_scan_docs();
-        launcher_update();
-        return true;
-    }
-    if (id == LAUNCHER_ID_DOC_BASE && hit_idx >= 0 && hit_idx < s_launcher.doc_count) {
-        const app_desc_t *a = app_for_path(s_launcher.docs[hit_idx].path);
-        if (a && strcmp(a->id, "reader") == 0) {
-            open_doc_in_reader(s_launcher.docs[hit_idx].path);   /* the reader in the ribbon, directly */
-            return true;
-        }
-        return a && launch_app(a->id, s_launcher.docs[hit_idx].path);
-    }
+    if (id == LAUNCHER_ID_SCROLLBAR) return true;        /* launcher_press() moved it already */
     return false;
 }
 
 void launcher_scroll(int delta_y) {
     if (!s_launcher.active || s_launcher.gal.on) return;
-    s_launcher.scroll_px += (delta_y > 0 ? 2 : -2) * (s_launcher.item_h > 0 ? s_launcher.item_h : 30);
-    if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
+    if (s_launcher.face == FACE_FILES) {
+        s_launcher.scroll_px += (delta_y > 0 ? 2 : -2) * (s_launcher.item_h > 0 ? s_launcher.item_h : 40);
+        if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
+    } else {
+        s_launcher.sc_scroll += (delta_y > 0 ? 1 : -1) * 64 * (int)CHROME_SCALE;
+    }
     launcher_update();
 }
 
-/* A finger dragging dy px (down positive): the document list follows it. */
+/* A finger dragging dy px (down positive): the face's content follows it. */
 void launcher_drag(int dy) {
     if (!s_launcher.active || dy == 0 || s_launcher.gal.on) return;
-    s_launcher.scroll_px -= dy;
-    if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
-    launcher_update_list();
+    if (s_launcher.face == FACE_FILES) {
+        s_launcher.scroll_px -= dy;
+        if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
+    } else {
+        s_launcher.sc_scroll -= dy;
+    }
+    launcher_update();
 }
 
 /* The drag's end: a finger still moving (dy over its last ms) glides on,
@@ -1270,32 +1497,54 @@ void launcher_drag_end(int dy, uint32_t ms) {
     if (!s_launcher.active || ms == 0 || dy == 0) return;
     int step = (int)((long)dy * 48 / (long)ms);          /* px per ~48 ms */
     for (int i = 0; i < 4 && (step > 1 || step < -1); i++) {
-        int before = s_launcher.scroll_px;
+        int before = s_launcher.face == FACE_FILES ? s_launcher.scroll_px : s_launcher.sc_scroll;
         launcher_drag(step);
-        if (s_launcher.scroll_px == before) break;       /* at an end */
+        if ((s_launcher.face == FACE_FILES ? s_launcher.scroll_px : s_launcher.sc_scroll) == before) break;
         step /= 2;
     }
 }
 
-/* The document list under the keyboard: Up / Down from a row moves to the
- * row before / after it, scrolling it into view, so the focus walks the
- * whole list rather than jumping out of it at the visible edge. */
-static bool launcher_doc_step(uint32_t key) {
+/* The file list under the keyboard: Up / Down from a row moves to the row
+ * before / after it, scrolling it into view, so the focus walks the whole
+ * list rather than jumping out of it at the visible edge. */
+static bool launcher_row_step(uint32_t key) {
     ugui_ctx_t *ctx = &s_launcher.ui_ctx;
-    if (!ctx->focus_shown || ctx->focus_id != LAUNCHER_ID_DOC_BASE) return false;
+    if (!ctx->focus_shown || ctx->focus_id != LAUNCHER_ID_FILE) return false;
     int to = ctx->focus_index + (key == KEY_DOWN ? 1 : -1);
-    if (to < 0 || to >= s_launcher.doc_count) return false;
+    if (to < 0 || to >= s_launcher.n_entries) return false;
     ctx->focus_index = (int16_t)to;
     s_launcher.scroll_px = ugui_vlist_reveal(s_launcher.scroll_px, s_launcher.view_h, s_launcher.item_h, to);
     return true;
 }
 
+/* Type-ahead in the file list: a letter moves the focus to the next entry
+ * whose name (or heading) starts with it. */
+static bool launcher_type_ahead(uint32_t key) {
+    if (s_launcher.face != FACE_FILES || s_launcher.n_entries == 0) return false;
+    char c = lower((char)key);
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    int from = ctx->focus_id == LAUNCHER_ID_FILE ? ctx->focus_index : -1;
+    for (int k = 1; k <= s_launcher.n_entries; k++) {
+        int i = (from + k) % s_launcher.n_entries;
+        const launcher_entry_t *e = &s_launcher.entries[i];
+        const char *main = e->title[0] && e->kind == ENTRY_FILE ? e->title : e->name;
+        if (lower(main[0]) == c || lower(e->name[0]) == c) {
+            ugui_set_focus(ctx, LAUNCHER_ID_FILE, (int16_t)i);
+            ctx->focus_shown = true;
+            s_launcher.scroll_px = ugui_vlist_reveal(s_launcher.scroll_px, s_launcher.view_h, s_launcher.item_h, i);
+            return true;
+        }
+    }
+    return false;
+}
+
 static void launcher_key(key_event_t k) {
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
     if (s_launcher.alert_title[0]) {                     /* Esc: its cancel; Enter: the focused button, or the default */
         if (k.key == 0x1b) { launcher_alert_answer(s_launcher.alert_cancel); return; }
         uint16_t id = 0;
         int16_t idx = 0;
-        ugui_nav_t nav = ugui_nav(&s_launcher.ui_ctx, k.key, k.mods, &id, &idx);
+        ugui_nav_t nav = ugui_nav(ctx, k.key, k.mods, &id, &idx);
         if (nav == UGUI_NAV_ACTIVATE && id >= LAUNCHER_ID_ALERT_OK && id < LAUNCHER_ID_ALERT_OK + s_launcher.alert_count)
             launcher_alert_answer(id - LAUNCHER_ID_ALERT_OK);
         else if ((k.key == '\r' || k.key == '\n') && nav != UGUI_NAV_ACTIVATE)
@@ -1304,31 +1553,74 @@ static void launcher_key(key_event_t k) {
             launcher_update();
         return;
     }
-    if (s_launcher.sheet_doc > 0) {                      /* Esc: Cancel; Enter: the focused item */
-        if (k.key == 0x1b) { launcher_sheet_answer(2); return; }
+    if (s_launcher.sheet != SHEET_NONE) {                /* Esc: Cancel; Enter: the focused item */
+        if (k.key == 0x1b) { launcher_sheet_answer(-1); return; }
         uint16_t id = 0;
         int16_t idx = 0;
-        ugui_nav_t nav = ugui_nav(&s_launcher.ui_ctx, k.key, k.mods, &id, &idx);
-        if (nav == UGUI_NAV_ACTIVATE && id >= LAUNCHER_ID_SHEET && id < LAUNCHER_ID_SHEET + 3)
+        ugui_nav_t nav = ugui_nav(ctx, k.key, k.mods, &id, &idx);
+        if (nav == UGUI_NAV_ACTIVATE && id >= LAUNCHER_ID_SHEET && id < LAUNCHER_ID_SHEET + s_launcher.sheet_n)
             launcher_sheet_answer(id - LAUNCHER_ID_SHEET);
         else if (nav == UGUI_NAV_MOVED)
             launcher_update();
         return;
     }
     if (s_launcher.gal.on && launcher_gallery_key(k)) return;
-    if (k.key == KEY_PGDN || k.key == KEY_PGUP) {
-        s_launcher.scroll_px += k.key == KEY_PGDN ? s_launcher.view_h : -s_launcher.view_h;
-        if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
-        launcher_update();
-        return;
+    if (s_launcher.renaming) {                           /* the field takes its keys; Esc / Enter end it */
+        if (ctx->focus_id == LAUNCHER_ID_RENAME) {
+            ugui_text_ev_t e = ugui_text_key(&s_launcher.rename_field, k.key, k.mods);
+            if (e == UGUI_TEXT_SUBMIT || e == UGUI_TEXT_CANCEL) { rename_done(e == UGUI_TEXT_SUBMIT); return; }
+            if (e != UGUI_TEXT_NONE) { launcher_update(); return; }
+        }
+        if (k.key == 0x1b) { rename_done(false); return; }
     }
-    if ((k.key == KEY_UP || k.key == KEY_DOWN) && launcher_doc_step(k.key)) {
-        launcher_update();
-        return;
+    if (!s_launcher.gal.on && !s_launcher.renaming) {
+        if (k.key == '\t' && (k.mods & KMOD_CTRL)) {     /* Ctrl+Tab, Ctrl+Shift+Tab: the other face */
+            set_face(s_launcher.face == FACE_FILES ? FACE_SHORTCUTS : FACE_FILES);
+            return;
+        }
+        /* The focused item's action sheet: Shift+Enter, and `m` where letters
+         * are free (Files takes them for type-ahead). */
+        bool sheet_key = ((k.key == '\r' || k.key == '\n') && k.mods == KMOD_SHIFT) ||
+                         (k.key == 'm' && !k.mods && s_launcher.face == FACE_SHORTCUTS);
+        if (sheet_key && ctx->focus_shown) {
+            launcher_context_on(ctx->focus_id, ctx->focus_index);
+            return;
+        }
+        if (s_launcher.face == FACE_FILES) {
+            bool on_row = ctx->focus_id == LAUNCHER_ID_FILE && ctx->focus_shown;
+            if (k.key == 0x7f || k.key == 0x08 || (k.key == 0x1b && s_launcher.cwd[0]) || (k.key == KEY_LEFT && on_row)) {
+                files_up();
+                launcher_update();
+                return;
+            }
+            if ((k.key == KEY_UP || k.key == KEY_DOWN) && launcher_row_step(k.key)) {
+                launcher_update();
+                return;
+            }
+            /* A page, the first, the last row: the focus goes there (shown),
+             * the list follows it. */
+            if ((k.key == KEY_PGDN || k.key == KEY_PGUP || k.key == KEY_HOME || k.key == KEY_END) && s_launcher.n_entries > 0) {
+                int page = s_launcher.item_h > 0 ? s_launcher.view_h / s_launcher.item_h : 1;
+                int at = ctx->focus_id == LAUNCHER_ID_FILE ? ctx->focus_index : 0;
+                int to = k.key == KEY_HOME ? 0 : k.key == KEY_END ? s_launcher.n_entries - 1
+                       : at + (k.key == KEY_PGDN ? page : -page);
+                if (to < 0) to = 0;
+                if (to >= s_launcher.n_entries) to = s_launcher.n_entries - 1;
+                ugui_set_focus(ctx, LAUNCHER_ID_FILE, (int16_t)to);
+                ctx->focus_shown = true;
+                s_launcher.scroll_px = ugui_vlist_reveal(s_launcher.scroll_px, s_launcher.view_h, s_launcher.item_h, to);
+                launcher_update();
+                return;
+            }
+            if (!k.mods && k.key > ' ' && k.key < 0x7f && launcher_type_ahead(k.key)) {
+                launcher_update();
+                return;
+            }
+        }
     }
     uint16_t id = 0;
     int16_t idx = 0;
-    switch (ugui_nav(&s_launcher.ui_ctx, k.key, k.mods, &id, &idx)) {
+    switch (ugui_nav(ctx, k.key, k.mods, &id, &idx)) {
     case UGUI_NAV_MOVED:
         launcher_update();
         return;
@@ -1343,11 +1635,7 @@ static void launcher_key(key_event_t k) {
         if (k.key == KEY_DOWN || k.key == KEY_UP) launcher_scroll(k.key == KEY_DOWN ? 1 : -1);
         return;
     default:
-        break;
-    }
-    if (k.key == 'r' || k.key == 'R') {
-        launcher_scan_docs();
-        launcher_update();
+        return;
     }
 }
 
@@ -1456,14 +1744,29 @@ uint32_t launcher_get_seq(void) {
 }
 
 void launcher_report(void) {
-    cprintf("launcher: %s (slot=%u, size=%dx%d, docs=%d, widgets=%d)\n",
+    cprintf("launcher: %s (slot=%u, size=%dx%d, face %s, shortcuts=%d, widgets=%d)\n",
             s_launcher.active ? "open" : "closed",
             (unsigned)s_launcher.slot_id,
-            s_launcher.win_w, s_launcher.win_h,
-            s_launcher.doc_count, s_launcher.ui_ctx.count);
+            s_launcher.win_w, s_launcher.win_h, k_faces[s_launcher.face],
+            shortcuts_count(), s_launcher.ui_ctx.count);
+    cprintf("  files: \"%s\", %d entries%s, scrolled %d px\n", s_launcher.cwd[0] ? s_launcher.cwd : "/",
+            s_launcher.n_entries, s_launcher.truncated ? " (more not shown)" : "", s_launcher.scroll_px);
+    const ugui_ctx_t *fc = &s_launcher.ui_ctx;
+    if (fc->focus_id == LAUNCHER_ID_FILE && fc->focus_index >= 0 && fc->focus_index < s_launcher.n_entries)
+        cprintf("  focus: file %d \"%s\"%s\n", fc->focus_index, s_launcher.entries[fc->focus_index].name,
+                fc->focus_shown ? "" : " (not shown)");
+    else if (fc->focus_id == LAUNCHER_ID_SHORTCUT && shortcuts_at(fc->focus_index))
+        cprintf("  focus: shortcut %d \"%s\"%s\n", fc->focus_index, shortcuts_at(fc->focus_index)->label,
+                fc->focus_shown ? "" : " (not shown)");
+    else if (fc->focus_id)
+        cprintf("  focus: id %u index %d%s\n", (unsigned)fc->focus_id, (int)fc->focus_index, fc->focus_shown ? "" : " (not shown)");
     if (s_launcher.alert_title[0]) cprintf("  alert: %s\n", s_launcher.alert_title);
-    if (s_launcher.sheet_doc > 0 && s_launcher.sheet_doc <= s_launcher.doc_count)
-        cprintf("  sheet: %s\n", s_launcher.docs[s_launcher.sheet_doc - 1].label);
+    if (s_launcher.sheet != SHEET_NONE) {
+        cprintf("  sheet: %s:", s_launcher.sheet_title);
+        for (int i = 0; i < s_launcher.sheet_n; i++) cprintf(" [%d] %s", i, s_launcher.sheet_items[i]);
+        cprintf("\n");
+    }
+    if (s_launcher.renaming) cprintf("  renaming shortcut %d: \"%s\"\n", s_launcher.rename_idx, s_launcher.rename_buf);
     if (s_launcher.ui_ctx.hover_id)
         cprintf("  hover: id %u index %d\n", (unsigned)s_launcher.ui_ctx.hover_id, (int)s_launcher.ui_ctx.hover_index);
     if (s_launcher.gal.on && s_launcher.gal.field.buf)
@@ -1475,9 +1778,14 @@ void launcher_report(void) {
     for (int i = 0; i < s_launcher.ui_ctx.count; i++) {
         const ugui_hit_t *h = &s_launcher.ui_ctx.hits[i];
         ugui_rect_t t = ugui_touch_rect(&s_launcher.ui_ctx, i);
-        cprintf("  hit id %u index %d: x %d..%d y %d..%d, touched over %dx%d px%s\n", (unsigned)h->id, (int)h->index,
+        /* A row's or a tile's name after it, for tests that pick one. */
+        const char *what = h->id == LAUNCHER_ID_FILE && h->index >= 0 && h->index < s_launcher.n_entries
+                               ? s_launcher.entries[h->index].name
+                         : h->id == LAUNCHER_ID_SHORTCUT && shortcuts_at(h->index) ? shortcuts_at(h->index)->label : NULL;
+        cprintf("  hit id %u index %d: x %d..%d y %d..%d, touched over %dx%d px%s%s%s%s\n", (unsigned)h->id, (int)h->index,
                 (int)h->rect.x, (int)(h->rect.x + h->rect.w - 1), (int)h->rect.y, (int)(h->rect.y + h->rect.h - 1),
-                (int)t.w, (int)t.h, (h->flags & UGUI_HIT_DISABLED) ? " (dimmed)" : "");
+                (int)t.w, (int)t.h, (h->flags & UGUI_HIT_DISABLED) ? " (dimmed)" : "", what ? " \"" : "", what ? what : "",
+                what ? "\"" : "");
     }
 }
 

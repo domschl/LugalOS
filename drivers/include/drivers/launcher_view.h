@@ -1,12 +1,7 @@
-/* drivers/include/drivers/launcher_view.h — Classic Mac Touch Launcher Window
- *
- * Implements the touch-first Launcher ribbon window (RIBBON_WIN_LAUNCHER) for
- * terminal presets when operating without a keyboard or via touch navigation:
- * - Application cards: Reader, Moonbase, Terminal
- * - Document Library browser: scans /sd0/pub, /sd0/help, /flash0/help
- * - Quick Settings: Volume stepper, Brightness stepper, Orientation selector
- * - Freestanding C, zero heap allocations, zero FPU in M-mode.
- */
+/* drivers/include/drivers/launcher_view.h -- the launcher (RIBBON_WIN_LAUNCHER),
+ * the home view: its Shortcuts face (drivers/shortcuts.h) and its Files
+ * face (the mounted volumes and their directories). drivers/launcher_view.c
+ * says how each works; doc/user/launcher.md is the user's side. */
 
 #ifndef LUGALOS_DRIVERS_LAUNCHER_VIEW_H
 #define LUGALOS_DRIVERS_LAUNCHER_VIEW_H
@@ -30,7 +25,7 @@ bool     launcher_tap(int client_x, int client_y);
 void     launcher_press(int client_x, int client_y);
 void     launcher_release(void);
 void     launcher_scroll(int delta_y);
-/* A finger dragging over the launcher: the document list follows it, and
+/* A finger dragging over the launcher: the face's list or grid follows it, and
  * glides on when it lifts still moving (dy over its last ms). */
 void     launcher_drag(int dy);
 void     launcher_drag_end(int dy, uint32_t ms);

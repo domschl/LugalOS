@@ -294,6 +294,7 @@ bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
 #define CONSOLE_HOTKEY_REVEAL       37u /* full screen: the menu and title bars (the pointer at the top edge) */
 #define CONSOLE_HOTKEY_FS_LEAVE     38u /* full screen left (a swipe down from the top edge) */
 #define CONSOLE_HOTKEY_SETTINGS     39u /* Cmd+, : the Settings app (as the menu bar's gear) */
+#define CONSOLE_HOTKEY_LAUNCHER     40u /* Cmd+Space : the launcher, from anywhere */
 void console_hotkey(unsigned code);
 /* Whether the screen's ribbon runs down it now (portrait): then Cmd+Up /
  * Down are the previous and next window, and with Ctrl they move it. */

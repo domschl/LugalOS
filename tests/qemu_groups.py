@@ -177,3 +177,173 @@ GROUPS: dict[str, tuple[str, list[Callable[[Session], Result]]]] = {
     "editor": ("the editor and printk formatting (kernel/editor*.c, kernel/printk.c)",
                _selftests("editselftest", "fmtselftest")),
 }
+
+
+# --- 77.2: the launcher's two faces ---------------------------------------------
+
+def _only_terminal(session: Session) -> None:
+    """Every window but the first terminal closed: the launcher by its
+    command (it has no close box), the rest by Cmd+W on each."""
+    session.send_and_expect("launcher close", r"lsh> ", timeout=10.0)
+    for _ in range(6):
+        ok, log = session.send_and_expect("ribbon", r"Ribbon Status: (\d+) windows", timeout=10.0)
+        m = re.search(r"Ribbon Status: (\d+) windows", log)
+        if not ok or not m or int(m.group(1)) <= 1:
+            return
+        session.send_and_expect("ribbon focus 1", r"lsh> ", timeout=10.0)
+        session.send_and_expect("key cmd-w", r"key: ", timeout=10.0)
+        session.send_and_expect("launcher status", r"launcher: ", timeout=10.0)     # the views task caught up
+
+
+# The launcher's content on QEMU's 800 x 480 RAM screen, opened beside the
+# terminal and scrolled to: window-relative (x, y) is screen (x + 5, y + 39).
+LAUNCHER_OFF = (5, 39)
+
+
+def _launcher_hits(session: Session) -> tuple[dict[tuple[int, int], tuple[int, int]], str]:
+    """`launcher status`'s hit-boxes as (id, index) -> screen centre; and the status."""
+    ok, log = session.send_and_expect("launcher status", r"launcher: [^\n]*\n(?:.*\n)*?.*lsh> ", timeout=10.0)
+    hits = {}
+    for m in re.finditer(r"hit id (\d+) index (-?\d+): x (\d+)\.\.(\d+) y (\d+)\.\.(\d+)", log):
+        x = (int(m.group(3)) + int(m.group(4))) // 2 + LAUNCHER_OFF[0]
+        y = (int(m.group(5)) + int(m.group(6))) // 2 + LAUNCHER_OFF[1]
+        hits[(int(m.group(1)), int(m.group(2)))] = (x, y)
+    return hits, log
+
+
+def launcher_files_by_keys(session: Session) -> Result:
+    """77.2's acceptance, keys only: the launcher, Ctrl+Tab to Files, Enter
+    into /sd0, type-ahead to help and shell.md, Enter opens it in the
+    reader; Cmd+Space back to the launcher, Shift+Enter's sheet adds it to
+    the shortcuts; Ctrl+Tab to Shortcuts, its tile's sheet (m) removes it,
+    confirmed. The shortcuts put back to the defaults after."""
+    name = "Launcher By Keys: Files To A Document, Shortcut Added And Removed (77.2)"
+    _only_terminal(session)
+    session.send_and_expect("shortcuts reset", r"shortcuts: ok", timeout=10.0)
+    ok, log = _steps(session, [
+        ("launcher", r"launcher: (opened|focused)"),
+        ("key ctrl-tab tab", r"key: 2 sent"), ("launcher status", r"face Files"),
+        ("key down enter", r"key: 2 sent"), ("launcher status", r'files: "/sd0"'),
+        ("key h enter", r"key: 2 sent"), ("launcher status", r'files: "/sd0/help"'),
+        ("key s s", r"key: 2 sent"), ("launcher status", r'focus: file \d+ "shell\.md"'),
+        ("key enter", r"key: 1 sent"), ("launcher status", r"launcher: open"),
+        ("ribbon", r"Reader [^\n]*\*"),
+        ("key cmd-space", r"key: 1 sent"), ("launcher status", r'focus: file \d+ "shell\.md"'),
+        ("key shift-enter", r"key: 1 sent"), ("launcher status", r"sheet: shell\.md: [^\n]*\[2\] Add to Shortcuts"),
+        ("key down down enter", r"key: 3 sent"), ("shortcuts", r"shortcuts: ok, 7[^$]*/sd0/help/shell\.md"),
+        ("key ctrl-tab", r"key: 1 sent"), ("launcher status", r'focus: shortcut 0'),
+        ("key right right right right right right", r"key: 6 sent"), ("launcher status", r'focus: shortcut 6'),
+        ("key m", r"key: 1 sent"), ("launcher status", r"sheet: [^\n]*\[2\] Remove"),
+        ("key down down enter", r"key: 3 sent"), ("launcher status", r"alert: Remove the shortcut\?"),
+        ("key enter", r"key: 1 sent"), ("shortcuts", r"shortcuts: ok, 6\r?\n"),
+    ])
+    session.send_and_expect("shortcuts reset", r"shortcuts: ok", timeout=10.0)
+    session.send_and_expect("launcher close", r"launcher: closed", timeout=10.0)
+    return name, ok, log
+
+
+def launcher_500_entries(session: Session) -> Result:
+    """77.2: a directory of 500 files lists whole, in natural order (file2
+    before file10); PgDn moves the focus a page and End to the last; the
+    last one's sheet. The files are removed again after."""
+    name = "Launcher Files: 500 Entries, Natural Order, Paging By Keys (77.2)"
+    _only_terminal(session)
+    session.send_and_expect("mkdir /sd0/many", r"lsh> ", timeout=10.0)
+    session.send_and_expect("(define i 0)", r"=> ", timeout=10.0)
+    session.send_and_expect('(while (< i 500) (write-file (string-append "/sd0/many/file" (number->string i) ".txt") "x") '
+                            "(set! i (+ i 1)))", r"lsh> ", timeout=120.0)
+    ok, log = _steps(session, [
+        ("launcher", r"launcher: (opened|focused)"),
+        ("key ctrl-tab", r"key: 1 sent"), ("launcher status", r"face Files"),
+        ("launcher status", r"launcher: open"),
+    ])
+    if ok:
+        # To /sd0/many from wherever the Files face was left: the roots first.
+        ok, log = _steps(session, [
+            ("key tab bs bs bs", r"key: 4 sent"), ("launcher status", r'files: "/"'),
+            ("key down enter m enter", r"key: 4 sent"), ("launcher status", r'files: "/sd0/many", 500 entries'),
+            ("key down down", r"key: 2 sent"), ("launcher status", r'focus: file 2 "file2\.txt"'),
+            ("key pgdn", r"key: 1 sent"), ("launcher status", r'focus: file (1[0-9]|[3-9]) "file'),
+            ("key end", r"key: 1 sent"), ("launcher status", r'focus: file 499 "file499\.txt"'),
+            ("key shift-enter", r"key: 1 sent"), ("launcher status", r"sheet: file499\.txt: "),
+            ("key esc", r"key: 1 sent"),
+        ])
+    session.send_and_expect("launcher close", r"launcher: closed", timeout=10.0)
+    # The card shared with the checks after this one: the files gone again.
+    session.send_and_expect("(set! i 0)", r"=> ", timeout=10.0)
+    session.send_and_expect('(while (< i 500) (rm (string-append "/sd0/many/file" (number->string i) ".txt")) '
+                            "(set! i (+ i 1)))", r"lsh> ", timeout=120.0)
+    session.send_and_expect('(rmdir "/sd0/many")', r"=> ", timeout=10.0)
+    return name, ok, log
+
+
+def launcher_rename_shortcut(session: Session) -> Result:
+    """77.2: a shortcut renamed through its sheet's dialog (the text field
+    selected whole, so typing replaces it), and kept in the file."""
+    name = "Launcher Shortcuts: Rename Through The Dialog, Kept In The File (77.2)"
+    _only_terminal(session)
+    session.send_and_expect("shortcuts reset", r"shortcuts: ok", timeout=10.0)
+    ok, log = _steps(session, [
+        ("launcher", r"launcher: (opened|focused)"),
+        ("launcher status", r"face (Shortcuts|Files)"),
+    ])
+    if ok and "face Files" in log:
+        session.send_and_expect("key ctrl-tab", r"key: 1 sent", timeout=10.0)
+    if ok:
+        ok, log = _steps(session, [
+            ("key tab m", r"key: 2 sent"), ("launcher status", r"sheet: Settings: [^\n]*\[1\] Rename"),
+            ("key down enter", r"key: 2 sent"), ("launcher status", r'renaming shortcut 0: "Settings"'),
+            ('key "Prefs" enter', r"key: 6 sent"), ("shortcuts", r"\[0\] app  Prefs"),
+            ("cat /sd0/system/shortcuts", r"app\tsettings\tPrefs"),
+        ])
+    session.send_and_expect("shortcuts reset", r"shortcuts: ok", timeout=10.0)
+    session.send_and_expect("launcher close", r"launcher: closed", timeout=10.0)
+    return name, ok, log
+
+
+def launcher_by_mouse(session: Session) -> Result:
+    """71.7 / 77.2: the mouse (`ms`) on the launcher and the reader. Hover
+    outlines a shortcut tile, a right click opens its sheet and a click
+    beside it closes it, a click opens the Help document, a click on the
+    reader's close box closes it; the wheel scrolls a reader under the
+    pointer while the terminal has the focus (two notches away, natural
+    scrolling: down six lines of 18 px), the sideways wheel moves the focus
+    along the ribbon (tilted left, natural: the window on the right). Tile
+    places from `launcher status`."""
+    name = "Mouse: Hover, Click, Context Menu, Wheel Under The Pointer (71.7 ms)"
+    _only_terminal(session)
+    session.send_and_expect("shortcuts reset", r"shortcuts: ok", timeout=10.0)
+    ok, log = session.send_and_expect("launcher", r"launcher: (opened|focused)", timeout=10.0)
+    if not ok:
+        return name, False, log
+    hits, log = _launcher_hits(session)
+    if "face Files" in log:
+        session.send_and_expect("key ctrl-tab", r"key: 1 sent", timeout=10.0)
+        hits, log = _launcher_hits(session)
+    help_tile = next((k for k in hits if k[0] == 10 and k[1] == 4), None)       # Settings, Terminal, Chess, Moonbase, Help
+    if not help_tile:
+        return name, False, f"no fifth shortcut tile in:\n{log}"
+    hx, hy = hits[help_tile]
+    steps = [(f"ms move {hx} {hy}", r"ms: moved"), ("launcher status", r"hover: id 10 index 4"),
+             (f"ms click {hx} {hy} right", r"ms: right click"), ("launcher status", r"sheet: Help"),
+             (f"ms click {hx} {hy}", r"ms: left click"), ("launcher status", r"launcher: open"),
+             (f"ms click {hx} {hy}", r"ms: left click"), ("launcher status", r"launcher: open"),
+             ("ribbon", r"\[2\] Reader[^\n]*\*"),
+             ("ms click 13 30", r"ms: left click"), ("ribbon", r"\[1\] Launcher[^\n]*\*"),
+             ("launcher close", r"launcher: closed"),
+             ("reader /sd0/help/shell.md", r"reader: opened"), ("ribbon focus 0", r"lsh> "),
+             ("ms move 600 200", r"ms: moved"), ("ms wheel 2", r"ms: wheel"),
+             ("reader list", r"shell\.md[^\n]*scrolled 108 px"),
+             ("ms wheel 0 -1", r"ms: wheel"), ("ribbon", r"\[1\] Reader[^\n]*\*"),
+             ("ms click 417 30", r"ms: left click"), ("ribbon", r"Ribbon Status: 1 windows")]
+    for i, (cmd, pat) in enumerate(steps):
+        ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+        if ok and i == 5 and "sheet:" in log:
+            ok = False                                   # the click beside it left the sheet up
+        if not ok:
+            return name, False, f"{cmd!r} did not give {pat!r}:\n{log}"
+    return name, True, ""
+
+
+GROUPS["launcher"] = ("the launcher's faces, shortcuts and files (drivers/launcher_view.c, drivers/shortcuts.c)",
+                      [launcher_files_by_keys, launcher_rename_shortcut, launcher_500_entries, launcher_by_mouse])

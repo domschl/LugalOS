@@ -1660,6 +1660,10 @@ static void run_hotkey(void) {
             if (lcdterm_fullscreen()) (void)console_canvas(req, 2, reply);
             continue;
         }
+        if (hk == CONSOLE_HOTKEY_LAUNCHER) {
+            view_post_call(launcher_open_cb, NULL);      /* opens it, or brings it to the front */
+            continue;
+        }
         if (hk == CONSOLE_HOTKEY_SETTINGS) {
             view_post_call(settings_open_cb, (void *)(uintptr_t)SCREEN_STATUS_HIT_SETTINGS);
             continue;

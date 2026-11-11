@@ -29,6 +29,11 @@ int vfs_mount_ramdisk(int size_kb);
  * memory (C5). */
 bool vfs_volume_writable(const char *name);
 bool vfs_volume_mounted(const char *name);
+/* The i-th mounted storage volume -- a FAT one (flash0, sd0, ram0, nvme0) or
+ * a 9P mount -- in mount-table order: its name and its `ls /` label. Returns
+ * 0 for a FAT volume, 1 for a 9P mount, -1 past the last. Not proc, dev or
+ * srv. Unlocked, as `ls /`: a mount coming or going meanwhile is seen or not. */
+int vfs_root_at(unsigned i, char *name, unsigned cap, char *label, unsigned label_cap);
 /* Asks a mounted volume's device whether its medium is still there, and
  * unmounts it until a reboot after two misses in a row (block_dev_t's
  * `lost`). For a caller that polls anyway -- the status bar, once a second. */

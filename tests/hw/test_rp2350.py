@@ -34,6 +34,7 @@ import serial
 import rp2350
 import longnames
 import hello_ugui
+import launcher_faces
 import settings_app
 import stacks_fullscreen
 import titlebar_menu
@@ -273,6 +274,22 @@ def test_titlebar_menu(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, True, "SKIPPED: no screen on this persona")
     try:
         ok, detail = titlebar_menu.check(console)
+        return (name, ok, detail)
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+
+
+def test_launcher_faces(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """77.2: the launcher's faces by a finger and by the mouse. See
+    launcher_faces.py."""
+    name = "The launcher's Shortcuts and Files faces by touch and mouse (77.2)"
+    _, console = _io(ports)
+    if "no views" in console("ui"):
+        return (name, True, "SKIPPED: no screen on this persona")
+    if not rp2350.sd_mounted(ports.console):
+        return (name, True, "SKIPPED: /sd0 is not mounted")
+    try:
+        ok, detail = launcher_faces.check(console)
         return (name, ok, detail)
     except Exception as e:
         return (name, False, f"{type(e).__name__}: {e}")
@@ -2498,7 +2515,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_long_names, test_hello_ugui, test_stacks_fullscreen, test_titlebar_menu, test_settings_app, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_long_names, test_hello_ugui, test_stacks_fullscreen, test_titlebar_menu, test_settings_app, test_launcher_faces, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

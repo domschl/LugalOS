@@ -813,6 +813,8 @@ set(SOURCES
     drivers/settings_view.c
     # display.warmth's ink and paper colours, given to whichever panel there is.
     drivers/paper.c
+    # the launcher's Shortcuts face: its list, file and defaults (77.2).
+    drivers/shortcuts.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c
