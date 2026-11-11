@@ -1999,8 +1999,20 @@ static void cmd_settings(const char *arg) {
         }
         return;
     }
-    if (strcmp(arg, "open") == 0) {
-        cprintf(settings_view_open() ? "settings: open\n" : "settings: no window (no screen, or no room)\n");
+    if (strcmp(arg, "open") == 0 || strncmp(arg, "open ", 5) == 0) {
+        /* optional: the section to show, by its name */
+        static const char *const sections[SETTINGS_SECTION_COUNT] = { "display", "sound", "input", "power",
+                                                                      "network", "storage", "about" };
+        const char *sec = arg + 4;
+        while (*sec == ' ') sec++;
+        int at = -1;
+        for (int i = 0; *sec && i < SETTINGS_SECTION_COUNT; i++)
+            if (strcmp(sec, sections[i]) == 0) at = i;
+        if (*sec && at < 0) {
+            cprintf("settings open: no section '%s' (display, sound, input, power, network, storage, about)\n", sec);
+            return;
+        }
+        cprintf(settings_view_open_at(at) ? "settings: open\n" : "settings: no window (no screen, or no room)\n");
         return;
     }
     if (strcmp(arg, "view") == 0) {

@@ -246,6 +246,9 @@ python3 tests/hw/lcdterm_shots.py --scenario ribbon --board lcd7b
 
 # The views: the launcher, its control gallery, a view of its own type and the mouse cursor (dev image):
 python3 tests/hw/lcdterm_shots.py --scenario views --board tab5
+
+# Phase 77: the launcher's Shortcuts and Files faces, the Settings app at Display and Input:
+python3 tests/hw/lcdterm_shots.py --scenario ux77 --board lcd7b
 ```
 
 On the Tab5 and the LCD-7B the shots come back over the console's own wire at 921,600 baud; a full RGB565 frame takes a while, so a scenario with several shots runs for some minutes.

@@ -23,6 +23,8 @@ Scenarios (--scenario):
             the terminal and its height changed; the title-bar menu open
             (by the mouse); the full-screen hint; on the Tab5, a top/bottom
             pair in portrait
+  ux77      phase 77: the launcher's Shortcuts and Files faces, and the
+            Settings app at Display and at Input
 
 Boards (--board):
   rp2350    the RP2350 terminal: console on if00, 9P on if02 (default)
@@ -215,6 +217,24 @@ RIBBON_SAME: list[tuple[str, str]] = [("chess-board", "chess-back")]
 # 16-pixel cells; scaled by the cell height (32 on the Tab5).
 CLOCK_MASK_PX = 120
 STATUS_BAR_ROWS = 16
+
+
+# Phase 77: the launcher's faces (the face is a setting, read when the
+# launcher opens) and the Settings app at two sections.
+UX77: list[tuple[str, float, str | None]] = [
+    ("launcher close", 2.0, None),
+    ("KEY:cmd-1", 2.0, None),
+    ("clear", 1.0, None),
+    ("settings set launcher.face shortcuts", 1.0, None),
+    ("launcher", 3.0, "launcher-shortcuts"),
+    ("key ctrl-tab", 2.0, "launcher-files"),
+    ("key ctrl-tab", 2.0, None),                  # the face as it was
+    ("launcher close", 2.0, None),
+    ("settings open display", 3.0, "settings-display"),
+    ("settings open input", 3.0, "settings-input"),
+    ("KEY:cmd-w", 2.0, None),                     # closes the focused view
+    ("ribbon", 1.5, None),
+]
 
 
 def run_line(ser: serial.Serial, line: str, wait: float) -> str:
@@ -430,7 +450,7 @@ def main() -> int:
     ap.add_argument("--out", required=True, type=Path, help="directory for shots and the console log")
     ap.add_argument("--compare", type=Path, help="a previous --out directory to diff against")
     ap.add_argument("--board", choices=["rp2350", "lcd7b", "tab5"], default="rp2350")
-    ap.add_argument("--scenario", choices=["terminal", "ribbon", "views", "ux76"], default="terminal")
+    ap.add_argument("--scenario", choices=["terminal", "ribbon", "views", "ux76", "ux77"], default="terminal")
     ap.add_argument("--console", help="RP2350: override the console port (if00)")
     ap.add_argument("--net", help="RP2350: override the 9P port (if02)")
     args = ap.parse_args()
@@ -440,7 +460,7 @@ def main() -> int:
         print(f"no {args.board} board answering -- nothing to do")
         return 0
     args.out.mkdir(parents=True, exist_ok=True)
-    scenario = {"terminal": TERMINAL, "ribbon": RIBBON, "views": VIEWS, "ux76": UX76}[args.scenario]
+    scenario = {"terminal": TERMINAL, "ribbon": RIBBON, "views": VIEWS, "ux76": UX76, "ux77": UX77}[args.scenario]
 
     shots: list[str] = []
     log: list[str] = []

@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 123838464,
-  "heap_pages": 30234,
+  "heap_bytes": 123834368,
+  "heap_pages": 30233,
   "per_file": {
     "(no line info: .rodata)": 14567,
     "(no line info: .sdata)": 9,
@@ -116,7 +116,7 @@
     "kernel/settings.c": 451,
     "kernel/setup.c": 453,
     "kernel/sha256.c": 273,
-    "kernel/shell.c": 3525,
+    "kernel/shell.c": 3581,
     "kernel/smp.c": 8,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 914,
@@ -199,11 +199,11 @@
     "radio": 3464,
     "selftest": 10607,
     "sensors": 20839,
-    "shell": 14313,
+    "shell": 14369,
     "storage": 20768,
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1364908,
-  "total": 7991950
+  "ram_code": 1365180,
+  "total": 7992278
 }

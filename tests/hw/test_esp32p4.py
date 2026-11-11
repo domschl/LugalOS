@@ -2358,6 +2358,46 @@ def test_settings_persist(b: Board) -> tuple[str, bool, str]:
     return name, True, f"ui.osk_preview {was} -> {other}, kept across a reboot, put back"
 
 
+# Phase 77's settings and what the test sets them to (warm_ink is on by
+# default: it is checked through the colour pair rather than by its value).
+_PERSIST_77 = {"display.warmth": "10", "display.warm_ink": "on", "ui.text_size": "large",
+               "input.pointer_speed": "150", "launcher.face": "files"}
+
+
+def test_settings_persist_77(b: Board) -> tuple[str, bool, str]:
+    """77.4: phase 77's settings survive a reboot -- the paper warmth, the
+    warm ink, the text size, the pointer speed and the launcher's face -- and
+    the warmth is on the panel after it (`lcd`'s colour pair: the deep
+    sepia's ink and paper), not only in the store. Each is put back."""
+    name = "settings: phase 77's settings and the warmth on the panel survive a reboot (77.4)"
+    c = b.console_session
+    was: dict[str, str] = {}
+    for key in _PERSIST_77:
+        m = re.search(re.escape(key) + r"=(\S+)", c.cmd(f"settings get {key}", deadline=5.0))
+        if not m:
+            return name, True, f"SKIPPED (no {key} on this image)"
+        was[key] = m.group(1)
+    for key, v in _PERSIST_77.items():
+        c.cmd(f"settings set {key} {v}", deadline=10.0)
+    time.sleep(4.0)                                      # saved 2 s after the last change
+    c = reboot(b)
+    c.cmd("", deadline=10.0)
+    back = {key: c.cmd(f"settings get {key}", deadline=5.0) for key in _PERSIST_77}
+    lcd = c.cmd("lcd", deadline=5.0)
+    for key, v in was.items():
+        c.cmd(f"settings set {key} {v}", deadline=10.0)
+    time.sleep(4.0)
+    lost = [f"{key} (got {back[key].strip()[-60:]!r})" for key, v in _PERSIST_77.items()
+            if not re.search(re.escape(key) + r"=" + re.escape(v) + r"\b", back[key])]
+    if lost:
+        return name, False, "not kept: " + "; ".join(lost)
+    pair = re.search(r"fg 0x([0-9a-f]{4}) bg 0x([0-9a-f]{4})", lcd)
+    if not pair or pair.groups() != ("3943", "e674"):
+        return name, False, f"the panel after the reboot: {pair.groups() if pair else lcd.strip()[-200:]}"
+    return name, True, (", ".join(f"{k} {v}" for k, v in _PERSIST_77.items())
+                        + " kept; the panel at ink 0x3943 paper 0xe674; all put back")
+
+
 def test_view_and_mouse(b: Board) -> tuple[str, bool, str]:
     """71.4/71.7: a view of its own type (`viewtest`) on the panel: its window
     opens focused, a mouse click injected with `ms` reaches it, the glass
@@ -2479,6 +2519,7 @@ TESTS = [
     dev_only(test_system_events),
     dev_only(test_view_and_mouse),
     test_settings_persist,
+    test_settings_persist_77,
     test_settings_app,
     test_launcher_faces,
     dev_only(test_uxbench_regression),

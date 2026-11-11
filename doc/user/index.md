@@ -21,6 +21,7 @@ Welcome to the **LugalOS User Manual**. This guide covers interactive usage, dai
    * Touch gestures: window focus, panning, minimap tapping.
    * Keyboard shortcuts (`Cmd+Left/Right`, window splits), graphical canvases, and PBM screenshots.
    * The launcher's Shortcuts and Files faces: starting applications, browsing volumes, managing shortcuts.
+   * The Settings app: backlight, paper warmth, text size, sound, input, power, network, storage.
 4. **[LugalOS Chess Computer](chess.md)**
    * Interactive chess engine on RP2350 and display terminals.
    * Dual-core Lazy SMP parallel search, TM1638 keypad/LED controls, game storage, and opening book.

@@ -122,7 +122,7 @@
     "kernel/sched.c": 3453,
     "kernel/settings.c": 451,
     "kernel/sha256.c": 273,
-    "kernel/shell.c": 3573,
+    "kernel/shell.c": 3629,
     "kernel/smp.c": 100,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 914,
@@ -205,11 +205,11 @@
     "radio": 3464,
     "selftest": 10607,
     "sensors": 20839,
-    "shell": 14361,
+    "shell": 14417,
     "storage": 6873,
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 743014,
-  "total": 7720109
+  "ram_code": 743140,
+  "total": 7720291
 }
