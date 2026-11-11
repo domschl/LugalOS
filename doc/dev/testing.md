@@ -39,6 +39,34 @@ What a change in an area needs at tiers 1 and 2. `tests/quick.py --list` shows t
 
 An area with no group yet runs its own self-test through `quick.py --run`, and gets a group when it is next worked on: its checks move from `tests/runner.py` into `tests/qemu_groups.py`, where both tiers use them.
 
+### The tools
+
+```bash
+python3 tools/precommit.py                      # every commit: builds, RAM, drift, racescan (~3-6 min)
+python3 tools/precommit.py --no-race            # the same without the race scan (about a minute less)
+
+python3 tests/quick.py --list                   # the groups and the areas they cover
+python3 tests/quick.py settings reader          # these groups on rv32 (tier 1)
+python3 tests/quick.py --target rv64 screen     # on another QEMU target (rv32, rv64, rv32-fold)
+python3 tests/quick.py --build launcher         # ninja -C build/<target> first, warnings failing it
+python3 tests/quick.py --run "vtselftest" --run "settings view"
+                                                # commands and their output (tier 0)
+python3 tests/quick.py --run "screenshot /sd0/a.pbm" --keep /tmp/sd.img
+                                                # keep the run's SD image: mcopy -i /tmp/sd.img ::/a.pbm .
+
+python3 tests/hw/test_esp32p4.py --board tab5 --only launcher     # tier 2: the matching tests on one board
+python3 tests/hw/test_rp2350.py --only settings_app               #   (each suite has --only, a substring
+python3 tests/hw/test_visionfive2.py --only launcher_faces        #    of the test functions' names)
+
+python3 tests/runner.py --target rv32           # tier 3 in parts: host, rv64, rv32, multinode, rv64-smp, rv32-fold
+```
+
+`quick.py` boots a copy of the target's SD image, never the build tree's. Each run starts from a fresh boot, so a group must not rely on what another group left; the full runner, which runs the same checks one after the other in one session, relies on each check cleaning up after itself (close the windows it opened, remove the files it wrote, put the settings back).
+
+**Adding a check.** A check is a function in `tests/qemu_groups.py` that takes a started `QemuSession` at the shell prompt and returns `(name, ok, log)`. Name it after what it proves, start it from a known state (`_only_terminal()` for anything with windows), and clean up at its end. Add it to its area's group in `GROUPS` (a new area: a new group, and a row in the area map above), and call it from `tests/runner.py` where the area's other checks run. A one-command self-test is a line in `SELFTESTS` instead. Board checks shared by several suites (`tests/hw/settings_app.py`, `launcher_faces.py`) take `console(line)` and are wired into each suite as a `test_*` function, so `--only` finds them.
+
+After keys sent with `key`, run a command that waits for the views task before reading the state (`launcher status`, `settings view`): `key` returns as soon as the keys are queued, and a check that reads the ribbon at once can see it from before them.
+
 ---
 
 ## 1. Test Layers
@@ -104,9 +132,14 @@ To ensure memory safety and catch buffer overflows, memory leaks, or undefined b
 The primary continuous integration and regression suite is [`tests/runner.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/runner.py):
 
 ```bash
-# Run the complete automated test suite
+# Run the complete automated test suite (tier 3)
 python3 tests/runner.py
+
+# One part of it: host, rv64, rv32, multinode, rv64-smp, rv32-fold (repeatable)
+python3 tests/runner.py --target rv32
 ```
+
+For anything smaller than a milestone, `tests/quick.py` runs only the groups a change needs ([section 0](#0-what-to-run-when-test-tiers-the-development-and-commit-rule)).
 
 ### Coverage
 The runner executes about **750 test cases** (750 at the end of phase 66) across four virtual targets:

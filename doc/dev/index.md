@@ -53,7 +53,7 @@ doc/dev/
 ---
 
 ## 3. [Part C: Testing Framework & QA](testing.md)
-* **[Testing Guide](testing.md)**: How to run and extend the LugalOS test suite across unit tests, host harnesses with AddressSanitizer, automated QEMU regression tests, and physical hardware-in-the-loop tests.
+* **[Testing Guide](testing.md)**: What to run when -- the test tiers, the development and commit rule (section 0) -- and how to run and extend the LugalOS test suite across unit tests, host harnesses with AddressSanitizer, automated QEMU regression tests (`tests/quick.py` for a change's groups, `tests/runner.py` for everything), and physical hardware-in-the-loop tests.
 * **[Making a Release](releasing.md)**: The version, a clean build id, the tests, installing on the boards, and the tag and GitHub release.
 
 ---
