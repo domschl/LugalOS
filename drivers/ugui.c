@@ -15,6 +15,7 @@
 #include "drivers/font_noto_serif.h"
 #include "drivers/font_noto_mono.h"
 #include "drivers/font8x16.h"
+#include "drivers/font_serif_faces.h"
 #include "lugalos_config.h"
 #include <string.h>
 
@@ -689,6 +690,111 @@ static int raw_text_serif(const ugui_surface_t *s, int x, int y, const char *str
         if (!s->c1) w = aw;
     }
     return w;
+}
+
+/* --- Text sizes (ugui.h) --- */
+
+/* The pair this build's panels use, and only that pair linked: 13 / 24 px
+ * around a 1x panel's 16, 24 / 40 px around a 2x panel's 32. */
+#if defined(UGUI_TEXT_SIZES) && defined(CONFIG_FONT_CELL_W) && (CONFIG_FONT_CELL_W == 16)
+static const ugui_face_t k_small = { 24, 12, font_serif24_widths, &font_serif24_aa[0][0][0] };
+static const ugui_face_t k_large = { 40, 20, font_serif40_widths, &font_serif40_aa[0][0][0] };
+#elif defined(UGUI_TEXT_SIZES)
+static const ugui_face_t k_small = { 13, 7, font_serif13_widths, &font_serif13_aa[0][0][0] };
+static const ugui_face_t k_large = { 24, 12, font_serif24_widths, &font_serif24_aa[0][0][0] };
+#endif
+
+const ugui_face_t *ugui_face(int size) {
+#if defined(UGUI_TEXT_SIZES)
+    if (size == 0) return &k_small;
+    if (size == 2) return &k_large;
+#else
+    (void)size;
+#endif
+    return NULL;
+}
+
+int ugui_face_h(const ugui_surface_t *s, const ugui_face_t *f) {
+    return f ? f->h : ugui_serif_line_h(s);
+}
+
+static unsigned face_index(char ch) {
+    unsigned uc = (unsigned char)ch;
+    return (uc < FONT_SERIF_FACES_FIRST || uc >= FONT_SERIF_FACES_FIRST + FONT_SERIF_FACES_COUNT ? '?' : uc) -
+           FONT_SERIF_FACES_FIRST;
+}
+
+int ugui_face_width(const ugui_surface_t *s, const ugui_face_t *f, const char *str, uint32_t len) {
+    if (!f) return ugui_text_serif_width(s, str, len);
+    int w = 0;
+    for (uint32_t i = 0; str && i < len && str[i]; i++) w += f->widths[face_index(str[i])];
+    return w;
+}
+
+/* Coverage of column c in a glyph's row (0..15). */
+static inline unsigned face_cov(const uint8_t *row, int c) {
+    uint8_t pair = row[c >> 1];
+    return (c & 1) ? (unsigned)(pair >> 4) : (unsigned)(pair & 0x0Fu);
+}
+
+/* One glyph in face f, as the 32 px face draws: italic a shear of a fifth
+ * of the rows above, bold the stronger of a pixel and its neighbour; 1-bpp
+ * where the coverage is at least 6 of 15 (that face's threshold). */
+static int face_glyph(const ugui_surface_t *s, const ugui_face_t *f, int x, int y, char ch, bool bold, bool italic,
+                      uint8_t fg) {
+    unsigned gi = face_index(ch);
+    int gw = f->widths[gi];
+    const uint8_t *g = f->aa + (uint32_t)gi * f->h * f->stride;
+    int cols = f->stride * 2;
+    for (int r = 0; r < f->h; r++) {
+        int py = y + r;
+        const uint8_t *row = g + (uint32_t)r * f->stride;
+        int slant = italic ? (f->h - 1 - r) / 5 : 0;
+        const canvas1_t *c1 = s->c1;
+        uint8_t *line1 = NULL;
+        if (c1 && py >= 0 && py < (int)c1->h && py + c1->oy >= 0)
+            line1 = c1->fb + (uint32_t)(py + c1->oy) * c1->stride;
+        uint8_t *line8 = s->aa_fb && py >= 0 && py < s->h ? s->aa_fb + (uint32_t)py * s->aa_stride : NULL;
+        if (!line1 && !line8) continue;
+        for (int c = 0; c < cols; c++) {
+            unsigned a = face_cov(row, c);
+            if (bold && c + 1 < cols) {
+                unsigned b = face_cov(row, c + 1);
+                if (b > a) a = b;
+            }
+            if (a == 0) continue;
+            int px = x + c + slant;
+            if (line1 && a >= 6u && px >= 0 && px < (int)c1->w) {
+                int spx = px + c1->ox;
+                if (spx >= 0 && spx < (int)c1->stride * 8) line1[spx >> 3] |= (uint8_t)(1u << (spx & 7));
+            }
+            if (line8 && px >= 0 && px < s->w)
+                line8[px] = a == 15u ? fg : (uint8_t)(((uint32_t)fg * a + (uint32_t)line8[px] * (15u - a) + 7u) / 15u);
+        }
+    }
+    return gw;
+}
+
+static int raw_face_text(const ugui_surface_t *s, const ugui_face_t *f, int x, int y, const char *str, uint32_t len,
+                         bool bold, bool italic, bool inverted) {
+    if (!s || !str || len == 0) return 0;
+    int w = ugui_face_width(s, f, str, len);
+    if (inverted && s->c1 && w > 0) canvas1_fill(s->c1, x, y, x + w - 1, y + f->h - 1, CANVAS1_WHITE);
+    uint8_t fg = inverted ? UGUI_GRAY_CARD : UGUI_GRAY_INK;
+    int cx = x;
+    for (uint32_t i = 0; i < len && str[i]; i++) cx += face_glyph(s, f, cx, y, str[i], bold, italic, fg);
+    if (inverted && s->c1 && w > 0) canvas1_invert(s->c1, x, y, x + w - 1, y + f->h - 1);
+    return w;
+}
+
+int ugui_face_text(const ugui_surface_t *s, const ugui_face_t *f, int x, int y, const char *str, uint32_t len,
+                   bool bold, bool italic, bool inverted) {
+    if (!f) return ugui_text_serif(s, x, y, str, len, bold, italic, inverted);
+    if (!s) return 0;
+    ugui_view_t v;
+    const ugui_surface_t *t = view(s, &v);
+    if (!t) return ugui_face_width(s, f, str, len);
+    return raw_face_text(t, f, x - v.dx, y - v.dy, str, len, bold, italic, inverted);
 }
 
 static int raw_text_mono(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,

@@ -4,6 +4,8 @@
 #include "kernel/lock.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
+#include "kernel/console.h"
+#include "drivers/paper.h"
 #include "fs/vfs.h"
 #include "lugalos_config.h"
 
@@ -12,7 +14,6 @@
 #include "drivers/dsi_esp32p4.h"
 #endif
 #if defined(CONFIG_BOARD_TAB5)
-#include "kernel/console.h"
 #include "kernel/orient.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
@@ -38,6 +39,8 @@ static const setting_def_t k_settings[] = {
     { "audio.volume",       SETTING_INT,  VOLUME_DEFAULT, 0, 100, NULL },
     { "display.brightness", SETTING_INT,  100, 10, 100, NULL },
     { "display.orient",     SETTING_ENUM, ORIENT_DEFAULT, 0, 2, k_orient },
+    { "display.warm_ink",   SETTING_BOOL, 1,   0,  1,   NULL },
+    { "display.warmth",     SETTING_INT,  0,   0,  PAPER_WARMTH_MAX, NULL },
     { "input.natural_scroll", SETTING_BOOL, 1, 0, 1, NULL },
     { "input.pointer_speed", SETTING_INT, 100, 25, 400, NULL },
     { "launcher.face",      SETTING_ENUM, 0,   0,  1,   k_face },
@@ -99,6 +102,7 @@ int settings_get(const char *key) {
  * to, it is kept for whoever reads it (a view, later). */
 static void apply(const setting_def_t *d, int v) {
     (void)d; (void)v;
+    if (strncmp(d->key, "display.warm", 12) == 0) paper_apply();
 #if defined(CONFIG_BOARD_ESP32P4)
     if (strcmp(d->key, "audio.volume") == 0) audio_p4_set_volume(v);
 #endif
@@ -139,6 +143,7 @@ bool settings_set(const char *key, int v) {
     if (changed) g_dirty_ms = time_get_ms();
     spin_unlock_irqrestore(&g_settings_lock, f);
     apply(d, v);
+    if (changed) console_settings_changed((unsigned)i);
     return true;
 }
 
@@ -248,5 +253,10 @@ int settings_check(void) {
         if (d->kind == SETTING_ENUM && !d->names) bad++;
         if (settings_find(d->key) != d) bad++;
     }
+    if (!paper_selftest()) bad++;                        /* display.warmth's colours */
     return bad;
+}
+
+int settings_index(const char *key) {
+    return key ? index_of(key) : -1;
 }

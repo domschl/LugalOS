@@ -101,10 +101,12 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 | `Cmd+W` | Close the focused non-root window |
 | `Cmd+1`..`Cmd+9` | Jump to window 1..9 |
 | `Cmd+Shift+3` | Screenshot (PBM) to `/sd0/screenshots/` |
+| `Cmd+,` | The Settings app, at the section it was left at |
 
 ### Touch Gestures (GT911 / ST7121 Capacitive Touch)
 * **Tap Window**: Tapping anywhere inside a window pane transfers focus to it.
 * **Tap System Title (`LugalOS`)**: Tapping the top-left `LugalOS` title in the menu bar opens or focuses the Touch Launcher window.
+* **Tap the Status Area (right end of the menu bar)**: opens or focuses the Settings app -- the gear at the far right (always there) and the clock at the section it was left at, the SD card icon at Storage, the Wi-Fi and 9P icons at Network, the battery at Power. A mouse click does the same.
 * **Tap Close Box**: Tapping the close box (`[X]`) in the top-left title bar closes the window.
 * **Tap Minimap**: Tapping a window block in the top minimap immediately scrolls the ribbon to that window.
 * **Swipe Left / Right**: Swiping sideways with a finger smoothly scrolls the ribbon.
@@ -126,6 +128,11 @@ On touch-enabled terminal boards (such as the M5Stack Tab5 and Waveshare ESP32-P
   * **Apps**: Icon cards to launch **Reader**, **Moonbase Lambda**, and **New Shell**.
   * **Library**: Scrollable list of local documentation and handbooks (`/sd0/help/*.md`, `/sd0/pub/help/*.gmi`, `/sd0/docs/*.md`) that open directly in the Reader window.
   * **Settings**: Touch steppers and toggles for audio **Volume** (`0-100%`), panel **Brightness** (`10-100%`), display **Orientation** (`Landscape` / `Portrait`), and IMU **Auto-Rotate** (`ON` / `OFF`).
+  * **More...**: opens the Settings app.
+* **Settings app (`settings open`)**: a window of its own with the sections **Display** (backlight, paper warmth, text size, orientation on the Tab5), **Sound** (volume, click on each tap, a test sound), **Input** (what is attached, pointer speed, natural scrolling, the on-screen keyboard's key preview), **Power** (charge, charger, the pack's voltage, current and power), **Network** (interface, link, address), **Storage** (each volume's free space) and **About** (board, chip, version, build). Changes apply at once and are kept across a reboot.
+  * **Text size**: Small, Medium or Large for the reader's text (13, 16 or 24 px on the LCD-7B, 24, 32 or 40 px on the Tab5); an open document is laid out again at about the same place. Code keeps its size. The RP2350-LCD-7 has one size.
+  * **Paper warmth**: one slider from white paper (0) through a light warm paper (5) to a deep, aged sepia (10), as e-readers offer for reading in the evening. With **Warm ink with the paper** on, the text warms too, from black to a dark brown, which is softer on the eye than black on cream; turn it off for the most contrast. Every window follows, the terminal's text and the views alike.
+  * In a narrow window it shows the list of sections, and a section with **< Back** over it; `Esc` goes back too.
 * **Press feedback**: a launcher control, a reader action-bar button, a chess button or an on-screen keyboard key shows inverted while a finger is on it; a character key also shows its label enlarged above it. Holding Delete or an arrow key repeats it: after half a second, every 80 ms, until the finger lifts or slides off. A swipe or drag that starts on a control lets it go.
 * **Text fields**: a text field that gets the focus by touch, with no USB keyboard attached, brings the on-screen keyboard up under its window (the window's content gets shorter to make room); its keys go to the field (and on a terminal, to the terminal it is drawn in), and the keyboard goes away when the field loses the focus. Cmd+C, Cmd+X and Cmd+V copy, cut and paste through the system clipboard (the one the line editor, `e`, Lisp and `/dev/clipboard` share), Cmd+A selects all; a long press or a right click on the field opens Cut, Copy, Paste and Select All. `launcher gallery`'s text tab has one to try.
 * **Touch targets**: every control is touched over at least 7 mm square (47 px on the LCD-7B, 81 px on the Tab5), centred on it, even where it is drawn smaller; where two such areas meet, the control drawn nearer the finger has it. `launcher status` lists each control's touch area. What is drawn under the finger wins: a link just below the reader's action bar stays the link's. On the on-screen keyboard, a tap between keys or in its margin goes to the nearest key.

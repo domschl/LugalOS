@@ -831,23 +831,28 @@ int vtterm_selftest(void) {
 
         screen_write(scr, "\033]2;Lisp\007", 9);
         screen_set_right(scr, SCREEN_STATUS_WIFI, "12:34", 5);
-        /* rx = 192 - 16 - 40 = 136. icon_left = 136 - 18 = 118.
+        /* rx = 192 - 24 - 40 = 128 (the gear right of it). icon_left = 128 - 18 = 110.
          * icon_wifi has 0x3fc0 on row 0 (y=4): col 2..9 are black, col 0..1 white.
          * row 9 (y=13) has 0x0600: col 5..6 black. */
-        bool wifi_icon_ok = PX(118 + 2, 4) && !PX(118 + 0, 4) && PX(118 + 5, 4 + 9);
+        bool wifi_icon_ok = PX(110 + 2, 4) && !PX(110 + 0, 4) && PX(110 + 5, 4 + 9);
+        /* The gear at x = 192 - 16 = 176, y = 3: row 0 is 0x0600 (col 5..6),
+         * row 5 0xf0f0 (col 0..3 and 8..11, its hole at 4..7). */
+        bool gear_ok = PX(176 + 5, 3) && !PX(176 + 4, 3) && PX(176, 3 + 5) && !PX(176 + 5, 3 + 5) &&
+                       PX(176 + 11, 3 + 5);
         screen_set_right(scr, 0, "12:34", 5);
         screen_write(scr, "1\r\n2\r\n3\r\n4\r\n5", 14);
-        fbtext_t clock;                       /* the clock: at x = 192 - 16 - 40 = 136, y = 2 */
+        fbtext_t clock;                       /* the clock: at x = 192 - 24 - 40 = 128, y = 2 */
         fbtext_init(&clock, cx.buf + 2u * stride, stride, ST_SW / 8u, 1);
-        bool menu = grid_cell_is(&clock, 17, 0, '1', false) && grid_cell_is(&clock, 21, 0, '4', false);
+        bool menu = grid_cell_is(&clock, 16, 0, '1', false) && grid_cell_is(&clock, 20, 0, '4', false);
         int bw2 = 8 * 4 + 12, bx2 = (4 + x1 + 1) / 2 - bw2 / 2;
         bool retitled = PX(bx2 - 1, 22 + 3) && !PX(bx2, 22 + 3) && PX(bx2 + bw2, 22 + 3);
         bool text_ok = grid_cell_is(&scr->vt.text, 0, 0, '2', false) &&
                        grid_cell_is(&scr->vt.text, 0, 3, '5', false) && rule && PX(4, 60);
         st_check(&cx, "37.1a: the screen's chrome: menu bar, desktop, frame, shadow, title bar",
                  initial);
-        st_check(&cx, "37.1a: a new title is re-centred, the clock sits 16 px from the edge, text scrolls in its tile",
-                 menu && retitled && text_ok && wifi_icon_ok);
+        st_check(&cx, "37.1a: a new title is re-centred, the clock sits 24 px from the edge left of the gear (77.1), "
+                      "text scrolls in its tile",
+                 menu && retitled && text_ok && wifi_icon_ok && gear_ok);
 
         const uint32_t sbytes = ST_SW / 8u * ST_SH;
         for (uint32_t i = 0; i < sbytes; i++) cx.copy[i] = cx.buf[i];

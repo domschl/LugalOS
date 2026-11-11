@@ -187,6 +187,10 @@ void console_touch_context(unsigned x, unsigned y);
  * it charges, whether it is below the warning level. The input path tells
  * the windows (WIN_EV_POWER) at each 10 % step and each change. */
 void console_power_state(int pct, bool charging, bool low);
+/* Setting `index` (kernel/settings.h) changed, from any task: the input path
+ * tells every window (WIN_EV_SETTINGS), once for each setting changed since
+ * it last looked. */
+void console_settings_changed(unsigned index);
 /* Whether window (type, id) is on the ribbon, as the screen last reported. */
 bool console_window_present(uint8_t type, uint8_t id);
 /* What window (type, id) was last told: CONSOLE_WIN_* flags (`ribbon list`). */
@@ -289,6 +293,7 @@ bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
 #define CONSOLE_HOTKEY_FULLSCREEN   36u /* Cmd+Shift+F : full screen on / off */
 #define CONSOLE_HOTKEY_REVEAL       37u /* full screen: the menu and title bars (the pointer at the top edge) */
 #define CONSOLE_HOTKEY_FS_LEAVE     38u /* full screen left (a swipe down from the top edge) */
+#define CONSOLE_HOTKEY_SETTINGS     39u /* Cmd+, : the Settings app (as the menu bar's gear) */
 void console_hotkey(unsigned code);
 /* Whether the screen's ribbon runs down it now (portrait): then Cmd+Up /
  * Down are the previous and next window, and with Ctrl they move it. */

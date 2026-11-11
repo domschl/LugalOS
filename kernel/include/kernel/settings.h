@@ -15,8 +15,13 @@
  * applied at boot (settings_load()). Values are the names for the named
  * kinds ("portrait"), numbers for the others.
  *
+ * A change is told to every window as WIN_EV_SETTINGS (kernel/event.h),
+ * its key the setting's index (settings_at()).
+ *
  * Keys today: audio.volume, display.brightness, display.orient (the Tab5),
- * launcher.face, ui.click_sound, ui.osk_preview, ui.text_size. */
+ * display.warm_ink, display.warmth (drivers/paper.h), input.natural_scroll,
+ * input.pointer_speed, launcher.face, ui.click_sound, ui.osk_preview,
+ * ui.text_size. */
 
 typedef enum { SETTING_INT, SETTING_BOOL, SETTING_ENUM } setting_kind_t;
 
@@ -52,6 +57,9 @@ void settings_load(void);
 /* From a task that runs often (the shell's idle turn): the file written when
  * the last change is two seconds old. */
 void settings_poll(void);
+
+/* The index of key in the table (settings_at()), or -1. */
+int  settings_index(const char *key);
 
 /* `settings check`: the table sorted, every default in range. Returns the faults. */
 int settings_check(void);

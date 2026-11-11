@@ -56,6 +56,8 @@ const char *reader_get_path(void);
 const char *reader_get_path_instance(uint8_t rid);
 /* How far reader rid is scrolled, in pixels from the top. */
 int         reader_get_scroll_instance(uint8_t rid);
+/* The document's laid-out height in px (its text size's), as last drawn. */
+int         reader_get_height_instance(uint8_t rid);
 bool reader_is_active(void);
 bool reader_instance_is_active(uint8_t rid);
 bool reader_back(void);

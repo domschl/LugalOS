@@ -21,6 +21,10 @@ void lcd7_set_colour(uint16_t rgb565);
  * instantly: done with the data pins' output overrides, not in PIO. */
 void lcd7_set_colours(uint16_t fg, uint16_t bg);
 
+/* Whether the panel is being driven (lcd7_init() succeeded): the colours'
+ * pin overrides are only set then. */
+bool lcd7_is_running(void);
+
 /* 36.4: the 800 x 480 1-bpp framebuffer, 25 words per line; pixel x of line
  * y is bit x % 32 of word y * 25 + x / 32 (leftmost pixel = LSB). NULL if the
  * panel is not running.

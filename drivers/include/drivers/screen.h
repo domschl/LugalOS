@@ -342,6 +342,10 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *                                       x y, 0 close, 2 hover, 3 item i)
  *   'G' u8 mode [x y]                   76.4b: a handle dragged (2 start at
  *                                       x y, 1 moved, 0 let go)
+ *   'z' u16 x                           77.1: what the menu bar's status
+ *                                       area has at x: reply[12] 1 and [13]
+ *                                       a SCREEN_STATUS_HIT_*, [14..15] the
+ *                                       screen's width
  *   (each a letter of its own: these are matched before the canvas's
  *   drawing requests above, so one of theirs would be taken from them)
  *
@@ -351,6 +355,12 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  * the panes are swapped. */
 #define SCREEN_REPLY_RELAID 0xCDu  /* reply[8] of a tap: windows changed size or place (zoom box, menu) */
 #define SCREEN_REPLY_TAKEN  0xCFu  /* reply[8] of a tap: the window manager's (it closed the menu), no window's */
+#define SCREEN_REPLY_SETTINGS 0xABu /* reply[8] of a tap: the menu bar's status area; reply[9] what on (below) */
+#define SCREEN_STATUS_HIT_SETTINGS 0u /* the gear, the clock, or between: the Settings app as it was */
+#define SCREEN_STATUS_HIT_SD       1u
+#define SCREEN_STATUS_HIT_WIFI     2u
+#define SCREEN_STATUS_HIT_P9       3u
+#define SCREEN_STATUS_HIT_BATTERY  4u
 #define SCREEN_REPLY_LEN 32u     /* 'R' with an index puts the window's title at [12..31] */
 
 #define SCREEN_VIEW_SINGLETON 0x01u     /* 'v': focus the type's window if it has one */

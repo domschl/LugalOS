@@ -4,7 +4,8 @@
  * using the stateless Classic-Mac micro-toolkit (ugui):
  * - Application cards: Reader, Moonbase, Terminal
  * - Document Library browser: scans /sd0/pub, /sd0/help, /flash0/help
- * - Quick Settings: Volume stepper, Brightness stepper, Orientation selector
+ * - Quick Settings: Volume stepper, Brightness stepper, Orientation selector,
+ *   and More... for the Settings app
  * - Freestanding C, zero heap allocations, zero FPU in M-mode.
  */
 
@@ -65,6 +66,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 
 #include "drivers/ugui.h"
 #include "drivers/reader_view.h"
+#include "drivers/settings_view.h"
 #include "drivers/ribbon.h"
 #include "drivers/screen.h"
 #include "drivers/lcdterm.h"
@@ -103,6 +105,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define LAUNCHER_ID_ORIENT_SEG   30
 #define LAUNCHER_ID_DOC_REFRESH  40
 #define LAUNCHER_ID_SCROLLBAR    41     /* the document list's: press or drag to scroll there */
+#define LAUNCHER_ID_SETTINGS     42     /* the Settings app (drivers/settings_view.h) */
 #define LAUNCHER_ID_DOC_BASE     100
 /* The control gallery (`launcher gallery`): every ugui control, to try by
  * touch and keys before an app uses it. */
@@ -630,7 +633,11 @@ static void draw_apps_and_settings(const ugui_surface_t *surf, ugui_rect_t *col)
     (void)ugui_cut_top(col, 14 * s);
 
     hdr = ugui_cut_top(col, 26 * s);
+    ugui_rect_t more = ugui_cut_right(&hdr, 66 * s);
+    (void)ugui_cut_right(&hdr, 6 * s);
     ugui_section_header(surf, hdr.x, hdr.y, hdr.w, "QUICK SETTINGS");
+    ugui_toolbar_button(surf, ctx, (ugui_rect_t){ more.x, (int16_t)(more.y - 2 * s), more.w, (int16_t)(20 * s) },
+                        "More...", LAUNCHER_ID_SETTINGS, false);
     char vol_str[16];
     ksnprintf(vol_str, sizeof(vol_str), "%d%%", get_volume_percent());
     ugui_disable_next(ctx, volume_limits());
@@ -1219,6 +1226,11 @@ static bool launcher_activate(uint16_t id, int16_t hit_idx) {
         return true;
     }
 #endif
+    if (id == LAUNCHER_ID_SETTINGS) {
+        if (!settings_view_open())
+            launcher_alert("Settings did not open.", "There is no room for another window:\nclose one first (its close box, or Cmd-W).");
+        return true;
+    }
     if (id == LAUNCHER_ID_SCROLLBAR) return true;     /* launcher_press() moved it already */
     if (id == LAUNCHER_ID_DOC_REFRESH) {
         launcher_scan_docs();

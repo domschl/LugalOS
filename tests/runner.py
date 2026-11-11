@@ -3734,6 +3734,89 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("A New View Needs Nothing In The Screen Or Compositor (71.4 viewtest)", vt_ok, vt_log))
 
+        # 77.1: the Settings app, by keys only. Its window opens focused;
+        # Tab shows the focus on the first section and walks to the warmth
+        # slider (seven sections, the brightness slider, then it), Right
+        # steps it twice -- applied, and told back to the view itself as
+        # WIN_EV_SETTINGS (two changes between two looks are one event).
+        # Narrowed (Cmd+- three times), it shows the list alone; Enter
+        # opens a section with a Back button, Esc goes back; Cmd+W closes.
+        steps = [("settings open", r"settings: open"),
+                 ("ribbon", r"View     \(settings[^\n]*\*"),
+                 ("key tab tab tab tab tab tab tab tab tab", r"key: 9 sent"),
+                 ("key right right", r"key: 2 sent"),
+                 ("settings get display.warmth", r"display\.warmth=2"),
+                 ("settings view", r"told [1-9]\d* setting changes?, the last display\.warmth"),
+                 ("key cmd--", r"key: 1 sent"), ("key cmd--", r"key: 1 sent"), ("key cmd--", r"key: 1 sent"),
+                 ("settings view", r"narrow, section Display \(list shown\)"),
+                 ("key down enter", r"key: 2 sent"),
+                 ("settings view", r"narrow, section Sound\r?\n"),
+                 ("key esc", r"key: 1 sent"),
+                 ("settings view", r"narrow, section Sound \(list shown\)"),
+                 ("settings set display.warmth 0", r"display\.warmth=0"),
+                 ("key cmd-w", r"key: 1 sent"),
+                 ("settings view", r"settings view: closed")]
+        st_ok, st_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if not ok:
+                st_ok, st_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("The Settings App By Keys: Warmth, Its Event, Narrow List And Back (77.1)", st_ok, st_log))
+
+        # 77.1: the menu bar's right end opens Settings -- the gear (always
+        # drawn) at the section it was left at, the SD icon at Storage -- and
+        # so does Cmd+,. The places come from `ribbon list` (the screen's own
+        # hit test, `status: ...`), clicked with the mouse.
+        mb_ok, mb_log = True, ""
+        ok, log = session.send_and_expect("ribbon list", r"status:[^\n]*\n", timeout=15.0)
+        runs = {m.group(1): (int(m.group(2)), int(m.group(3)))
+                for m in re.finditer(r"(settings|sd|wifi|p9|battery) (\d+)\.\.(\d+)", log.split("status:")[-1])}
+        steps = []
+        if "settings" not in runs:
+            mb_ok, mb_log = False, f"no status area in ribbon list:\n{log}"
+        else:
+            gx = runs["settings"][1] - 6                 # the gear, at the right end
+            steps = [(f"ms click {gx} 8", r"ms: left click"), ("settings view", r"settings view: open[^\n]*section Sound"),
+                     ("key cmd-w", r"key: 1 sent"), ("settings view", r"settings view: closed"),
+                     ("key cmd-,", r"key: 1 sent"), ("settings view", r"settings view: open"),
+                     ("key cmd-w", r"key: 1 sent")]
+            if "sd" in runs:
+                sx = (runs["sd"][0] + runs["sd"][1]) // 2
+                steps += [(f"ms click {sx} 8", r"ms: left click"), ("settings view", r"settings view: open[^\n]*section Storage"),
+                          ("key cmd-w", r"key: 1 sent")]
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if not ok:
+                mb_ok, mb_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("The Menu Bar's Gear, SD Icon And Cmd+, Open Settings (77.1)", mb_ok, mb_log))
+
+        # 77.1: the text size relayouts an open reader (WIN_EV_SETTINGS): the
+        # same document is shorter in Small and taller in Large than in
+        # Medium, and exactly as tall again back in Medium.
+        ts_ok, ts_log, heights = True, "", {}
+        ok, log = session.send_and_expect("reader shell.md", r"reader: (opened|focused)", timeout=10.0)
+        if not ok:
+            ts_ok, ts_log = False, f"reader shell.md:\n{log}"
+        for size in ("medium", "small", "large", "medium"):
+            if not ts_ok:
+                break
+            session.send_and_expect(f"settings set ui.text_size {size}", r"ui\.text_size=", timeout=10.0)
+            ok, log = session.send_and_expect("reader list", r"shell\.md[^\n]*scrolled -?\d+ px of (\d+)", timeout=10.0)
+            m = re.search(r"shell\.md[^\n]*scrolled -?\d+ px of (\d+)", log)
+            if not ok or not m:
+                ts_ok, ts_log = False, f"reader list after {size}:\n{log}"
+                break
+            h = int(m.group(1))
+            if size == "medium" and "medium" in heights and h != heights["medium"]:
+                ts_ok, ts_log = False, f"back in medium: {h} px, first {heights['medium']} px"
+            heights.setdefault(size, h)
+        if ts_ok and not (heights["small"] < heights["medium"] < heights["large"]):
+            ts_ok, ts_log = False, f"heights small/medium/large: {heights}"
+        session.send_and_expect("key cmd-w", r"key: 1 sent", timeout=10.0)
+        results.append(("Text Size Relayouts The Reader: Small Shorter, Large Taller, Medium Again (77.1)", ts_ok, ts_log))
+
         # 76.2: a Lisp program's own window (`ui-`), the sample app driven
         # through the real input paths: the mouse (`ms`) at the places the
         # window reports (`ui`), and keys (`key`) for the focused view. Each

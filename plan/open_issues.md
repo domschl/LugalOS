@@ -49,6 +49,14 @@ and `(canvas-get 150 100)` reads 0 -- the layout's store is not brought back int
 on the board); QEMU's 38.8 checks (`vtselftest`) pass, so it is the board's path -- the U-mode
 screen task, or the store's size against the 512 KB state block. Not yet bisected further back.
 
+**2026-11-11: only the first run after a boot.** Run three times in a row right after a flash, it
+fails the first time (`redraws 0, circle 0`; the later resize also `0 redraw, circle 0`) and passes
+the second and third (`circle 1`; the resize `1 redraw, circle 1`). The same with the committed
+`7887460a` built in a clean worktree and with the phase 77.1 work on top, so not 77.1's. A first
+`'split` after boot behaves differently from every later one: look at what the first layout switch
+sets up (the per-layout store's allocation, the canvas's first size) rather than at the store's
+restore.
+
 ## The VisionFive 2 sees an older /sd0 right after U-Boot `fatwrite` (found 2026-11-09)
 
 **Destination: the VisionFive 2 SDMMC driver.** Booted by `test_visionfive2.py` (YMODEM, then

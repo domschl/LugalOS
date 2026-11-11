@@ -1,6 +1,7 @@
 #include "kernel/shell.h"
 #include "kernel/apps.h"
 #include "kernel/settings.h"
+#include "drivers/settings_view.h"
 #include "drivers/icons.h"
 #include "kernel/stress.h"
 #include "kernel/llp_node.h"
@@ -1599,8 +1600,8 @@ static void cmd_reader(const char *arg) {
         int count = 0;
         for (int i = 0; i < READER_MAX_INSTANCES; i++) {
             if (reader_instance_is_active(i)) {
-                cprintf("  [%d] '%s' (%s), scrolled %d px\n", i, reader_get_title_instance(i), reader_get_path_instance(i),
-                        reader_get_scroll_instance((uint8_t)i));
+                cprintf("  [%d] '%s' (%s), scrolled %d px of %d\n", i, reader_get_title_instance(i), reader_get_path_instance(i),
+                        reader_get_scroll_instance((uint8_t)i), reader_get_height_instance((uint8_t)i));
                 count++;
             }
         }
@@ -1676,8 +1677,8 @@ typedef struct {
     volatile bool running, stop;
     bool          tilt;
     win_t         w;
-    uint32_t      count[WIN_EV_TILT + 1];
-    win_event_t   last[WIN_EV_TILT + 1];
+    uint32_t      count[WIN_EV_SETTINGS + 1];
+    win_event_t   last[WIN_EV_SETTINGS + 1];
 } eventtest_t;
 /* accepted: the test's task writes, `eventtest` reads a snapshot. From the
  * heap at the first start: half a KB no board should keep for a test. */
@@ -1697,7 +1698,7 @@ static void eventtest_task(void *arg) {
         while (!s_evt.stop && s_evt.w >= 0) {
             win_event_t ev;
             while (window_poll(s_evt.w, &ev)) {
-                if (ev.type <= WIN_EV_TILT) { s_evt.count[ev.type]++; s_evt.last[ev.type] = ev; }
+                if (ev.type <= WIN_EV_SETTINGS) { s_evt.count[ev.type]++; s_evt.last[ev.type] = ev; }
                 if (ev.type == WIN_EV_CLOSE_REQUEST) s_evt.stop = true;
             }
             task_sleep_ms(20);
@@ -1710,9 +1711,10 @@ static void eventtest_task(void *arg) {
 }
 
 static void cmd_eventtest(const char *arg) {
-    static const char *const names[WIN_EV_TILT + 1] = {
+    static const char *const names[WIN_EV_SETTINGS + 1] = {
         "none", "down", "up", "move", "key down", "key up", "focus gained", "focus lost", "close request",
         "resize", "drag", "drag end", "scroll", "suspend", "resume", "input mode", "orient", "power", "tilt",
+        "settings",
     };
     if (!s_evtp) {
         if (strncmp(arg, "start", 5) != 0) { cprintf("eventtest: not started\n"); return; }
@@ -1737,7 +1739,7 @@ static void cmd_eventtest(const char *arg) {
         return;
     }
     cprintf("eventtest: %s, window %d\n", s_evt.running ? "running" : "not running", s_evt.w);
-    for (int t = 1; t <= WIN_EV_TILT; t++) {
+    for (int t = 1; t <= WIN_EV_SETTINGS; t++) {
         if (!s_evt.count[t]) continue;
         const win_event_t *e = &s_evt.last[t];
         cprintf("  %-13s %lu", names[t], (unsigned long)s_evt.count[t]);
@@ -1748,6 +1750,7 @@ static void cmd_eventtest(const char *arg) {
         if (t == WIN_EV_POWER) cprintf("  last %lu %%, flags 0x%x", (unsigned long)e->key, (unsigned)e->mods);
         if (t == WIN_EV_RESIZE) cprintf("  last %u x %u", (unsigned)e->w, (unsigned)e->h);
         if (t == WIN_EV_TILT) cprintf("  last x %d y %d z %d mg", (int)e->x, (int)e->y, (int)e->dy);
+        if (t == WIN_EV_SETTINGS && settings_at(e->key)) cprintf("  last %s", settings_at(e->key)->key);
         cprintf("\n");
     }
 }
@@ -1995,6 +1998,14 @@ static void cmd_settings(const char *arg) {
         }
         return;
     }
+    if (strcmp(arg, "open") == 0) {
+        cprintf(settings_view_open() ? "settings: open\n" : "settings: no window (no screen, or no room)\n");
+        return;
+    }
+    if (strcmp(arg, "view") == 0) {
+        settings_view_report();
+        return;
+    }
     if (strcmp(arg, "check") == 0) {
         int bad = settings_check();
         cprintf("settings check: %s (%d fault%s)\n", bad ? "FAIL" : "PASS", bad, bad == 1 ? "" : "s");
@@ -2004,7 +2015,7 @@ static void cmd_settings(const char *arg) {
     const char *p = arg;
     bool get = strncmp(p, "get ", 4) == 0, set = strncmp(p, "set ", 4) == 0, reset = strncmp(p, "reset ", 6) == 0;
     if (!get && !set && !reset) {
-        cprintf("usage: settings [get KEY | set KEY VALUE | reset KEY | check]\n");
+        cprintf("usage: settings [get KEY | set KEY VALUE | reset KEY | check | open | view]\n");
         return;
     }
     p += reset ? 6 : 4;
@@ -6299,6 +6310,31 @@ static void cmd_ribbon(const char *cmd_line) {
             mreply[SCREEN_REPLY_LEN - 1] = 0;
             cprintf("  menu [%u] %s at %d %d size %d %d%s%s\n", (unsigned)i, (const char *)mreply + 12, x0, y0,
                     x1 - x0 + 1, y1 - y0 + 1, mreply[2] ? " (dimmed)" : "", mreply[3] ? " (ticked)" : "");
+        }
+        /* The menu bar's status area, what a tap opens where (77.1): its
+         * runs left to right, by asking the screen at each x. */
+        uint8_t zreq[3] = { 'z', 0, 0 }, zreply[SCREEN_REPLY_LEN];
+        if (console_canvas(zreq, 3, zreply) && zreply[0] == 0) {
+            int w = zreply[14] | (zreply[15] << 8), run_x = -1, run_hit = -1;
+            cprintf("  status:");
+            for (int x = w / 3; x <= w; x++) {
+                int hit = -1;
+                if (x < w) {
+                    zreq[1] = (uint8_t)(x & 0xFF);
+                    zreq[2] = (uint8_t)(x >> 8);
+                    if (console_canvas(zreq, 3, zreply) && zreply[0] == 0 && zreply[12]) hit = zreply[13];
+                }
+                if (hit == run_hit) continue;
+                if (run_hit >= 0)
+                    cprintf(" %s %d..%d",
+                            run_hit == SCREEN_STATUS_HIT_SD ? "sd" : run_hit == SCREEN_STATUS_HIT_WIFI ? "wifi"
+                            : run_hit == SCREEN_STATUS_HIT_P9 ? "p9" : run_hit == SCREEN_STATUS_HIT_BATTERY ? "battery"
+                            : "settings",
+                            run_x, x - 1);
+                run_hit = hit;
+                run_x = x;
+            }
+            cprintf("\n");
         }
         return;
     }

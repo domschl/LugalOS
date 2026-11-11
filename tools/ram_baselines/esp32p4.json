@@ -2,7 +2,8 @@
   "bulk_per_file": {
     "drivers/launcher_view.c": 22424,
     "drivers/lispui_view.c": 15856,
-    "drivers/reader_view.c": 62432,
+    "drivers/reader_view.c": 62460,
+    "drivers/settings_view.c": 4760,
     "drivers/view.c": 704,
     "drivers/viewtest.c": 1892,
     "kernel/palloc.c": 32768,
@@ -17,13 +18,13 @@
     "app:ceres": 31896,
     "app:moonbase": 73888,
     "chess": 1852,
-    "display": 84856,
-    "drivers": 18452,
+    "display": 84884,
+    "drivers": 23212,
     "kernel": 32768,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1776064,
+  "bulk_total": 1780852,
   "heap_bytes": 380928,
   "heap_pages": 93,
   "per_file": {
@@ -82,7 +83,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 1072,
+    "kernel/console.c": 1076,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -104,7 +105,7 @@
     "kernel/privilege.c": 8,
     "kernel/random.c": 9,
     "kernel/sched.c": 2501,
-    "kernel/settings.c": 31,
+    "kernel/settings.c": 35,
     "kernel/shell.c": 3004,
     "kernel/smp.c": 84,
     "kernel/status_led.c": 8,
@@ -178,7 +179,7 @@
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
-    "kernel": 14330,
+    "kernel": 14334,
     "lisp": 1115,
     "llp": 3579,
     "log": 8322,
@@ -188,10 +189,10 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 13362,
+    "shell": 13366,
     "storage": 7456,
     "vfs": 3727
   },
   "ram_code": 1806,
-  "total": 221258
+  "total": 221266
 }

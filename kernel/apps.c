@@ -20,6 +20,7 @@ static const app_desc_t k_apps[] = {
     { "moonbase", "Moonbase", "moonbase",    "moonbase", "moonbase", APP_TOUCH | APP_KBD | APP_FULLSCREEN | APP_SINGLETON | APP_WINDOW },
 #endif
     { "reader",   "Reader",   "reader %s",   "reader",   NULL,       APP_TOUCH | APP_KBD },
+    { "settings", "Settings", "settings open", "settings", "Settings", APP_TOUCH | APP_KBD | APP_SINGLETON },
     { "term",     "Terminal", "vterm new",   "terminal", NULL,       APP_KBD },
 };
 

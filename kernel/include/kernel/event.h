@@ -53,6 +53,8 @@ typedef enum {
     WIN_EV_TILT,                /* with WIN_CLAIM_TILT, at most 10 Hz while the window has the
                                  * focus: gravity in the screen's frame, mg -- x toward its
                                  * right, y toward its bottom, dy toward its back */
+    WIN_EV_SETTINGS,            /* a setting changed: key its index (kernel/settings.h,
+                                 * settings_at()); read the value with settings_get() */
 } win_event_type_t;
 
 #define WIN_INPUT_KEYBOARD 0x01u
@@ -69,7 +71,7 @@ static inline bool win_event_is_state(uint8_t type) {
     return type == WIN_EV_FOCUS_GAINED || type == WIN_EV_FOCUS_LOST ||
            type == WIN_EV_SUSPEND || type == WIN_EV_RESUME || type == WIN_EV_CLOSE_REQUEST ||
            type == WIN_EV_RESIZE || type == WIN_EV_INPUT_MODE || type == WIN_EV_ORIENT ||
-           type == WIN_EV_POWER;
+           type == WIN_EV_POWER || type == WIN_EV_SETTINGS;
 }
 
 #define WIN_EVF_TAP   0x01u     /* the DOWN / UP pair of a recognised tap */

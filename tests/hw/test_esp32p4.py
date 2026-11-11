@@ -66,6 +66,7 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 from mqttbroker import MqttBroker  # noqa: E402
 import longnames  # noqa: E402
 import hello_ugui  # noqa: E402
+import settings_app  # noqa: E402
 import stacks_fullscreen  # noqa: E402
 import titlebar_menu  # noqa: E402
 
@@ -1460,6 +1461,18 @@ def test_stacks_fullscreen(b: Board) -> tuple[str, bool, str]:
         return name, False, f"{type(e).__name__}: {e}"
 
 
+def test_settings_app(b: Board) -> tuple[str, bool, str]:
+    """77.1: the paper warmth's colours read back from the panel, the glass
+    still equal to a full redraw in them, and the Settings app by keys. See
+    settings_app.py."""
+    name = "Paper warmth and the Settings app (77.1)"
+    try:
+        ok, detail = settings_app.check(_io(b)[1], glass_check=True)
+        return name, ok, detail
+    except Exception as e:
+        return name, False, f"{type(e).__name__}: {e}"
+
+
 def test_titlebar_menu(b: Board) -> tuple[str, bool, str]:
     """76.4b: the zoom box and the title-bar menu, by mouse and touch. See
     titlebar_menu.py."""
@@ -2453,6 +2466,7 @@ TESTS = [
     dev_only(test_system_events),
     dev_only(test_view_and_mouse),
     test_settings_persist,
+    test_settings_app,
     dev_only(test_uxbench_regression),
     test_screenshot_color_mode,
     test_color_canvas_rgb565,

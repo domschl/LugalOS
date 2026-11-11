@@ -135,7 +135,12 @@ static void *pa_to_uncached(uint32_t pa) {
     return (void *)(uintptr_t)(UNCACHED_DRAM_OFFSET + (uintptr_t)pa);
 }
 
+/* The pair the LUT maps to (drivers/paper.h). guarded by: g_dc_lock */
+static uint16_t g_fg = 0x0000, g_bg = 0xFFFF;
+
 static void dc8200_build_lut(uint16_t fg, uint16_t bg) {
+    g_fg = fg;
+    g_bg = bg;
     for (unsigned v = 0; v < 256u; v++) {
         for (unsigned bit = 0; bit < 8u; bit++) {
             g_lut565[v][bit] = ((v >> bit) & 1u) ? fg : bg;
@@ -620,6 +625,10 @@ void jh7110_dc8200_cmd_status(void) {
     cprintf("  Hardware Rev:     0x%04x (CID: 0x%04x)\n", st.revision, st.chip_cid);
     cprintf("  Active Scanout:   %ux%u @ 60 Hz (RGB565, stride %u B)\n",
             st.width, st.height, st.stride_bytes);
+    ylock_acquire(&g_dc_lock);
+    uint16_t fg = g_fg, bg = g_bg;
+    ylock_release(&g_dc_lock);
+    cprintf("  Colours:          fg 0x%04x bg 0x%04x\n", (unsigned)fg, (unsigned)bg);
     cprintf("  Front Buffer PA:  0x%08x (VA: 0x%lx, Slot %u)\n",
             st.front_fb_pa, (unsigned long)(uintptr_t)st.front_fb, st.front_idx);
     cprintf("  Back Buffer PA:   0x%08x (VA: 0x%lx, Slot %u)\n",
@@ -628,6 +637,14 @@ void jh7110_dc8200_cmd_status(void) {
             (unsigned)(loc >> 16), (unsigned)(loc & 0xFFFF), (unsigned)loc);
     cprintf("  Performance:      %u frames flipped, %u VSYNC pulses\n",
             st.frames_flipped, st.vsync_count);
+}
+
+void jh7110_dc8200_set_colours(uint16_t ink, uint16_t paper) {
+    if (!g_state.initialized || !g_t1) return;
+    ylock_acquire(&g_dc_lock);
+    dc8200_build_lut(ink, paper);
+    ylock_release(&g_dc_lock);
+    jh7110_dc8200_repaint();                             /* both buffers, in the new colours */
 }
 
 void jh7110_dc8200_repaint(void) {

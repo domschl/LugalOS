@@ -62,7 +62,7 @@
     "kernel/board.c": 13,
     "kernel/chan.c": 1348,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 1072,
+    "kernel/console.c": 1076,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -89,7 +89,7 @@
     "kernel/radio_netif_c6.c": 61,
     "kernel/random.c": 4,
     "kernel/sched.c": 2501,
-    "kernel/settings.c": 31,
+    "kernel/settings.c": 35,
     "kernel/setup_button.c": 64,
     "kernel/shell.c": 2271,
     "kernel/smp.c": 8,
@@ -126,7 +126,7 @@
     "fs": 36,
     "httpd": 70,
     "identity": 192,
-    "kernel": 19257,
+    "kernel": 19261,
     "lisp": 24755,
     "llp": 4061,
     "log": 4226,
@@ -136,11 +136,11 @@
     "radio": 26177,
     "selftest": 828,
     "sensors": 8688,
-    "shell": 6821,
+    "shell": 6825,
     "storage": 13,
     "usb": 6481,
     "vfs": 3215
   },
   "ram_code": 11634,
-  "total": 156603
+  "total": 156611
 }

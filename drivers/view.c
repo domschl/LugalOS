@@ -14,6 +14,7 @@
 
 extern const view_ops_t g_reader_view;
 extern const view_ops_t g_launcher_view;
+extern const view_ops_t g_settings_view;
 #include "drivers/lispui.h"
 #if defined(LISPUI_PRESENT)
 extern const view_ops_t g_lispui_view;
@@ -27,6 +28,7 @@ const view_ops_t *view_for_window(uint8_t type) {
     switch (type) {
     case RIBBON_WIN_READER:   return &g_reader_view;
     case RIBBON_WIN_LAUNCHER: return &g_launcher_view;
+    case RIBBON_WIN_SETTINGS: return &g_settings_view;
 #if defined(VIEWTEST)
     case RIBBON_WIN_VIEWTEST: return &g_viewtest_view;
 #endif

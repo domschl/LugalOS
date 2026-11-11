@@ -512,6 +512,10 @@ void lcd7_set_colours(uint16_t fg, uint16_t bg) {
     }
 }
 
+bool lcd7_is_running(void) {
+    return g_running;
+}
+
 /* 36.3's whole-screen colour, kept for the pin-order checks: fg = bg. */
 void lcd7_set_colour(uint16_t rgb565) {
     lcd7_set_colours(rgb565, rgb565);
@@ -770,6 +774,7 @@ void lcd7_report(void) {
 int lcd7_init(void) { return -1; }
 void lcd7_set_colour(uint16_t rgb565) { (void)rgb565; }
 void lcd7_set_colours(uint16_t fg, uint16_t bg) { (void)fg; (void)bg; }
+bool lcd7_is_running(void) { return false; }
 uint32_t *lcd7_framebuffer(void) { return 0; }
 int lcd7_test_pattern(const char *name) { (void)name; return -1; }
 void lcd7_set_backlight(unsigned percent) { (void)percent; }

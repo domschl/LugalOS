@@ -546,6 +546,9 @@ set_source_files_properties(libc/string.c PROPERTIES COMPILE_OPTIONS -fno-tree-l
 # so --gc-sections keeps only what kernel/crypto.c reaches.
 set_source_files_properties(third_party/crypto/monocypher/monocypher.c third_party/crypto/p256-m/p256-m.c
     PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections")
+# The reader's text sizes: three faces generated, two used by a build (its
+# panel's scale), so one section each and the third collected.
+set_source_files_properties(drivers/font_serif_faces.c PROPERTIES COMPILE_OPTIONS "-fdata-sections")
 
 # Per-board config header: platform
 # defaults and, where the board has real GPIO pins, a pin map -- generated
@@ -790,6 +793,8 @@ set(SOURCES
     drivers/screen.c
     drivers/canvas1.c
     drivers/font_serif.c
+    # the reader's other text sizes (77.1, tools/gen_serif_faces.py)
+    drivers/font_serif_faces.c
     drivers/font_noto_mono.c
     drivers/font_noto_serif.c
     drivers/font_math.c
@@ -804,6 +809,10 @@ set(SOURCES
     drivers/viewtest.c
     # `ui-` windows for Lisp programs (76.2): a view whose picture Lisp describes.
     drivers/lispui_view.c
+    # the Settings app (77.1), a view of its own.
+    drivers/settings_view.c
+    # display.warmth's ink and paper colours, given to whichever panel there is.
+    drivers/paper.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c

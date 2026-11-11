@@ -47,6 +47,7 @@ sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import longnames  # noqa: E402
 import hello_ugui  # noqa: E402
+import settings_app  # noqa: E402
 import stacks_fullscreen  # noqa: E402
 import titlebar_menu  # noqa: E402
 import p9lib  # noqa: E402
@@ -419,6 +420,17 @@ def test_titlebar_menu(ser: serial.Serial) -> tuple[str, bool, str]:
         return (name, False, f"{type(e).__name__}: {e}")
 
 
+def test_settings_app(ser: serial.Serial) -> tuple[str, bool, str]:
+    """77.1: the paper warmth's colours read back from the display
+    controller, and the Settings app by keys. See settings_app.py."""
+    name = "Paper warmth and the Settings app (77.1)"
+    try:
+        ok, detail = settings_app.check(_io(ser)[1])
+        return (name, ok, detail)
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+
+
 def test_hello_ugui(ser: serial.Serial) -> tuple[str, bool, str]:
     """76.2: the `ui-` sample in a window of its own on the HDMI desktop,
     driven by the mouse (through the cursor) and keys at the places it
@@ -597,6 +609,7 @@ def main() -> int:
             ("test_hello_ugui", lambda: test_hello_ugui(ser)),
             ("test_stacks_fullscreen", lambda: test_stacks_fullscreen(ser)),
             ("test_titlebar_menu", lambda: test_titlebar_menu(ser)),
+            ("test_settings_app", lambda: test_settings_app(ser)),
             ("test_ribbon_workstation_composition", lambda: test_ribbon_workstation_composition(ser)),
             ("test_stress", lambda: test_stress(ser)),
             ("test_pmic_cold_reboot", lambda: test_pmic_cold_reboot(ser)),

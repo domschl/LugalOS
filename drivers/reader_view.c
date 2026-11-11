@@ -23,6 +23,7 @@
 #include "drivers/ramscreen.h"
 #include "drivers/screen.h"
 #include "kernel/console.h"
+#include "kernel/settings.h"
 #include "drivers/touch.h"
 #include "fs/gemtext.h"
 #include "fs/markdown.h"
@@ -59,11 +60,44 @@
 #if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32))
 #define READER_IS_HIDPI    1
 #define READER_MARGIN_X    36
-#define READER_LINE_H      30
+#define READER_LINE_H_BASE 30
 #else
 #define READER_IS_HIDPI    0
 #define READER_MARGIN_X    24
-#define READER_LINE_H      18
+#define READER_LINE_H_BASE 18
+#endif
+
+/* The text size (`ui.text_size`, drivers/ugui.h's faces): the face the body
+ * text is drawn in (NULL: the board's own) and its line height, scaled from
+ * the board's own in proportion to the face. Read again at each full draw;
+ * a layout's checkpoints are for the size they were laid out at
+ * (cp_tsize). single task: views. */
+#if defined(UGUI_TEXT_SIZES)
+static struct {
+    const ugui_face_t *face;
+    int                line_h;  /* 0: not read yet, the board's own */
+    int                size;
+} s_rm BULK_BSS;
+#define READER_LINE_H (s_rm.line_h ? s_rm.line_h : READER_LINE_H_BASE)
+
+static void reader_metrics(void) {
+    int size = settings_get("ui.text_size");
+    if (size < 0) size = 1;
+    const ugui_face_t *f = ugui_face(size);
+    int base_h = READER_IS_HIDPI ? 32 : 16;
+    s_rm.face = f;
+    s_rm.size = size;
+    s_rm.line_h = f ? (f->h * READER_LINE_H_BASE + base_h / 2) / base_h : READER_LINE_H_BASE;
+}
+#define READER_FACE  (s_rm.face)
+#define READER_CP_TSIZE_OK(r) ((r)->cp_tsize == s_rm.size)
+#define READER_CP_TSIZE_SET(r) ((r)->cp_tsize = s_rm.size)
+#else
+#define READER_LINE_H READER_LINE_H_BASE
+#define READER_FACE  ((const ugui_face_t *)0)
+#define READER_CP_TSIZE_OK(r) true
+#define READER_CP_TSIZE_SET(r) ((void)(r))
+static void reader_metrics(void) {}
 #endif
 
 #define READER_BG_GRAY8          250   /* Soft book-grade paper/cream (0xFA) */
@@ -115,6 +149,9 @@ typedef struct {
     int                 cp_count;
     int                 cp_step;
     int                 cp_w;
+#if defined(UGUI_TEXT_SIZES)
+    int                 cp_tsize;   /* the text size it was laid out at */
+#endif
     uint32_t            cp_size;    /* the file's size at that layout */
     bool                cp_valid;
     int                 drawn_scroll_y; /* where the surfaces show the document, -1 unknown */
@@ -974,6 +1011,19 @@ static void reader_key(uint8_t rid, uint32_t key, uint8_t mods) {
 }
 
 
+/* `ui.text_size` changed (setting index `key`): laid out again in the new
+ * face, at about the same place -- the scroll scaled by the line heights. */
+static void reader_text_size_changed(uint8_t rid, uint32_t key) {
+    const setting_def_t *d = settings_at(key);
+    if (!d || strcmp(d->key, "ui.text_size") != 0 || rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
+    reader_state_t *r = &s_readers[rid];
+    int old_h = READER_LINE_H;
+    reader_metrics();
+    r->scroll_y = (int)((long)r->scroll_y * READER_LINE_H / old_h);
+    r->cp_valid = false;
+    reader_update_instance(rid);
+}
+
 /* The reader as a view (drivers/view.h): each event onto what it did before. */
 static void reader_view_event(uint8_t rid, const win_event_t *ev) {
     switch (ev->type) {
@@ -1003,6 +1053,9 @@ static void reader_view_event(uint8_t rid, const win_event_t *ev) {
         return;
     case WIN_EV_KEY_DOWN:
         reader_key(rid, ev->key, ev->mods);
+        return;
+    case WIN_EV_SETTINGS:
+        reader_text_size_changed(rid, ev->key);
         return;
     default:
         return;
@@ -1040,6 +1093,10 @@ const char *reader_get_path_instance(uint8_t rid) {
 
 int reader_get_scroll_instance(uint8_t rid) {
     return rid < READER_MAX_INSTANCES ? s_readers[rid].scroll_y : 0;
+}
+
+int reader_get_height_instance(uint8_t rid) {
+    return rid < READER_MAX_INSTANCES ? s_readers[rid].total_h : 0;
 }
 
 const char *reader_get_path(void) {
@@ -1093,7 +1150,7 @@ static void rdraw_hline(const ugui_surface_t *rd, int x0, int x1, int y, uint8_t
 }
 
 static int rdraw_serif_text(const ugui_surface_t *rd, int x, int y, const char *s, uint32_t len, bool bold, bool italic) {
-    return ugui_text_serif(rd, x, y, s, len, bold, italic, false);
+    return ugui_face_text(rd, READER_FACE, x, y, s, len, bold, italic, false);
 }
 
 static void rdraw_mono_text(const ugui_surface_t *rd, int x, int y, const char *s, uint32_t len, int max_chars) {
@@ -1192,6 +1249,9 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
                 word_w = (unsigned)word_len * 8;
                 space_w = 8;
 #endif
+            } else if (READER_FACE) {
+                word_w = (unsigned)ugui_face_width(rd, READER_FACE, word_start, (uint32_t)word_len);
+                space_w = (unsigned)ugui_face_width(rd, READER_FACE, " ", 1);
             } else {
 #if READER_IS_HIDPI
                 word_w = font_noto_serif_text_width(word_start, (uint32_t)word_len);
@@ -1354,6 +1414,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
     int sc = (int)CHROME_SCALE;
     int bar_h = reader_bar_h();
     bool strip = clip_y0 > 0 || clip_y1 < full_h;
+    if (!strip) reader_metrics();
     int h = strip ? clip_y1 - clip_y0 : full_h;
     if (h <= 0) return;
 
@@ -1421,6 +1482,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
     vfs_stat_t st;
     uint32_t file_size = vfs_fstat(fd, &st) == 0 ? (uint32_t)st.size : 0xffffffffu;
     bool partial = r->cp_valid && r->cp_w == w && r->cp_count > 0 && !r->toc_mode &&
+                   READER_CP_TSIZE_OK(r) &&
                    r->cp_size == file_size;     /* rewritten since (editor, a new Spartan page) */
     if (strip && !partial) {
         r->strip_failed = true;
@@ -1445,6 +1507,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
         r->cp_count = 0;
         r->cp_step = h > 0 ? h / 2 : 300;
         r->cp_w = w;
+        READER_CP_TSIZE_SET(r);
         r->cp_size = file_size;
     }
     int next_cp_y = doc_y;
@@ -1899,7 +1962,7 @@ static bool reader_scroll_step(uint8_t rid, const canvas1_t *c, int w, int h) {
         dy = r->scroll_y - r->drawn_scroll_y;
     }
     if (dy == 0) return true;
-    if (r->drawn_scroll_y < 0 || !r->cp_valid || r->cp_w != w || r->toc_mode || !c ||
+    if (r->drawn_scroll_y < 0 || !r->cp_valid || r->cp_w != w || !READER_CP_TSIZE_OK(r) || r->toc_mode || !c ||
         dy >= area || -dy >= area || (r->aa_buf && (w > r->aa_w || h > r->aa_h)))
         return false;
     /* Rows y <- y + dy, front to back for dy > 0 and back to front otherwise. */

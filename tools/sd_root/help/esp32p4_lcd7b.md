@@ -79,7 +79,7 @@ Runs 40 silicon tests covering PSRAM DDR tuning, CLIC interrupts, I2C peripheral
 * **Commands:**
   * `lcd` (link status), `lcd pattern [bars|hbars|ber|off]`, `lcd fb [gray|rgb565]`.
   * `lcd repaint`, `lcd termbench`, `lcd tee uart|off`.
-  * `lcd colours FG BG` (accepts RGB565 hex colors).
+  * `lcd colours FG BG` (accepts RGB565 hex colors). A coloured pair runs the frame in RGB565, a gray one in GRAY8; the views follow a dark-on-light pair. `display.warmth` (the Settings app) sets the pair the same way.
   * `lcd test checker|grid|text|ramp`, `lcd verify`, `lcd fps`.
 * **Backlight:** LEDC PWM on GPIO32 (inverted logic).
   * `lcd backlight [0-100]`: Adjusts duty cycle.

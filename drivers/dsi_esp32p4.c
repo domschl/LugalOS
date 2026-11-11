@@ -1631,9 +1631,33 @@ typedef struct {
 } srf_mirror_t;
 /* guarded by: g_frame_lock */
 static srf_mirror_t g_mirror[4] BULK_BSS;
-/* GRAY8 -> RGB565. guarded by: g_frame_lock (built once, under it) */
+/* GRAY8 -> RGB565 for the views' surfaces: gray 0 the terminal's ink, 255
+ * its paper, the grays between them per channel -- so display.warmth
+ * (drivers/paper.h) tints a view as it does the text. With black on white
+ * that is the plain gray ramp. An inverted pair (light ink) leaves the views
+ * as they are, as the 7B's GRAY8 frame does. guarded by: g_frame_lock
+ * (built under it, again at each colour change) */
 static uint16_t g_gray565[256] BULK_BSS;
 static bool g_gray565_ok;        /* guarded by: g_frame_lock */
+
+/* 5- or 6-bit channel c of an RGB565 colour, as 8 bits. */
+static unsigned ch8(uint16_t c, unsigned shift, unsigned bits) {
+    unsigned v = (c >> shift) & ((1u << bits) - 1u);
+    return bits == 5u ? (v << 3) | (v >> 2) : (v << 2) | (v >> 4);
+}
+
+static void gray565_build(void) {
+    uint16_t ink = g_t_fg, paper = g_t_bg;
+    unsigned ir = ch8(ink, 11, 5), ig = ch8(ink, 5, 6), ib = ch8(ink, 0, 5);
+    unsigned pr = ch8(paper, 11, 5), pg = ch8(paper, 5, 6), pb = ch8(paper, 0, 5);
+    if (ir + ig + ib > pr + pg + pb) { ir = ig = ib = 0; pr = pg = pb = 255; }
+    for (unsigned g = 0; g < 256u; g++) {
+        unsigned r = (ir * (255u - g) + pr * g) / 255u, gr = (ig * (255u - g) + pg * g) / 255u,
+                 b = (ib * (255u - g) + pb * g) / 255u;
+        g_gray565[g] = (uint16_t)(((r >> 3) << 11) | ((gr >> 2) << 5) | (b >> 3));
+    }
+    g_gray565_ok = true;
+}
 
 static void mirror_drop(srf_mirror_t *m) {
     if (m->px) palloc_free(m->px, m->pages);
@@ -1672,11 +1696,7 @@ static const uint16_t *mirror_get(uint8_t tag, const uint8_t *src, uint32_t src_
         m->src = src; m->tag = tag; m->w = w; m->h = h;
         m->fresh = false;
     }
-    if (!g_gray565_ok) {
-        for (unsigned g = 0; g < 256u; g++)
-            g_gray565[g] = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
-        g_gray565_ok = true;
-    }
+    if (!g_gray565_ok) gray565_build();
     if (!m->fresh || m->seq != seq) {
         uint64_t t0 = time_get_us();
         for (int y = 0; y < h; y++) {
@@ -2363,6 +2383,7 @@ static void term_draw(void) {
     uint32_t cpu_rows = n;        /* units the CPU wrote, not yet written back */
 
     /* 2b. Composite visible anti-aliased Reader windows onto fb_back() */
+    if (!g_gray565_ok) gray565_build();
     for (int i = 0; i < sn->nr; i++) {
         uint32_t seq = sn->rseq[i];
         if (s_reader_drawn_seq[back_idx][i] == seq && !sn->force) continue;
@@ -2429,16 +2450,14 @@ static void term_draw(void) {
 
             if (g_lcd_rot == 270) {
                 for (int x = 0; x < blit_w; x++) {
-                    uint8_t g = src_line[x];
-                    uint16_t c565 = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                    uint16_t c565 = g_gray565[src_line[x]];
                     unsigned py = 1279u - (cl_x0 + x);
                     unsigned px = y;
                     ((uint16_t *)fb)[(size_t)py * 720u + px] = c565;
                 }
             } else if (g_lcd_rot == 90) {
                 for (int x = 0; x < blit_w; x++) {
-                    uint8_t g = src_line[x];
-                    uint16_t c565 = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                    uint16_t c565 = g_gray565[src_line[x]];
                     unsigned py = cl_x0 + x;
                     unsigned px = 719u - y;
                     ((uint16_t *)fb)[(size_t)py * 720u + px] = c565;
@@ -2449,8 +2468,7 @@ static void term_draw(void) {
                     uint8_t g = src_line[x];
                     unsigned px = DSI_LCD_H_RES - 1u - (unsigned)(cl_x0 + x);
                     if (fmt == FB_RGB565)
-                        ((uint16_t *)fb)[(size_t)py * DSI_LCD_H_RES + px] =
-                            (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                        ((uint16_t *)fb)[(size_t)py * DSI_LCD_H_RES + px] = g_gray565[g];
                     else
                         fb[(size_t)py * DSI_LCD_H_RES + px] = g;
                 }
@@ -2458,8 +2476,7 @@ static void term_draw(void) {
                 if (fmt == FB_RGB565) {
                     uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
                     for (int x = 0; x < blit_w; x++) {
-                        uint8_t g = src_line[x];
-                        dst_line[x] = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                        dst_line[x] = g_gray565[src_line[x]];
                     }
                 } else {
                     uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
@@ -3209,8 +3226,17 @@ static void term_colours(uint16_t fg, uint16_t bg) {
     if (want != g_fb_fmt && !fb_start(want)) { frame_end(); return; }
     g_fb_pref = want;
     lut_build();
+    /* The views follow the pair: their table again, and their RGB565 copies
+     * for the PPA dropped (they hold the old colours under the same seq). */
+    gray565_build();
+    for (unsigned j = 0; j < 4u; j++) mirror_drop(&g_mirror[j]);
     term_redraw();
     frame_end();
+}
+
+void dsi_lcd_set_colours(uint16_t ink, uint16_t paper) {
+    if (!g_t1) return;                 /* no terminal on the panel: nothing to colour */
+    term_colours(ink, paper);
 }
 
 /* accepted: holds console_lock for the whole run (seconds) -- it measures the

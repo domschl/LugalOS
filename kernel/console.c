@@ -19,6 +19,7 @@
 #include "drivers/lcdterm.h"
 #include "drivers/reader_view.h"
 #include "drivers/launcher_view.h"
+#include "drivers/settings_view.h"
 #include "drivers/osk.h"
 #include "drivers/touch.h"
 #include "drivers/ui_sound.h"
@@ -1180,6 +1181,17 @@ static void close_asked(const uint8_t *reply) {
 }
 
 static void launcher_open_cb(void *arg) { (void)arg; (void)launcher_open(); }
+/* The Settings app, at the section for what in the menu bar's status area
+ * was tapped (SCREEN_STATUS_HIT_*, in arg). */
+static void settings_open_cb(void *arg) {
+    /* Comparisons, not a switch: GCC makes a switch this small a table in
+     * writable small data, four bytes of SRAM on every board. */
+    uintptr_t hit = (uintptr_t)arg;
+    int section = hit == SCREEN_STATUS_HIT_SD ? SETTINGS_SECTION_STORAGE
+                : hit == SCREEN_STATUS_HIT_WIFI || hit == SCREEN_STATUS_HIT_P9 ? SETTINGS_SECTION_NETWORK
+                : hit == SCREEN_STATUS_HIT_BATTERY ? SETTINGS_SECTION_POWER : -1;
+    (void)settings_view_open_at(section);
+}
 
 /* --- The system's events (kernel/event.h): the keyboard, the rotation, the
  * power. Watched from the input path, every pass (two loads and a word the
@@ -1207,6 +1219,14 @@ static uint32_t sys_input_mode(void) {
 
 uint32_t console_input_mode(void) { return sys_input_mode(); }
 static uint32_t          g_sys_power_told;  /* guarded by: g_sys_busy */
+
+/* Settings changed and not yet told, one bit each (kernel/settings.h's
+ * index; the table has fewer than 32). interrupt-shared: atomic or / exchange. */
+static uint32_t g_sys_settings;
+
+void console_settings_changed(unsigned index) {
+    if (index < 32u) __atomic_fetch_or(&g_sys_settings, 1u << index, __ATOMIC_ACQ_REL);
+}
 
 void console_power_state(int pct, bool charging, bool low) {
     uint32_t v = 0x80000000u | (uint32_t)(pct >= 0 && pct <= 100 ? pct : 0xFF) |
@@ -1300,6 +1320,17 @@ static void sys_check(void) {
         ev.type = WIN_EV_POWER;
         ev.key = pw & 0xFFu;
         ev.mods = (uint8_t)(pw >> 8);
+        sys_tell(&ev);
+    }
+
+    /* The settings: each one changed, once (a run of stepper taps between
+     * two looks is one event). */
+    uint32_t changed = __atomic_exchange_n(&g_sys_settings, 0u, __ATOMIC_ACQ_REL);
+    for (unsigned i = 0; changed; i++, changed >>= 1) {
+        if (!(changed & 1u)) continue;
+        memset(&ev, 0, sizeof ev);
+        ev.type = WIN_EV_SETTINGS;
+        ev.key = i;
         sys_tell(&ev);
     }
     __atomic_store_n(&g_sys_busy, false, __ATOMIC_RELEASE);
@@ -1528,6 +1559,10 @@ static void run_hotkey(void) {
                     view_post_call(launcher_open_cb, NULL);
                     continue;
                 }
+                if (reply[8] == SCREEN_REPLY_SETTINGS) {
+                    view_post_call(settings_open_cb, (void *)(uintptr_t)reply[9]);
+                    continue;
+                }
                 if (reply[8] == SCREEN_REPLY_TAKEN) continue;    /* the window manager's: it closed its menu */
                 if (reply[8] == SCREEN_REPLY_RELAID) {           /* zoom box, a menu item, out of full screen */
                     focus_moved(reply);
@@ -1623,6 +1658,10 @@ static void run_hotkey(void) {
         if (hk == CONSOLE_HOTKEY_FS_LEAVE) {
             uint8_t req[2] = { 'f', 0 }, reply[SCREEN_REPLY_LEN];
             if (lcdterm_fullscreen()) (void)console_canvas(req, 2, reply);
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_SETTINGS) {
+            view_post_call(settings_open_cb, (void *)(uintptr_t)SCREEN_STATUS_HIT_SETTINGS);
             continue;
         }
         if (hk == CONSOLE_HOTKEY_REVEAL) {

@@ -31,6 +31,7 @@ MONO_PATHS = [
 SERIF_PATHS = [
     "/usr/share/fonts/TTF/GentiumBook-Regular.ttf",
     "/usr/share/fonts/gentium/GentiumBook-Regular.ttf",
+    "/usr/share/texmf-dist/fonts/truetype/SIL/gentium-sil/GentiumBook-Regular.ttf",
     "/usr/share/fonts/noto/NotoSerif-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf",
 ]

@@ -42,6 +42,9 @@ void jh7110_dc8200_flip(void);
 /* Test patterns & shell diagnostics */
 void jh7110_dc8200_test_pattern(void);
 void jh7110_dc8200_repaint(void);
+/* The two colours the 1-bpp terminal maps to (RGB565; drivers/paper.h),
+ * both buffers redrawn in them. */
+void jh7110_dc8200_set_colours(uint16_t ink, uint16_t paper);
 void jh7110_dc8200_cmd_status(void);
 void jh7110_dc8200_cmd_test(void);
 

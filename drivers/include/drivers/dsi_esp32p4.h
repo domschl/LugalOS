@@ -52,6 +52,11 @@ void dsi_lcd_command(const char *args);
 int dsi_lcd_set_orientation(int rot);
 int dsi_lcd_get_orientation(void);
 void dsi_lcd_set_backlight(unsigned level);
+/* The terminal's and the views' two colours (RGB565; drivers/paper.h): a
+ * full redraw under console_lock, about 100 ms; a coloured pair runs the
+ * 7B's frame in RGB565. The caller holds neither console_lock nor the frame
+ * lock. No-op without a terminal on the panel. */
+void dsi_lcd_set_colours(uint16_t ink, uint16_t paper);
 unsigned dsi_lcd_get_backlight(void);
 
 #endif

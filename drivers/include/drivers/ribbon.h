@@ -86,6 +86,7 @@ typedef enum {
     RIBBON_WIN_LAUNCHER = 4,
     RIBBON_WIN_VIEWTEST = 5,   /* `viewtest` (dev builds, drivers/viewtest.c) */
     RIBBON_WIN_LISPUI   = 6,   /* a Lisp program's `ui-` window (drivers/lispui_view.c) */
+    RIBBON_WIN_SETTINGS = 7,   /* the Settings app (drivers/settings_view.c) */
 } ribbon_win_type_t;
 
 enum {

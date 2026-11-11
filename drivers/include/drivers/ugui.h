@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "drivers/canvas1.h"
+#include "lugalos_config.h"
 
 #define UGUI_MAX_HITBOXES   128
 
@@ -351,6 +352,34 @@ ugui_rect_t ugui_alert(const ugui_surface_t *s, ugui_ctx_t *ctx, const ugui_imag
  * i id base_id + i. Returns its rectangle. */
 ugui_rect_t ugui_action_sheet(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *title,
                               const char *const *items, int count, uint16_t base_id);
+
+/* --- Text sizes ----------------------------------------------------------
+ * The reader's serif text at a size (`ui.text_size`): 0 small, 1 medium,
+ * 2 large. Medium is the board's own face, drawn exactly as
+ * ugui_text_serif() draws it; small and large are faces from
+ * drivers/font_serif_faces.c (tools/gen_serif_faces.py) -- 13 and 24 px
+ * around the 16 px of a 1x panel, 24 and 40 px around the 32 px of a 2x one.
+ * Where UGUI_TEXT_SIZES is not defined (the RP2350, the C6: flash kept for
+ * other things) every size is the medium one. */
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32C6)
+#define UGUI_TEXT_SIZES 1
+#endif
+
+typedef struct {
+    uint8_t        h;           /* cell height, px */
+    uint8_t        stride;      /* bytes a coverage row: ceil(h / 2) */
+    const uint8_t *widths;      /* advances, glyphs 0x20..0x7E */
+    const uint8_t *aa;          /* 4-bit coverage, glyph by glyph, h rows each */
+} ugui_face_t;
+
+/* The face for size on this build's panels; NULL is the medium one. */
+const ugui_face_t *ugui_face(int size);
+/* A face's cell height (NULL: ugui_serif_line_h()). */
+int ugui_face_h(const ugui_surface_t *s, const ugui_face_t *f);
+int ugui_face_width(const ugui_surface_t *s, const ugui_face_t *f, const char *str, uint32_t len);
+/* As ugui_text_serif() in face f; returns the advance. */
+int ugui_face_text(const ugui_surface_t *s, const ugui_face_t *f, int x, int y, const char *str, uint32_t len,
+                   bool bold, bool italic, bool inverted);
 
 bool ugui_selftest(void);
 

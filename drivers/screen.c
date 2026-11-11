@@ -461,6 +461,18 @@ LCDTERM_URODATA static const uint16_t icon_wifi[10] = {
     0x0000, 0x0600, 0x0f00, 0x0600
 };
 
+/* The Settings app's gear (12x12), always at the menu bar's right end: the
+ * clock and the battery are not always there to tap. */
+LCDTERM_URODATA static const uint16_t icon_gear[12] = {
+    0x0600, 0x2f40, 0x7fe0, 0x39c0, 0x70e0, 0xf0f0,
+    0xf0f0, 0x70e0, 0x39c0, 0x7fe0, 0x2f40, 0x0600
+};
+/* The gear's place: its left edge MENU_GEAR_X(w) px from the left, the
+ * right-hand text ending MENU_RIGHT_END px before the right edge -- 8 px
+ * before the gear, and on the 8 px text grid at 1x. */
+#define MENU_GEAR_X(w)  ((w) - 16 * CHROME_SCALE)
+#define MENU_RIGHT_END  (24 * CHROME_SCALE)
+
 LCDTERM_UTEXT static void draw_icon16(const canvas1_t *cv, int x, int y, int w, int h, const uint16_t *rows) {
     const int s = CHROME_SCALE;
     for (int r = 0; r < h; r++) {
@@ -525,7 +537,7 @@ LCDTERM_UTEXT static void menu_geometry(const screen_t *scr, int *rx_out, int *i
     int w = scr->cv.w;
     uint32_t rn = cstr_len(scr->right);
     unsigned rlen = canvas1_text_len(scr->right, rn);
-    int rx = w - 16 * s - cw * (int)rlen;
+    int rx = w - MENU_RIGHT_END - cw * (int)rlen;
     if (rx < 8 * s) rx = 8 * s;
     int icon_left = rx;
     if (scr->status_flags & SCREEN_STATUS_P9) icon_left -= (14 + 6) * s;
@@ -667,9 +679,10 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
     canvas1_hline(cv, 0, w - 1, SCREEN_MENU_H - 1, CANVAS1_BLACK);
     uint32_t rn = cstr_len(scr->right);
     unsigned rlen = canvas1_text_len(scr->right, rn);
-    int rx = w - 16 * s - cw * (int)rlen;
+    int rx = w - MENU_RIGHT_END - cw * (int)rlen;
     if (rx < 8 * s) rx = 8 * s;
     chrome_text(cv, rx, 2 * s, scr->right, rn, rlen, 0, FONT_CELL_H, false);
+    draw_icon16(cv, MENU_GEAR_X(w), 3 * s, 12, 12, icon_gear);
 
     /* Draw indicator icons left of the clock */
     int icon_left = rx;
@@ -2459,6 +2472,46 @@ LCDTERM_UTEXT void screen_text_size(const screen_t *scr, unsigned *cols, unsigne
  * nearest to it, if x is within a finger's width of the minimap at all. The
  * blocks are 8-22 px wide and a fingertip is ~40, so "nearest" rather than
  * "inside". -1 for none. */
+/* What a tap at menu-bar x is on in the status area at the right -- the
+ * indicators, the battery, the clock and the gear -- as SCREEN_STATUS_HIT_*;
+ * -1 left of it. Each icon is hit over its own width and the gap before it;
+ * anything else there is the gear's (SCREEN_STATUS_HIT_SETTINGS). */
+LCDTERM_UTEXT static int status_hit(const screen_t *scr, int x) {
+    const int s = CHROME_SCALE;
+    const int cw = (int)FONT_CELL_W;
+    int rx, icon_left, sx;
+    menu_geometry(scr, &rx, &icon_left, &sx);
+    (void)sx;
+    if (x < icon_left - 4 * s) return -1;
+    if (x < rx) {                                        /* the icons, drawn right to left from rx */
+        int x0 = rx;                                     /* as draw_menu() places them */
+        if (scr->status_flags & SCREEN_STATUS_P9) {
+            x0 -= (14 + 6) * s;
+            if (x >= x0 - 4 * s) return SCREEN_STATUS_HIT_P9;
+        }
+        if (scr->status_flags & SCREEN_STATUS_WIFI) {
+            x0 -= (12 + 6) * s;
+            if (x >= x0 - 4 * s) return SCREEN_STATUS_HIT_WIFI;
+        }
+        if (scr->status_flags & SCREEN_STATUS_SD) {
+            x0 -= (11 + 6) * s;
+            if (x >= x0 - 4 * s) return SCREEN_STATUS_HIT_SD;
+        }
+        return SCREEN_STATUS_HIT_SETTINGS;
+    }
+    /* The text: words two spaces apart; the one with a '%' is the battery. */
+    int col = (x - rx) / cw;
+    uint32_t n = cstr_len(scr->right);
+    if (col >= 0 && (uint32_t)col < n && scr->right[col] != ' ') {
+        int a = col, b = col;
+        while (a > 0 && scr->right[a - 1] != ' ') a--;
+        while ((uint32_t)b + 1 < n && scr->right[b + 1] != ' ') b++;
+        for (int i = a; i <= b; i++)
+            if (scr->right[i] == '%') return SCREEN_STATUS_HIT_BATTERY;
+    }
+    return SCREEN_STATUS_HIT_SETTINGS;
+}
+
 LCDTERM_UTEXT static int minimap_hit(const screen_t *scr, int x) {
     const int s = CHROME_SCALE;
     int rx, icon_left, sx;
@@ -3384,6 +3437,13 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 reply[8] = 0xAA;
                 return;
             }
+            int st = status_hit(scr, px);
+            if (st >= 0) {                               /* the right end: the Settings app, at what was tapped */
+                reply[0] = 0;
+                reply[8] = SCREEN_REPLY_SETTINGS;
+                reply[9] = (uint8_t)st;
+                return;
+            }
         }
         int idx = (py < SCREEN_MENU_H + 2 * (int)CHROME_SCALE && menu) ? minimap_hit(scr, px) : window_at(scr, px, py);
         /* Check for Macintosh close box tap on title bar */
@@ -3699,6 +3759,16 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             if (scr->ribbon.wins[i].type == req[1] && scr->ribbon.wins[i].vterm_id == req[2]) idx = i;
         status = (idx >= 0 && ribbon_is_view(req[1]) && close_window_ex(scr, (uint8_t)idx, reply, true, false)) ? 0 : 1;
         if (status == 0) reply[8] = 0xCC;
+    } else if (op == 'z') {
+        /* 'z' x: what the menu bar's status area has at x -- reply[12] 1 and
+         * reply[13] the SCREEN_STATUS_HIT_*, or reply[12] 0 left of it;
+         * reply[14..15] the screen's width. Past [11]: the common tail below
+         * fills [2..11]. For `ribbon list` and the tests. */
+        int st = status_hit(scr, arg16(req, n, 0));
+        reply[12] = st >= 0 ? 1u : 0u;
+        reply[13] = (uint8_t)(st >= 0 ? st : 0);
+        reply[14] = (uint8_t)(scr->cv.w & 0xFFu);
+        reply[15] = (uint8_t)(scr->cv.w >> 8);
     } else if (op == 'Q') {
         /* close terminal `vid`'s window -- its vterm is gone
          * (vterm_destroy()), however it went: `exit`, `vterm close`. */
