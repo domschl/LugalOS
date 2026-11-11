@@ -55,7 +55,8 @@ the second and third (`circle 1`; the resize `1 redraw, circle 1`). The same wit
 `7887460a` built in a clean worktree and with the phase 77.1 work on top, so not 77.1's. A first
 `'split` after boot behaves differently from every later one: look at what the first layout switch
 sets up (the per-layout store's allocation, the canvas's first size) rather than at the store's
-restore.
+restore. Later the same day the full suite passed it after a fresh flash (40/40): intermittent, not
+every first run.
 
 ## The VisionFive 2 sees an older /sd0 right after U-Boot `fatwrite` (found 2026-11-09)
 

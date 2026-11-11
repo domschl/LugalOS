@@ -523,12 +523,14 @@ def test_cursor_engine_and_injection(ser: serial.Serial) -> tuple[str, bool, str
     out_click = run_cmd(ser, "ms click", timeout_s=10.0)
     out_wheel = run_cmd(ser, "ms wheel -2", timeout_s=10.0)
     out_cur2 = run_cmd(ser, "cursor status", timeout_s=10.0)
+    # The formats since phase 71 (4c9c8f36): `cursor` says where it is and
+    # whether it shows; a move shows it.
     checks = [
-        ("Cursor visible", "Visibility:   VISIBLE" in out_cur),
-        ("Move injected", "ms: pointer moved to 320, 240" in out_move),
-        ("Click injected", "ms: clicked button 0x01 at 320, 240" in out_click),
-        ("Wheel injected", "ms: wheel delta -2" in out_wheel or "ms: wheel -2" in out_wheel),
-        ("New coordinates tracked", "X=320, Y=240" in out_cur2),
+        ("Cursor reported", "cursor: at " in out_cur and "a mouse attached" in out_cur),
+        ("Move injected", "ms: moved to 320, 240" in out_move),
+        ("Click injected", "ms: left click at 320, 240" in out_click),
+        ("Wheel injected", "ms: wheel 0, -2" in out_wheel),
+        ("New coordinates tracked, shown", "cursor: at 320, 240, shown" in out_cur2),
     ]
     failed = [label for label, ok in checks if not ok]
     if failed:

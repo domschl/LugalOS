@@ -69,7 +69,7 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
   - The quick settings and the application cards left the launcher: the applications are default shortcuts (Settings among them), and the menu bar's gear opens Settings.
   - The shortcuts file is lowercase, `/sd0/system/shortcuts` (else `/flash0/system/shortcuts`, else built-in defaults), per the card-naming rule.
 - **Done (2026-11-11), tiers 0-2:** the two faces (`drivers/launcher_view.c`), the shortcuts list and file (`drivers/shortcuts.c`, `shortcuts` in the shell), the roots from `vfs_root_at()`, `Cmd+Space`. Files: dirs first, natural order, Markdown by its first heading, up to 512 entries; type-ahead, PgUp/PgDn/Home/End move the focus. Narrow windows: fewer grid columns, a list below two. QEMU `quick.py launcher`: keys-only Files to a document, a shortcut added and removed; rename; 500 entries listed and paged; the mouse. Boards (`launcher_faces.py`, pointer only): Tab5, 7B and RP2350-LCD-7 24/24 steps by touch and mouse, VF2 12/12 by mouse. The 500-entry list's frame rate is 77.3's to measure.
-- **Status:** implemented; closes on the tier 3 run.
+- **Status: done 2026-11-11**, on the tier 3 run: QEMU 799/799 (all targets); full board suites Tab5 67/67, 7B 67/67, RP2350-LCD-7 40/40, VisionFive 2 26/26. Found on the way, not 77.2's: the VF2's cursor test still expected the output from before phase 71 (4c9c8f36), updated; this host's firewall blocked the MQTT test broker on TCP 1883 (owner opened it).
 
 ### 77.3 — Redraw only what changed in `ugui` (from 76.5)
 - **Why here** (owner, 2026-11-10): the settings app and the Files face are the first views with many controls and a long list; 76.5 had no use case to measure on.
