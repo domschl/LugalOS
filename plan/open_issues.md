@@ -122,6 +122,10 @@ painted over it. The glass check (frame against a full conversion of the
 same 1-bpp state) passes, and the owner sees no fault on the 7B when
 scrolling. **Next step:** find the writer (a write watch on the 1-bpp frame's
 rows 16..31, or `racescan --why` for the reader's draw paths).
+**Seen again 2026-11-11** (77.3's `uxbench` runs on the 7B and the Tab5):
+rows 0..15, "band 1 (or 2) changed during the check itself", now also with
+the launcher and the Settings app focused, not only a reader; the glass check
+matched each time.
 
 ## Touch thresholds are not in millimetres; GT911 taps land 250 ms late
 

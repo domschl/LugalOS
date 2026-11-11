@@ -5,7 +5,7 @@
     "drivers/reader_view.c": 62432,
     "drivers/settings_view.c": 4760,
     "drivers/shortcuts.c": 12076,
-    "drivers/uxbench.c": 540,
+    "drivers/uxbench.c": 576,
     "drivers/view.c": 704,
     "drivers/viewtest.c": 1892,
     "drivers/winclose.c": 288,
@@ -18,12 +18,12 @@
   "bulk_per_subsystem": {
     "chess": 1852,
     "display": 143380,
-    "drivers": 36116,
+    "drivers": 36152,
     "kernel": 10784,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1715908,
+  "bulk_total": 1715944,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {

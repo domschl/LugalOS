@@ -79,7 +79,33 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
   - drawing dominant: `ugui` skips drawing a widget whose state hash is unchanged since the last pass -- which yields the same rectangles, so the compositor's part comes with it.
 - **Correctness first:** a partial pass must equal a full redraw, pixel for pixel -- `uguiselftest` compares both on QEMU's RAM screen, and on the boards a check that reads the panel's frame, not the caches (76.4a: `lcd check` trusted the same cell cache it was to check, and missed the Tab5's stale cells).
 - **Acceptance:** a measured gain on the named interactions on the Tab5 and the 7B; the 500-entry list of 77.2 scrolls at frame rate; the partial-vs-full check clean on QEMU and the boards.
-- **Status:** planned; after 77.1 and 77.2 have views to measure.
+- **Measured (2026-11-11)**, `uxbench shell.md /sd0/uxb500` (a directory of 500 files) on the Tab5 (landscape, 270) and the 7B, both double-buffered. `uxbench` now times the launcher's and the Settings app's passes by stage (`uxbench_view_note()`: the view's own drawing, its `'W'` copy to the screen, the wait for the compositor's buffer) beside the frame stages it had; new rows `files`, `fscroll` (the Files list dragged 24 px a step) and `stepper` (a tap on the pointer-speed stepper: press, release, tap, as the console sends them). Medians per action, ms:
+
+  | Row | Board | Input to glass | View draws | Copy (`'W'`) | Frame | of which composite |
+  | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+  | launcher (Shortcuts) | Tab5 | 122 | 28.4 | 7.4 | 71 | 67.4 |
+  | | 7B | 50 | 12.3 | 4.4 | 17 | 15.2 |
+  | files (redraw, 500) | Tab5 | 140 | 43.8 | 6.9 | 72 | 67.6 |
+  | | 7B | 66 | 24.6 | 5.0 | 17 | 15.2 |
+  | fscroll (a step) | Tab5 | 140 | 43.3 | 7.3 | 76 | 67.9 |
+  | | 7B | 66 | 24.9 | 4.3 | 18 | 15.3 |
+  | stepper (a tap) | Tab5 | 53 | 12.6 in 3 passes | 21.1 | 4 | -- |
+  | | 7B | 33 | 8.3 in 3 passes | 12.2 | 1.7 | -- |
+
+  The 1-bpp conversion is under 3 ms everywhere: the launcher is a GRAY8 surface, and the conversion skips what a surface covers. Input to glass moves in steps of one panel frame (16.7 ms on the 7B, about 17.5 ms on the Tab5): 66 ms is four frames, 140 ms eight.
+- **What the numbers say:**
+  - **Tab5: compositing dominates** -- the launcher's GRAY8 surface into the RGB565 frame, on the CPU (the frame record shows no mirror and no PPA time for it), 67 ms of 122-140, for every pass, whatever changed. The view's drawing is second (28-44 ms).
+  - **7B: drawing dominates** -- 12-25 ms against a 15 ms composite and a 4-5 ms copy.
+  - **The launcher draws everything twice on the P4**: ugui writes each widget to the 1-bpp backing and to the GRAY8 surface, and `'W'` then copies the 1-bpp backing to the screen canvas, under the surface where the conversion skips it. Measured by drawing GRAY8 only (an experiment, not kept): the 7B's launcher 12.3 -> 8.5 ms, Files 24.6 -> 17.3 ms, input to glass 50 -> 33 and 66 -> 50 ms (a frame less each); the Tab5's 28 -> 19 and 44 -> 32 ms (no change on the glass: its composite still decides). The copy (4-7 ms) would go too. What still reads the launcher's 1-bpp picture on the P4 (the 1-bpp screenshot scenarios, `uxbench`'s screen check) is to settle first.
+  - **The Settings tap draws three times**: the press, the act, and again on its own WIN_EV_SETTINGS, which shows the same picture as the act. Its 1-bpp copy (7 ms a pass on the Tab5) costs more than its drawing (4 ms).
+  - **Scrolling is not helped by damage tracking**: every row moves, so the union is the whole list. Frame rate (16.7 ms) is 4x away on the 7B and 8x on the Tab5; it needs the reader's way (move the surface, draw only the uncovered rows) and, on the Tab5, a composite that moves pixels rather than converting the window again.
+- **Owner decision (2026-11-11): deferred.** None of the parts gives a change a user would notice: (1)-(3) save at most a frame on the 7B (launcher 50 -> 33 ms) and nothing on the Tab5's glass, and a stepper tap at 33-53 ms is already immediate. The one thing a user does notice -- the Files list scrolling at 7 (Tab5) to 15 (7B) frames a second -- damage tracking does not touch. So 77.3 ends with the measurements and `uxbench`'s new rows; the options stay here for when they are wanted:
+  1. the launcher GRAY8-only on the P4 and no 1-bpp copy under a surface (first: what still reads its 1-bpp picture -- the 1-bpp screenshot scenarios, `uxbench`'s screen check);
+  2. one pass per Settings tap (the act and its own WIN_EV_SETTINGS merged);
+  3. ugui's skip-unchanged widgets, the changed rectangles handed to `'W'` and the compositor (the second variant above, which carries the first) -- for taps, focus, hover, on the Tab5 most;
+  4. scrolling by moving the surface and drawing only the uncovered rows, as the reader does, with a composite that moves pixels on the Tab5. The acceptance "the 500-entry list scrolls at frame rate" goes with it.
+- **Found on the way, not 77.3's:** `uxbench`'s screen check reports rows 0..15 changed "during the check itself" on several rows on both boards: something drew into the menu bar while it compared (most likely the clock; not looked into), not a stale screen: the glass check, which reads the panel's frame, matches each time.
+- **Status: done 2026-11-11 as a measurement; the redraw work deferred** (owner decision above).
 
 ### 77.4 — Verification and documentation
 - `tests/hw/test_esp32p4.py`: launcher faces and settings persistence checks.
@@ -87,7 +113,7 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 - Docs: new `doc/user/launcher.md`; `doc/user/shell.md` for any new commands; `python3 tools/gendocs.py --all` and `--check`.
 - RAM baselines re-recorded; `sizereport` for RP2350 shows no SRAM growth.
 - **Version** (owner, 2026-11-11): the version number goes up -- `kernel/include/kernel/version.h` (`LUGALOS_VERSION` and its parts), 0.20.0 to 0.21.0 (a minor step: new apps and settings, nothing incompatible) -- and every preset is rebuilt so `/proc/version` and `/proc/buildid` say so.
-- **Release, the final step** (owner, 2026-11-11): once everything above passes -- the phase's tier 3 run (`doc/dev/testing.md` §0) -- a new GitHub release `0.21.0` is published by `doc/dev/releasing.md`, tagged on the commit that closes the phase, with release notes in the style of the earlier ones (0.20.0: "Touch UX Mode, Classic Mac Micro-Toolkit & HiDPI Ribbon"): the Settings app, paper warmth, text sizes, the launcher's two faces, damage tracking.
+- **Release, the final step** (owner, 2026-11-11): once everything above passes -- the phase's tier 3 run (`doc/dev/testing.md` §0) -- a new GitHub release `0.21.0` is published by `doc/dev/releasing.md`, tagged on the commit that closes the phase, with release notes in the style of the earlier ones (0.20.0: "Touch UX Mode, Classic Mac Micro-Toolkit & HiDPI Ribbon"): the Settings app, paper warmth, text sizes, the launcher's two faces (damage tracking deferred: 77.3).
 - **Status:** planned.
 
 ---

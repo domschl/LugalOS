@@ -68,6 +68,11 @@ bool launcher_poll_exec(char *out_cmd, size_t max_len) { (void)out_cmd; (void)ma
 uint8_t *launcher_get_aa_backing(uint32_t *out_stride, int *out_w, int *out_h) { (void)out_stride; (void)out_w; (void)out_h; return NULL; }
 uint32_t launcher_get_seq(void) { return 0; }
 void launcher_report(void) { cprintf("launcher: not present on headless board\n"); }
+bool launcher_bench_show(int face, const char *dir, int *was_face, char *was_dir, unsigned cap) {
+    (void)face; (void)dir; (void)was_face; (void)was_dir; (void)cap;
+    return false;
+}
+int launcher_bench_files(void) { return 0; }
 
 #else
 
@@ -81,6 +86,8 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #include "drivers/ramscreen.h"
 #include "drivers/battery.h"
 #include "drivers/usbkbd_task.h"
+#include "drivers/uxbench.h"
+#include "kernel/time.h"
 #include "kernel/vterm.h"
 #include "fs/vfs.h"
 #include "kernel/console.h"
@@ -962,6 +969,7 @@ void launcher_update(void) {
     if (s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
 
     canvas1_t *back = launcher_backing();
+    uint64_t t_wait = time_get_us();
     if (s_launcher.aa_back) {
         console_lock();
         console_frame_lock();
@@ -969,7 +977,9 @@ void launcher_update(void) {
         console_unlock();
         s_launcher.aa_target = s_launcher.aa_back;
     }
+    uint64_t t_draw = time_get_us();
     launcher_draw(back, s_launcher.win_w, s_launcher.win_h);
+    uint64_t t_copy = time_get_us();
     if (s_launcher.aa_target) {
         console_lock();
         uint8_t *front = s_launcher.aa_buf;
@@ -982,6 +992,7 @@ void launcher_update(void) {
 
     uint8_t ureq[2] = { 'W', s_launcher.slot_id }, sreply[SCREEN_REPLY_LEN];
     (void)console_canvas(ureq, 2, sreply);
+    uxbench_view_note(t_wait, t_draw, t_copy, time_get_us());
 
     /* A text field with the focus and nothing over it: the on-screen
      * keyboard under it (where there is touch and no keyboard). */
@@ -1206,6 +1217,33 @@ static void set_face(int face) {
     else if (face == FACE_SHORTCUTS && shortcuts_count() > 0) ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_SHORTCUT, 0);
     else ugui_set_focus(&s_launcher.ui_ctx, LAUNCHER_ID_TAB + face, (int16_t)face);
     launcher_update();
+}
+
+bool launcher_bench_show(int face, const char *dir, int *was_face, char *was_dir, unsigned cap) {
+    if (was_face) *was_face = s_launcher.face;
+    if (was_dir && cap) {
+        strncpy(was_dir, s_launcher.cwd, cap - 1);
+        was_dir[cap - 1] = '\0';
+    }
+    if (dir) {
+        char was[VFS_PATH_MAX];
+        memcpy(was, s_launcher.cwd, sizeof was);
+        strncpy(s_launcher.cwd, dir, sizeof s_launcher.cwd - 1);
+        s_launcher.cwd[sizeof s_launcher.cwd - 1] = '\0';
+        if (!load_dir()) {
+            memcpy(s_launcher.cwd, was, sizeof s_launcher.cwd);
+            (void)load_dir();
+            return false;
+        }
+        s_launcher.scroll_px = 0;
+    }
+    s_launcher.face = face == FACE_FILES ? FACE_FILES : FACE_SHORTCUTS;
+    if (s_launcher.face == FACE_FILES && !s_launcher.files_loaded) (void)load_dir();
+    return true;
+}
+
+int launcher_bench_files(void) {
+    return s_launcher.n_entries;
 }
 
 /* --- Action sheets, confirmations, rename --- */

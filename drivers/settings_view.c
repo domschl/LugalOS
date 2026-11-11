@@ -18,6 +18,7 @@
 #include "drivers/screen.h"
 #include "drivers/ugui.h"
 #include "drivers/ui_sound.h"
+#include "drivers/uxbench.h"
 #include "fs/vfs.h"
 #include "kernel/boardinfo.h"
 #include "kernel/console.h"
@@ -387,6 +388,7 @@ static void st_draw(void) {
     canvas1_t *back = st_backing();
     if (!s_st.active || !back || s_st.w <= 0 || s_st.h <= 0) return;
     const int sc = CHROME_SCALE;
+    uint64_t t_draw = time_get_us();
     ugui_surface_t surf = { .c1 = back, .w = s_st.w, .h = s_st.h, .scale = sc };
     ugui_ctx_t *ctx = &s_st.ui;
     ugui_begin(ctx);
@@ -423,8 +425,10 @@ static void st_draw(void) {
     }
     ugui_end(&surf, ctx);
     s_st.seq++;
+    uint64_t t_copy = time_get_us();
     uint8_t req[2] = { 'W', s_st.slot }, reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 2, reply);
+    uxbench_view_note(t_draw, t_draw, t_copy, time_get_us());
 }
 
 /* --- Input ------------------------------------------------------------------ */
@@ -744,6 +748,19 @@ static void st_report_now(void) {
     if (o >= cap) b[cap - 1] = '\0';
 }
 
+bool settings_view_bench_stepper(bool inc, uint8_t *slot, int *x, int *y) {
+    if (!s_st.active) return false;
+    for (int i = 0; i < s_st.ui.count; i++) {
+        const ugui_hit_t *h = &s_st.ui.hits[i];
+        if (h->id != (inc ? ID_PTR_INC : ID_PTR_DEC)) continue;
+        *slot = s_st.slot;
+        *x = h->rect.x + h->rect.w / 2;
+        *y = h->rect.y + h->rect.h / 2;
+        return true;
+    }
+    return false;
+}
+
 void settings_view_report(void) {
     st_call_t c = { 1, -1, false };
     view_call(st_call, &c);
@@ -766,6 +783,10 @@ const view_ops_t g_settings_view = { .name = "settings", .active = st_none_activ
                                      .surface = st_none_surface, .seq = st_none_seq };
 
 bool settings_view_open(void) { return false; }
+bool settings_view_bench_stepper(bool inc, uint8_t *slot, int *x, int *y) {
+    (void)inc; (void)slot; (void)x; (void)y;
+    return false;
+}
 bool settings_view_open_at(int section) { (void)section; return false; }
 void settings_view_report(void) {
     cprintf("settings view: no screen on this board\n");

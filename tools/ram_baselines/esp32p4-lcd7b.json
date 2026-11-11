@@ -6,7 +6,7 @@
     "drivers/reader_view.c": 62460,
     "drivers/settings_view.c": 4760,
     "drivers/shortcuts.c": 12076,
-    "drivers/uxbench.c": 540,
+    "drivers/uxbench.c": 576,
     "drivers/view.c": 704,
     "drivers/viewtest.c": 1892,
     "drivers/winclose.c": 288,
@@ -24,12 +24,12 @@
     "app:moonbase": 73888,
     "chess": 1852,
     "display": 152456,
-    "drivers": 36116,
+    "drivers": 36152,
     "kernel": 35360,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1863920,
+  "bulk_total": 1863956,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {

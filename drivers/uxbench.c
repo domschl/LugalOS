@@ -4,9 +4,11 @@
  * shows it (lcdterm_settle()).
  *
  * Per scenario it prints the wall time of an action (input to glass, median
- * and p95) and, where the backend times its frames (lcdterm_frame_stats(), the
- * P4), the converted frames' stages. "app" is the wall time not spent in
- * frames: the 1-bpp screen drawing, the reader's layout, the waits.
+ * and p95), the drawing passes of the launcher and the Settings app with
+ * their stages (uxbench_view_note()) and, where the backend times its frames
+ * (lcdterm_frame_stats(), the P4), the converted frames' stages. "app" is
+ * the wall time not spent in frames: the 1-bpp screen drawing, the views'
+ * drawing, the reader's layout, the waits.
  *
  * Runs in the calling shell task; its reader and launcher calls on the views
  * task, as the input path's. Opens a reader and the launcher when they
@@ -17,11 +19,14 @@
 #include "drivers/reader_view.h"
 #include "drivers/ribbon.h"
 #include "drivers/screen.h"
+#include "drivers/settings_view.h"
+#include "drivers/uxbench.h"
 #include "drivers/view.h"
 #include "kernel/console.h"
 #include "kernel/palloc.h"
 #include "kernel/time.h"
 #include "kernel/vterm.h"
+#include "fs/vfs.h"
 #include "lugalos_config.h"
 
 #include <stdbool.h>
@@ -36,17 +41,41 @@
 
 #define UXB_MAX_ACTIONS 24u
 #define UXB_MAX_FRAMES  128u
+#define UXB_MAX_NOTES   256u
+
+/* One view pass, as uxbench_view_note() took it. */
+typedef struct {
+    uint32_t wait_us, draw_us, copy_us;
+} uxb_note_t;
+
+/* The views' passes while the bench runs: notes is NULL otherwise. In
+ * PSRAM: only a measurement uses it. */
+/* single task: views -- the bench sets and clears it through view_call() and
+ * reads it after view_call() or view_sync() has waited for the views. */
+static struct {
+    uxb_note_t *notes;
+    unsigned    n;
+} g_vn BULK_BSS;
+
+void uxbench_view_note(uint64_t t_wait, uint64_t t_draw, uint64_t t_copy, uint64_t t_end) {
+    if (!g_vn.notes || g_vn.n >= UXB_MAX_NOTES) return;
+    uxb_note_t *nt = &g_vn.notes[g_vn.n++];
+    nt->wait_us = (uint32_t)(t_draw - t_wait);
+    nt->draw_us = (uint32_t)(t_copy - t_draw);
+    nt->copy_us = (uint32_t)(t_end - t_copy);
+}
 
 typedef struct {
     int     count;              /* ribbon windows */
     int     term0_idx;          /* window of terminal 0, or -1 */
     int     reader_idx, reader_rid, reader_h;
     int     launcher_idx;
+    int     settings_idx;
 } uxb_ribbon_t;
 
 static void uxb_scan(uxb_ribbon_t *rb) {
     memset(rb, 0, sizeof *rb);
-    rb->term0_idx = rb->reader_idx = rb->reader_rid = rb->launcher_idx = -1;
+    rb->term0_idx = rb->reader_idx = rb->reader_rid = rb->launcher_idx = rb->settings_idx = -1;
     uint8_t req[2] = { 'R', 0 }, reply[SCREEN_REPLY_LEN];
     if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
     rb->count = reply[1];
@@ -60,6 +89,7 @@ static void uxb_scan(uxb_ribbon_t *rb) {
             rb->reader_h = (int)(reply[10] | (reply[11] << 8));
         }
         if (reply[1] == RIBBON_WIN_LAUNCHER && rb->launcher_idx < 0) rb->launcher_idx = i;
+        if (reply[1] == RIBBON_WIN_SETTINGS && rb->settings_idx < 0) rb->settings_idx = i;
     }
 }
 
@@ -106,6 +136,9 @@ typedef struct {
     int         rid, dy;
     const char *doc;
     int         result;
+    int        *x, *y;
+    char       *dir;              /* 'F': in, then the directory shown before */
+    unsigned    dir_cap;
 } uxb_vcall_t;
 
 static void uxb_view_op(void *arg) {
@@ -120,12 +153,36 @@ static void uxb_view_op(void *arg) {
     case 'l': launcher_update(); break;
     case 'L': c->result = launcher_open(); break;
     case 'C': launcher_close(); break;
+    case 'd': launcher_drag(c->dy); break;
+    case 'F': {                   /* face rid, in dir (NULL: as it is); result: the face before, -1 */
+        int was = 0;
+        char tmp[VFS_PATH_MAX];
+        bool ok = launcher_bench_show(c->rid, c->dir, &was, tmp, sizeof tmp);
+        c->result = ok ? was : -1;
+        if (ok && c->dir) {
+            strncpy(c->dir, tmp, c->dir_cap - 1);
+            c->dir[c->dir_cap - 1] = '\0';
+        }
+        c->dy = launcher_bench_files();
+        break;
+    }
+    case 'S': {                   /* the stepper's button (dy: 1 the +), slot in rid */
+        uint8_t slot = 0;
+        c->result = settings_view_bench_stepper(c->dy > 0, &slot, c->x, c->y);
+        c->rid = slot;
+        break;
+    }
+    case 'N':                     /* the views' notes: on (doc: the ring) or off */
+        g_vn.notes = (uxb_note_t *)(uintptr_t)c->doc;
+        g_vn.n = 0;
+        break;
+    case 'Z': g_vn.n = 0; break;  /* a scenario's first */
     default: break;
     }
 }
 
 static int uxb_view(char op, int rid, int dy, const char *doc) {
-    uxb_vcall_t c = { op, rid, dy, doc, 0 };
+    uxb_vcall_t c = { op, rid, dy, doc, 0, NULL, NULL, NULL, 0 };
     view_call(uxb_view_op, &c);
     return c.result;
 }
@@ -155,13 +212,34 @@ static void uxb_mp(uint32_t *v, unsigned n, uint32_t *med, uint32_t *p95) {
     *p95 = v[k ? k - 1u : 0u];
 }
 
-typedef enum { UXB_PAN, UXB_SCROLL, UXB_PAGE, UXB_DEEP, UXB_REDRAW, UXB_LAUNCHER } uxb_kind_t;
+typedef enum { UXB_PAN, UXB_SCROLL, UXB_PAGE, UXB_DEEP, UXB_REDRAW, UXB_LAUNCHER, UXB_FSCROLL, UXB_STEPPER } uxb_kind_t;
 
 typedef struct {
     uxb_ribbon_t rb;
     lcdterm_frame_stat_t *frames;    /* UXB_MAX_FRAMES, in PSRAM pages */
     uint32_t col[UXB_MAX_FRAMES];
+    int      fscroll_dy;             /* the Files face's drag step, px */
+    uint8_t  st_slot;                /* the Settings window's view instance */
+    int      st_x[2], st_y[2];       /* its stepper's - and + */
 } uxb_t;
+
+/* A tap on the Settings app as the console delivers one (kernel/console.c):
+ * the press, its release, the tap. */
+static void uxb_settings_tap(const uxb_t *u, int x, int y) {
+    static const uint8_t types[3] = { WIN_EV_POINTER_DOWN, WIN_EV_POINTER_UP, WIN_EV_POINTER_UP };
+    static const uint8_t flags[3] = { WIN_EVF_PRESS, WIN_EVF_PRESS, WIN_EVF_TAP };
+    for (unsigned k = 0; k < 3u; k++) {
+        win_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = types[k];
+        ev.flags = flags[k];
+        ev.button = 1;
+        ev.x = (int16_t)(k == 1u ? 0 : x);
+        ev.y = (int16_t)(k == 1u ? 0 : y);
+        view_post(&g_settings_view, u->st_slot, &ev);
+    }
+    view_sync();
+}
 
 /* One action of a scenario; i counts from 0. false: nothing to do. */
 static bool uxb_act(uxb_t *u, uxb_kind_t kind, unsigned i, unsigned n) {
@@ -196,6 +274,14 @@ static bool uxb_act(uxb_t *u, uxb_kind_t kind, unsigned i, unsigned n) {
     case UXB_LAUNCHER:
         (void)uxb_view('l', 0, 0, NULL);
         return true;
+    case UXB_FSCROLL:                        /* a finger up the list, then back down */
+        (void)uxb_view('d', 0, i < n / 2u ? -u->fscroll_dy : u->fscroll_dy, NULL);
+        return true;
+    case UXB_STEPPER: {                      /* +, -, +, ...: the speed ends where it began */
+        unsigned b = i % 2u == 0 ? 1u : 0u;
+        uxb_settings_tap(u, u->st_x[b], u->st_y[b]);
+        return true;
+    }
     }
     return false;
 }
@@ -226,17 +312,46 @@ static void uxb_strip_check(const uxb_t *u) {
                         fallbacks, (unsigned)(sizeof steps / sizeof steps[0]));
 }
 
+/* The views' passes in the last scenario, per action: how many, and the
+ * median and p95 of each stage summed over an action's passes. */
+static void uxb_view_report(uxb_t *u, const unsigned *mark, unsigned done) {
+    unsigned total = mark[done];
+    if (!g_vn.notes || total == 0) return;
+    uint32_t med[4], p95[4];
+    for (unsigned s = 0; s < 4u; s++) {
+        for (unsigned a = 0; a < done; a++) {
+            uint32_t v = 0;
+            for (unsigned k = mark[a]; k < mark[a + 1u]; k++) {
+                const uxb_note_t *nt = &g_vn.notes[k];
+                v += s == 0 ? 1u : s == 1 ? nt->wait_us : s == 2 ? nt->draw_us : nt->copy_us;
+            }
+            u->col[a] = v;
+        }
+        uxb_mp(u->col, done, &med[s], &p95[s]);
+    }
+    cprintf("                  view: %u passes (%lu per action, at most %lu%s); us per action median/p95: "
+            "draw %lu/%lu copy %lu/%lu wait %lu/%lu\n",
+            total, (unsigned long)med[0], (unsigned long)p95[0], total >= UXB_MAX_NOTES ? ", record full" : "",
+            (unsigned long)med[2], (unsigned long)p95[2], (unsigned long)med[3], (unsigned long)p95[3],
+            (unsigned long)med[1], (unsigned long)p95[1]);
+}
+
 static void uxb_run(uxb_t *u, uxb_kind_t kind, const char *name, unsigned n) {
     uint32_t wall[UXB_MAX_ACTIONS];
+    unsigned mark[UXB_MAX_ACTIONS + 1u];
     unsigned done = 0;
     if (n > UXB_MAX_ACTIONS) n = UXB_MAX_ACTIONS;
     lcdterm_settle();
+    (void)uxb_view('Z', 0, 0, NULL);
     (void)lcdterm_frame_stats(u->frames, UXB_MAX_FRAMES, true);
+    mark[0] = 0;
     for (unsigned i = 0; i < n; i++) {
         uint64_t t0 = time_get_us();
         if (!uxb_act(u, kind, i, n)) break;
         lcdterm_settle();
         wall[done++] = (uint32_t)(time_get_us() - t0);
+        view_sync();
+        mark[done] = g_vn.n;
     }
     if (!done) {
         cprintf("uxbench %-8s: nothing to do\n", name);
@@ -258,6 +373,7 @@ static void uxb_run(uxb_t *u, uxb_kind_t kind, const char *name, unsigned n) {
     cprintf("uxbench %-8s: %u actions, input to glass median %lu.%lu ms, p95 %lu.%lu ms\n",
             name, done, (unsigned long)(wmed / 1000u), (unsigned long)(wmed % 1000u / 100u),
             (unsigned long)(wp95 / 1000u), (unsigned long)(wp95 % 1000u / 100u));
+    uxb_view_report(u, mark, done);
     uint8_t vreq[1] = { 'E' }, vreply[SCREEN_REPLY_LEN];
     if (console_canvas(vreq, 1, vreply) && vreply[0] == 0) {
         if (vreply[1]) {
@@ -314,7 +430,17 @@ static uxb_t u BULK_BSS;
 
 void uxbench_cmd(const char *arg) {
     while (arg && *arg == ' ') arg++;
-    const char *doc = (arg && *arg) ? arg : "shell.md";
+    /* doc, then the Files face's directory */
+    char doc[96], dir[VFS_PATH_MAX];
+    unsigned k = 0;
+    while (arg && *arg && *arg != ' ' && k < sizeof doc - 1u) doc[k++] = *arg++;
+    doc[k] = '\0';
+    while (arg && *arg == ' ') arg++;
+    k = 0;
+    while (arg && *arg && *arg != ' ' && k < sizeof dir - 1u) dir[k++] = *arg++;
+    dir[k] = '\0';
+    if (!doc[0]) strcpy(doc, "shell.md");
+    if (!dir[0]) strcpy(dir, "/sd0");
 
     const uint32_t pages = (UXB_MAX_FRAMES * sizeof(lcdterm_frame_stat_t) + PAGE_SIZE - 1u) / PAGE_SIZE;
     lcdterm_frame_stat_t *frames = (lcdterm_frame_stat_t *)palloc_pages_bulk(pages);
@@ -323,13 +449,22 @@ void uxbench_cmd(const char *arg) {
         return;
     }
     u.frames = frames;
+    const uint32_t npages = (UXB_MAX_NOTES * sizeof(uxb_note_t) + PAGE_SIZE - 1u) / PAGE_SIZE;
+    uxb_note_t *notes = (uxb_note_t *)palloc_pages_bulk(npages);
+    if (!notes) {
+        cprintf("uxbench: no memory\n");
+        palloc_free(frames, pages);
+        return;
+    }
 
     uxb_scan(&u.rb);
     if (u.rb.count == 0) {
         cprintf("uxbench: no ribbon on this console\n");
+        palloc_free(notes, npages);
         palloc_free(frames, pages);
         return;
     }
+    (void)uxb_view('N', 0, 0, (const char *)notes);
     bool opened_reader = false, opened_launcher = false;
     if (u.rb.reader_idx < 0) opened_reader = uxb_view('O', 0, 0, doc) != 0;
     if (u.rb.launcher_idx < 0) opened_launcher = uxb_view('L', 0, 0, NULL) != 0;
@@ -358,14 +493,57 @@ void uxbench_cmd(const char *arg) {
         cprintf("uxbench: no reader for '%s'; scroll, page and redraw skipped\n", doc);
     }
     if (u.rb.launcher_idx >= 0 && uxb_jump(u.rb.launcher_idx)) {
+        uxb_vcall_t c = { 'F', 0, 0, NULL, 0, NULL, NULL, NULL, 0 };
+        view_call(uxb_view_op, &c);          /* Shortcuts, the directory as it is */
+        int was_face = c.result;
         uxb_run(&u, UXB_LAUNCHER, "launcher", 8);
+        char was_dir[VFS_PATH_MAX];
+        strcpy(was_dir, dir);
+        c = (uxb_vcall_t){ 'F', 1, 0, NULL, 0, NULL, NULL, was_dir, sizeof was_dir };
+        view_call(uxb_view_op, &c);
+        if (c.result < 0) {
+            cprintf("uxbench: '%s' did not open; files and fscroll skipped\n", dir);
+        } else {
+            cprintf("uxbench: Files in %s, %d entries\n", dir, c.dy);
+            uxb_run(&u, UXB_LAUNCHER, "files", 8);
+            u.fscroll_dy = 24 * (int)CHROME_SCALE;
+            uxb_run(&u, UXB_FSCROLL, "fscroll", 24);
+            c = (uxb_vcall_t){ 'F', 1, 0, NULL, 0, NULL, NULL, was_dir, sizeof was_dir };
+            view_call(uxb_view_op, &c);      /* the directory shown before */
+        }
+        c = (uxb_vcall_t){ 'F', was_face, 0, NULL, 0, NULL, NULL, NULL, 0 };
+        view_call(uxb_view_op, &c);
+        (void)uxb_view('l', 0, 0, NULL);
     }
+
+    /* The Settings app's pointer-speed stepper: open at Input for it. */
+    bool opened_settings = u.rb.settings_idx < 0;
+    if (settings_view_open_at(SETTINGS_SECTION_INPUT)) {
+        uxb_scan(&u.rb);
+        bool ok = true;
+        for (int b = 0; b < 2 && ok; b++) {
+            uxb_vcall_t c = { 'S', 0, b, NULL, 0, &u.st_x[b], &u.st_y[b], NULL, 0 };
+            view_call(uxb_view_op, &c);
+            ok = c.result != 0;
+            u.st_slot = (uint8_t)c.rid;
+        }
+        if (ok && uxb_jump(u.rb.settings_idx)) uxb_run(&u, UXB_STEPPER, "stepper", 8);
+        else cprintf("uxbench: the Settings app's stepper is not shown; stepper skipped\n");
+    } else {
+        opened_settings = false;
+        cprintf("uxbench: the Settings app did not open; stepper skipped\n");
+    }
+    (void)uxb_view('N', 0, 0, NULL);
 
     if (opened_reader) {
         uxb_scan(&u.rb);
         int rid = u.rb.reader_rid;
         uxb_close_window(u.rb.reader_idx);
         if (rid >= 0) (void)uxb_view('x', rid, 0, NULL);
+    }
+    if (opened_settings) {
+        uxb_scan(&u.rb);
+        uxb_close_window(u.rb.settings_idx);
     }
     if (opened_launcher) {
         uxb_scan(&u.rb);
@@ -378,10 +556,15 @@ void uxbench_cmd(const char *arg) {
         vterm_set_active(0);
     }
     console_sync_readers();
+    palloc_free(notes, npages);
     palloc_free(frames, pages);
 }
 
 #else
+
+void uxbench_view_note(uint64_t t_wait, uint64_t t_draw, uint64_t t_copy, uint64_t t_end) {
+    (void)t_wait; (void)t_draw; (void)t_copy; (void)t_end;
+}
 
 void uxbench_cmd(const char *arg) {
     (void)arg;

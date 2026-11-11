@@ -67,7 +67,7 @@
     "drivers/ugui.c": 64,
     "drivers/usb_crc.c": 16,
     "drivers/usbkbd.c": 886,
-    "drivers/uxbench.c": 568,
+    "drivers/uxbench.c": 622,
     "drivers/view.c": 1056,
     "drivers/viewtest.c": 1956,
     "drivers/vtterm.c": 16,
@@ -193,7 +193,7 @@
     "clock-app": 608,
     "crypto": 1053,
     "display": 180669,
-    "drivers": 365766,
+    "drivers": 365820,
     "fs": 853,
     "httpd": 184,
     "identity": 200,
@@ -210,6 +210,6 @@
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 740984,
-  "total": 7718025
+  "ram_code": 743014,
+  "total": 7720109
 }

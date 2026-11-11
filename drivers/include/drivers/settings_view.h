@@ -2,6 +2,7 @@
 #define LUGALOS_DRIVERS_SETTINGS_VIEW_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "drivers/view.h"
 
@@ -34,5 +35,10 @@ bool settings_view_open_at(int section);
 /* `settings view`: open or not, the section, and the widgets' hit-boxes in
  * window coordinates (as `launcher` prints them, for `touch tap`). */
 void settings_view_report(void);
+
+/* `uxbench`, on the views task: the window's slot and the centre of the
+ * pointer-speed stepper's + (inc) or - button in window coordinates, as last
+ * drawn. false when the Input section is not shown. */
+bool settings_view_bench_stepper(bool inc, uint8_t *slot, int *x, int *y);
 
 #endif /* LUGALOS_DRIVERS_SETTINGS_VIEW_H */

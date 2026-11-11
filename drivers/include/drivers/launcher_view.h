@@ -53,5 +53,13 @@ bool     launcher_poll_exec(char *out_cmd, size_t max_len);
 uint8_t *launcher_get_aa_backing(uint32_t *out_stride, int *out_w, int *out_h);
 uint32_t launcher_get_seq(void);
 void     launcher_report(void);
+/* `uxbench`, on the views task: face shown (0 Shortcuts, 1 Files) and, when
+ * dir is non-NULL, dir listed in the Files face from its top, without a
+ * draw and without saving launcher.face. The face and directory shown
+ * before go to was_face and was_dir (cap bytes), to be shown again the same
+ * way. false: dir did not open, and nothing changed. */
+bool     launcher_bench_show(int face, const char *dir, int *was_face, char *was_dir, unsigned cap);
+/* `uxbench`, on the views task: the entries the Files face lists. */
+int      launcher_bench_files(void);
 
 #endif /* LUGALOS_DRIVERS_LAUNCHER_VIEW_H */
