@@ -16,6 +16,9 @@ import time
 from pathlib import Path
 from typing import BinaryIO
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import qemu_groups  # noqa: E402
+
 # host/p9lib is the promoted, product-grade home of the 9P client this file
 # used to import as a same-directory sibling (tests/p9lib.py, now retired) --
 # see host/p9lib/README.md.
@@ -840,56 +843,28 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # sixteen cases fed through vtterm into a RAM grid and compared pixel by
         # pixel against fbtext's own rendering (pending wrap, scrolling, every
         # sequence the tree emits, clamping, UTF-8 box drawing, the cursor).
-        ok, log = session.send_and_expect("vtselftest", r"VTTERM_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
-        if ok and "VTTERM_SELFTEST_FAIL" in log:
-            ok = False
-        results.append(("Screen Terminal Emulator Against A RAM Grid (36.6 vtselftest)",
-                        ok, log if not ok else ""))
+        results.append(qemu_groups.selftest(session, "vtselftest"))
 
         # 36.7: USB's CRC5 and CRC16 against packets from the spec's examples
         # and bus captures, and the receive path's residual check -- before
         # the PIO-USB engine on the board depends on them.
-        ok, log = session.send_and_expect("usbselftest", r"USB_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
-        if ok and "USB_SELFTEST_FAIL" in log:
-            ok = False
-        results.append(("USB CRC5/CRC16 Against Known Packets (36.7 usbselftest)",
-                        ok, log if not ok else ""))
+        results.append(qemu_groups.selftest(session, "usbselftest"))
 
         # 36.8: the keyboard's portable half -- configuration descriptors
         # (the HID spec's example, a composite device, a hub, a malformed one)
         # and boot-report diffing into make/break events.
-        ok, log = session.send_and_expect("usbkbdselftest", r"USBKBD_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
-        if ok and "USBKBD_SELFTEST_FAIL" in log:
-            ok = False
-        results.append(("USB Descriptors And Keyboard Reports (36.8 usbkbdselftest)",
-                        ok, log if not ok else ""))
+        results.append(qemu_groups.selftest(session, "usbkbdselftest"))
 
         # 71.0: the touch toolkit's portable half -- widget hit-box
         # registration, segment indices and drawing onto a 1-bpp canvas --
         # so a ugui regression shows without a panel attached.
-        ok, log = session.send_and_expect("uguiselftest", r"uguiselftest: (PASS|FAIL)[^\n]*\n", timeout=10.0)
-        if ok and "uguiselftest: FAIL" in log:
-            ok = False
-        results.append(("Touch Toolkit Hit-Boxes And Drawing (71.0 uguiselftest)",
-                        ok, log if not ok else ""))
+        results.append(qemu_groups.selftest(session, "uguiselftest"))
 
         # The application registry and the associations are searched
         # by binary search, so an entry out of order is silently not found.
-        ok, log = session.send_and_expect("apps check", r"apps check: (PASS|FAIL)[^\n]*\n", timeout=10.0)
-        if ok and "apps check: FAIL" in log:
-            ok = False
-        results.append(("Application Registry Sorted And Consistent (71.5 apps check)",
-                        ok, log if not ok else ""))
-        ok, log = session.send_and_expect("icons check", r"icons check: (PASS|FAIL)[^\n]*\n", timeout=10.0)
-        if ok and "icons check: FAIL" in log:
-            ok = False
-        results.append(("Built-in Icons Sorted And Complete (71.5 icons check)",
-                        ok, log if not ok else ""))
-        ok, log = session.send_and_expect("settings check", r"settings check: (PASS|FAIL)[^\n]*\n", timeout=10.0)
-        if ok and "settings check: FAIL" in log:
-            ok = False
-        results.append(("Settings Store Sorted, Defaults In Range (71.5 settings check)",
-                        ok, log if not ok else ""))
+        results.append(qemu_groups.selftest(session, "apps check"))
+        results.append(qemu_groups.selftest(session, "icons check"))
+        results.append(qemu_groups.selftest(session, "settings check"))
 
         # B6: a separately linked ELF, loaded from the filesystem into pages
         # the allocator handed out, running in U-mode under a memory domain.
@@ -1156,10 +1131,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # Phase 40 review: the printf engine. On rv64 an unsigned int with its
         # top bit set printed sign-extended (%x of 0x80000000 gave
         # ffffffff80000000), and %ld of LONG_MIN was a UBSan halt.
-        ok, log = session.send_and_expect("fmtselftest", r"FMTSELFTEST_(OK|FAIL)", timeout=5.0)
-        ok = ok and "FMTSELFTEST_OK" in log
-        results.append(("printk Formats Integers And Strings Correctly (40 review fmtselftest)",
-                        ok, log if not ok else ""))
+        results.append(qemu_groups.selftest(session, "fmtselftest"))
 
         # 38.4 (plan/phase38_psram.md §3.1): the bulk page zone. QEMU has no
         # PSRAM, so its stand-in is 2 MB of ordinary RAM above the fast zone
@@ -3600,9 +3572,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # clipboard with selection in the shared line editor -- driven by the
         # bytes a terminal sends: Shift+arrows (xterm), Super+C/X/V (CSI-u),
         # Ctrl-W/Ctrl-Y/Ctrl-K, Ctrl-Space's mark, Alt-Backspace.
-        ok, log = session.send_and_expect("keyselftest", r"KEYSEQ_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
-        results.append(("Key Sequences: UTF-8, Alt, xterm Modifiers, CSI-u (37.5a keyselftest)",
-                        ok and "KEYSEQ_SELFTEST_OK" in log, log if not (ok and "KEYSEQ_SELFTEST_OK" in log) else ""))
+        results.append(qemu_groups.selftest(session, "keyselftest"))
         L, R, HOME, END = "\x1b[D", "\x1b[C", "\x1b[H", "\x1b[F"
         SR = "\x1b[1;2C"
         SUPC, SUPX, SUPV = "\x1b[99;9u", "\x1b[120;9u", "\x1b[118;9u"
@@ -3734,88 +3704,11 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("A New View Needs Nothing In The Screen Or Compositor (71.4 viewtest)", vt_ok, vt_log))
 
-        # 77.1: the Settings app, by keys only. Its window opens focused;
-        # Tab shows the focus on the first section and walks to the warmth
-        # slider (seven sections, the brightness slider, then it), Right
-        # steps it twice -- applied, and told back to the view itself as
-        # WIN_EV_SETTINGS (two changes between two looks are one event).
-        # Narrowed (Cmd+- three times), it shows the list alone; Enter
-        # opens a section with a Back button, Esc goes back; Cmd+W closes.
-        steps = [("settings open", r"settings: open"),
-                 ("ribbon", r"View     \(settings[^\n]*\*"),
-                 ("key tab tab tab tab tab tab tab tab tab", r"key: 9 sent"),
-                 ("key right right", r"key: 2 sent"),
-                 ("settings get display.warmth", r"display\.warmth=2"),
-                 ("settings view", r"told [1-9]\d* setting changes?, the last display\.warmth"),
-                 ("key cmd--", r"key: 1 sent"), ("key cmd--", r"key: 1 sent"), ("key cmd--", r"key: 1 sent"),
-                 ("settings view", r"narrow, section Display \(list shown\)"),
-                 ("key down enter", r"key: 2 sent"),
-                 ("settings view", r"narrow, section Sound\r?\n"),
-                 ("key esc", r"key: 1 sent"),
-                 ("settings view", r"narrow, section Sound \(list shown\)"),
-                 ("settings set display.warmth 0", r"display\.warmth=0"),
-                 ("key cmd-w", r"key: 1 sent"),
-                 ("settings view", r"settings view: closed")]
-        st_ok, st_log = True, ""
-        for cmd, pat in steps:
-            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
-            if not ok:
-                st_ok, st_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
-                break
-        results.append(("The Settings App By Keys: Warmth, Its Event, Narrow List And Back (77.1)", st_ok, st_log))
-
-        # 77.1: the menu bar's right end opens Settings -- the gear (always
-        # drawn) at the section it was left at, the SD icon at Storage -- and
-        # so does Cmd+,. The places come from `ribbon list` (the screen's own
-        # hit test, `status: ...`), clicked with the mouse.
-        mb_ok, mb_log = True, ""
-        ok, log = session.send_and_expect("ribbon list", r"status:[^\n]*\n", timeout=15.0)
-        runs = {m.group(1): (int(m.group(2)), int(m.group(3)))
-                for m in re.finditer(r"(settings|sd|wifi|p9|battery) (\d+)\.\.(\d+)", log.split("status:")[-1])}
-        steps = []
-        if "settings" not in runs:
-            mb_ok, mb_log = False, f"no status area in ribbon list:\n{log}"
-        else:
-            gx = runs["settings"][1] - 6                 # the gear, at the right end
-            steps = [(f"ms click {gx} 8", r"ms: left click"), ("settings view", r"settings view: open[^\n]*section Sound"),
-                     ("key cmd-w", r"key: 1 sent"), ("settings view", r"settings view: closed"),
-                     ("key cmd-,", r"key: 1 sent"), ("settings view", r"settings view: open"),
-                     ("key cmd-w", r"key: 1 sent")]
-            if "sd" in runs:
-                sx = (runs["sd"][0] + runs["sd"][1]) // 2
-                steps += [(f"ms click {sx} 8", r"ms: left click"), ("settings view", r"settings view: open[^\n]*section Storage"),
-                          ("key cmd-w", r"key: 1 sent")]
-        for cmd, pat in steps:
-            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
-            if not ok:
-                mb_ok, mb_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
-                break
-        results.append(("The Menu Bar's Gear, SD Icon And Cmd+, Open Settings (77.1)", mb_ok, mb_log))
-
-        # 77.1: the text size relayouts an open reader (WIN_EV_SETTINGS): the
-        # same document is shorter in Small and taller in Large than in
-        # Medium, and exactly as tall again back in Medium.
-        ts_ok, ts_log, heights = True, "", {}
-        ok, log = session.send_and_expect("reader shell.md", r"reader: (opened|focused)", timeout=10.0)
-        if not ok:
-            ts_ok, ts_log = False, f"reader shell.md:\n{log}"
-        for size in ("medium", "small", "large", "medium"):
-            if not ts_ok:
-                break
-            session.send_and_expect(f"settings set ui.text_size {size}", r"ui\.text_size=", timeout=10.0)
-            ok, log = session.send_and_expect("reader list", r"shell\.md[^\n]*scrolled -?\d+ px of (\d+)", timeout=10.0)
-            m = re.search(r"shell\.md[^\n]*scrolled -?\d+ px of (\d+)", log)
-            if not ok or not m:
-                ts_ok, ts_log = False, f"reader list after {size}:\n{log}"
-                break
-            h = int(m.group(1))
-            if size == "medium" and "medium" in heights and h != heights["medium"]:
-                ts_ok, ts_log = False, f"back in medium: {h} px, first {heights['medium']} px"
-            heights.setdefault(size, h)
-        if ts_ok and not (heights["small"] < heights["medium"] < heights["large"]):
-            ts_ok, ts_log = False, f"heights small/medium/large: {heights}"
-        session.send_and_expect("key cmd-w", r"key: 1 sent", timeout=10.0)
-        results.append(("Text Size Relayouts The Reader: Small Shorter, Large Taller, Medium Again (77.1)", ts_ok, ts_log))
+        # 77.1: the Settings app, the menu bar's way into it, and the reader's
+        # text sizes (tests/qemu_groups.py, shared with tests/quick.py).
+        results.append(qemu_groups.settings_app_by_keys(session))
+        results.append(qemu_groups.menubar_opens_settings(session))
+        results.append(qemu_groups.text_size_relayouts_reader(session))
 
         # 76.2: a Lisp program's own window (`ui-`), the sample app driven
         # through the real input paths: the mouse (`ms`) at the places the
@@ -3869,19 +3762,13 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # rows and UTF-8, undo, search, the safe save), then the real thing
         # through key bytes. Steps that leave `e` running send no sentinel,
         # and end where the Enter the session appends does no harm.
-        ok, log = session.send_and_expect("editselftest", r"EDITOR_SELFTEST_(OK|FAIL)[^\n]*\n", timeout=10.0)
-        results.append(("Editor: Wrap, Rows, UTF-8, Undo, Search, Safe Save (37.5b editselftest)",
-                        ok and "EDITOR_SELFTEST_OK" in log, log if not (ok and "EDITOR_SELFTEST_OK" in log) else ""))
+        results.append(qemu_groups.selftest(session, "editselftest"))
 
         # Phase 44.1: Virtual Terminal Subsystem (vtermselftest)
-        ok, log = session.send_and_expect("vtermselftest", r"vterm selftest: (PASSED|FAILED)[^\n]*\n", timeout=10.0)
-        results.append(("Virtual Terminal Subsystem (44.1 vtermselftest)",
-                        ok and "vterm selftest: PASSED" in log, log if not (ok and "vterm selftest: PASSED" in log) else ""))
+        results.append(qemu_groups.selftest(session, "vtermselftest"))
 
         # Phase 44.2: Ribbon Geometry Manager (ribbonselftest)
-        ok, log = session.send_and_expect("ribbonselftest", r"ribbon geometry selftest: (PASSED|FAILED)[^\n]*\n", timeout=10.0)
-        results.append(("Ribbon Window Geometry Manager (44.2 ribbonselftest)",
-                        ok and "ribbon geometry selftest: PASSED" in log, log if not (ok and "ribbon geometry selftest: PASSED" in log) else ""))
+        results.append(qemu_groups.selftest(session, "ribbonselftest"))
 
         # Phase 44: a second terminal's shell. Input follows the newest
         # terminal, so everything below until `vterm close` runs in it. A
@@ -11018,8 +10905,23 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
     return out
 
 
-def main() -> int:
+TARGETS = ("host", "rv64", "rv32", "multinode", "rv64-smp", "rv32-fold")
+
+
+def main(argv: list[str] | None = None) -> int:
     """Main entry point for LugalOS Test Suite."""
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="The full QEMU and host suite (tier 3, doc/dev/testing.md). For the smaller "
+                    "tiers -- one target, only the groups for what changed -- use tests/quick.py.")
+    ap.add_argument("--target", action="append", choices=TARGETS, metavar="TARGET",
+                    help=f"run only this part (repeatable): {', '.join(TARGETS)}; default all")
+    args = ap.parse_args(argv)
+    selected = set(args.target or TARGETS)
+
+    def want(t: str) -> bool:
+        return t in selected
+
     project_root = Path(__file__).resolve().parent.parent
     build_dir = project_root / "build"
     # Per target: the image carries target-specific user program binaries, so
@@ -11050,116 +10952,119 @@ def main() -> int:
         else:
             print(f"  [FAIL] {name}\n    Log Output:\n{log}")
 
-    # 1. Host Disk Inspection
-    print("\n[Host FAT32 Storage Inspection]")
-    ok, info = test_host_fat32_image(img_for("rv32"))
-    total_tests += 1
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {info}")
-    else:
-        print(f"  [FAIL] {info}")
+    if want("host"):
+        # 1. Host Disk Inspection
+        print("\n[Host FAT32 Storage Inspection]")
+        ok, info = test_host_fat32_image(img_for("rv32"))
+        total_tests += 1
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {info}")
+        else:
+            print(f"  [FAIL] {info}")
 
-    # The host half of the WLAN PBKDF2-HMAC-SHA1 derivation, no QEMU involved --
-    # same shape as the FAT32 inspection just above.
-    ok, info = test_host_wpa2_psk_derivation()
-    total_tests += 1
-    name = "WPA2 PSK Derivation Against The IEEE 802.11i Worked Example (I6)"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        # The host half of the WLAN PBKDF2-HMAC-SHA1 derivation, no QEMU involved --
+        # same shape as the FAT32 inspection just above.
+        ok, info = test_host_wpa2_psk_derivation()
+        total_tests += 1
+        name = "WPA2 PSK Derivation Against The IEEE 802.11i Worked Example (I6)"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    ok, info = test_racescan_ownership()
-    total_tests += 1
-    name = "Ownership Of Shared Statics And No Blocking In Handlers (tools/racescan.py --check, 63.9)"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name} -- {info}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        ok, info = test_racescan_ownership()
+        total_tests += 1
+        name = "Ownership Of Shared Statics And No Blocking In Handlers (tools/racescan.py --check, 63.9)"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name} -- {info}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    ok, info = test_servecheck()
-    total_tests += 1
-    name = "Serve Callbacks Reached Only Through The Driver-Task Framework (tools/servecheck.py, 66.7)"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name} -- {info}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        ok, info = test_servecheck()
+        total_tests += 1
+        name = "Serve Callbacks Reached Only Through The Driver-Task Framework (tools/servecheck.py, 66.7)"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name} -- {info}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    ok, info = test_static_ram_baselines()
-    total_tests += 1
-    name = "Static RAM Of Every Built Preset Within Its Baseline (tools/sizereport.py --all --check, 66.1)"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name} -- {info}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        ok, info = test_static_ram_baselines()
+        total_tests += 1
+        name = "Static RAM Of Every Built Preset Within Its Baseline (tools/sizereport.py --all --check, 66.1)"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name} -- {info}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    ok, info = test_host_sanitizer_harnesses()
-    total_tests += 1
-    name = "Host Harnesses: FAT32, cc, 9P, IP And The Radio Shim Under ASan/UBSan (tests/host)"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        ok, info = test_host_sanitizer_harnesses()
+        total_tests += 1
+        name = "Host Harnesses: FAT32, cc, 9P, IP And The Radio Shim Under ASan/UBSan (tests/host)"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    ok, info = test_moonbase_logic()
-    total_tests += 1
-    name = "Moonbase Game Logic, Input Routing And Balance Under ASan/UBSan (user/moonbase)"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        ok, info = test_moonbase_logic()
+        total_tests += 1
+        name = "Moonbase Game Logic, Input Routing And Balance Under ASan/UBSan (user/moonbase)"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    ok, info = test_host_llp_reference()
-    total_tests += 1
-    name = "LLP Python Reference And Its Vectors Agree (host/llp, 49.1)"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        ok, info = test_host_llp_reference()
+        total_tests += 1
+        name = "LLP Python Reference And Its Vectors Agree (host/llp, 49.1)"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    # The radio shim must not call anything outside its own text -- a
-    # compiler helper or libc call from U-mode is an instruction fault at run
-    # time that the linker never reports. Read off the objects of every build
-    # that has them.
-    total_tests += 1
-    name = "Radio Shim Is Self-Contained: No Call Outside Its Own U-mode Text (45.3b)"
-    chk = subprocess.run([sys.executable, str(Path(__file__).resolve().parent.parent / "tools" / "check_radio_text.py"),
-                          str(rv32_elf.parent), str(rv64_elf.parent)], capture_output=True, text=True)
-    if chk.returncode == 0:
-        passed_tests += 1
-        print(f"  [PASS] {name}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{chk.stdout}{chk.stderr}")
+        # The radio shim must not call anything outside its own text -- a
+        # compiler helper or libc call from U-mode is an instruction fault at run
+        # time that the linker never reports. Read off the objects of every build
+        # that has them.
+        total_tests += 1
+        name = "Radio Shim Is Self-Contained: No Call Outside Its Own U-mode Text (45.3b)"
+        chk = subprocess.run([sys.executable, str(Path(__file__).resolve().parent.parent / "tools" / "check_radio_text.py"),
+                              str(rv32_elf.parent), str(rv64_elf.parent)], capture_output=True, text=True)
+        if chk.returncode == 0:
+            passed_tests += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{chk.stdout}{chk.stderr}")
 
-    # Documentation integrity: markdown links, images, and on-device help parity
-    ok, info = test_host_documentation_links()
-    total_tests += 1
-    name = "Documentation Integrity: All Internal Markdown Links And Images Resolve"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        # Documentation integrity: markdown links, images, and on-device help parity
+        ok, info = test_host_documentation_links()
+        total_tests += 1
+        name = "Documentation Integrity: All Internal Markdown Links And Images Resolve"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    ok, info = test_host_documentation_parity()
-    total_tests += 1
-    name = "On-Device Help Parity: tools/sd_root/help Matches Documentation (gendocs.py)"
-    if ok:
-        passed_tests += 1
-        print(f"  [PASS] {name}")
-    else:
-        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+        ok, info = test_host_documentation_parity()
+        total_tests += 1
+        name = "On-Device Help Parity: tools/sd_root/help Matches Documentation (gendocs.py)"
+        if ok:
+            passed_tests += 1
+            print(f"  [PASS] {name}")
+        else:
+            print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
     # 2. RV64 Target
-    if rv64_elf.exists():
+    if not want("rv64"):
+        print("\n[i] rv64: not selected (--target)")
+    elif rv64_elf.exists():
         print("\n[Target: RV64 Sv39 MMU Virtual Memory]")
         rv64_results = test_qemu_architecture_with_retry(rv64_elf, img_for("rv64"), "rv64")
         for name, ok, log in rv64_results:
@@ -11215,7 +11120,9 @@ def main() -> int:
         print(f"\n[!] RV64 binary not found at '{rv64_elf}'. Skipping RV64 tests.")
 
     # 3. RV32 Target
-    if rv32_elf.exists():
+    if not want("rv32"):
+        print("\n[i] rv32: not selected (--target)")
+    elif rv32_elf.exists():
         print("\n[Target: RV32 NOMMU Microcontroller]")
         rv32_results = test_qemu_architecture_with_retry(rv32_elf, img_for("rv32"), "rv32")
         for name, ok, log in rv32_results:
@@ -11267,7 +11174,9 @@ def main() -> int:
         print(f"\n[!] RV32 binary not found at '{rv32_elf}'. Skipping RV32 tests.")
 
     # 4. A4/T2: multi-node heterogeneous interconnect
-    if rv64_elf.exists() and rv32_elf.exists():
+    if not want("multinode"):
+        print("\n[i] multinode: not selected (--target)")
+    elif rv64_elf.exists() and rv32_elf.exists():
         print("\n[Target: Multi-Node RV32 <-> RV64 Heterogeneous Interconnect]")
         _run_single(test_9p_multinode_heterogeneous(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
         _run_single(test_9p_remote_mount(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
@@ -11280,7 +11189,9 @@ def main() -> int:
     # 5. X1: the two-hart target. Built by `cmake --preset rv64-smp`; absent
     # from a default checkout, and skipped rather than failed when so.
     smp_elf = build_dir / "rv64-smp" / "lugalos.elf"
-    if smp_elf.exists():
+    if not want("rv64-smp"):
+        print("\n[i] rv64-smp: not selected (--target)")
+    elif smp_elf.exists():
         print("\n[Target: RV64 SMP -- two harts]")
         for r in test_smp_two_harts(smp_elf, build_dir / "rv64-smp" / "lugalos_sd.img"):
             _run_single(r)
@@ -11291,7 +11202,9 @@ def main() -> int:
     # 6. The folded twin (66.7): rv32 with its driver endpoints folded, through
     # the same core suite. Built by `cmake --preset rv32-fold`; skipped when absent.
     fold_elf = build_dir / "rv32-fold" / "lugalos.elf"
-    if fold_elf.exists():
+    if not want("rv32-fold"):
+        print("\n[i] rv32-fold: not selected (--target)")
+    elif fold_elf.exists():
         print("\n[Target: RV32, Endpoints Folded (rv32-fold)]")
         for name, ok, log in test_qemu_architecture_with_retry(fold_elf, img_for("rv32-fold"), "rv32"):
             _run_single((f"{name} [folded]", ok, log))

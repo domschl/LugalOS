@@ -2399,6 +2399,8 @@ def main() -> int:
     parser.add_argument("--net", help="Override auto-detected ACM1 net (link_usb_cdc) port")
     parser.add_argument("--uart", help="Override auto-detected CP2102 UART dongle port")
     parser.add_argument("--skip-qemu-bridge", action="store_true", help="Skip the T3 QEMU bridge test")
+    parser.add_argument("--only", help="run only the tests whose function name contains this "
+                        "(e.g. settings_app; tier 2, doc/dev/testing.md)")
     parser.add_argument("--no-uart", action="store_true",
                         help="Use no UART dongle even if one is found -- with an ESP32-P4-NANO attached, "
                              "the CP2102 found is its console, not the RP2350's (47.6)")
@@ -2515,6 +2517,11 @@ def main() -> int:
     # evaluates -- so anything after this would fail for reasons that have
     # nothing to do with what it is testing.
     tests.append(test_node_pool_exhaustion)
+    if args.only:
+        tests = [t for t in tests if args.only in t.__name__]
+        if not tests:
+            print(f"no test's name contains {args.only!r}")
+            return 1
 
     total = 0
     passed = 0

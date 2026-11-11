@@ -1,31 +1,67 @@
 # LugalOS Testing Framework & QA Guide
 
-LugalOS maintains a comprehensive multi-tier testing framework spanning host unit tests, AddressSanitizer (ASan) memory safety harnesses, automated QEMU regression suites, and physical hardware-in-the-loop (HIL) silicon verification.
+LugalOS maintains a layered testing framework spanning host unit tests, AddressSanitizer (ASan) memory safety harnesses, automated QEMU regression suites, and physical hardware-in-the-loop (HIL) silicon verification.
 
 ---
 
-## 1. Multi-Tier Testing Architecture
+## 0. What To Run When: Test Tiers (the development and commit rule)
+
+The layers below say *what kinds* of tests exist. The tiers say *how much* of them a change needs. During development and bug fixing only the smallest reasonable delta is retested; the full all-platform run is kept for major changes and for closing a milestone (owner, 2026-11-11, after phase 77.1 spent most of its time on full re-runs after small changes).
+
+| Tier | When | What | Time |
+| :--- | :--- | :--- | :--- |
+| **0** | every edit | build the affected presets (`ninja -C build/<preset>`); the matching self-test, generator `--check`, or `tests/quick.py --run "<cmd>"` | seconds to 1 min |
+| **1** | a change is done | `tests/quick.py <group>...` on rv32 (or `--target rv64` / `rv32-fold` where the change is architecture-specific): only the groups the [area map](#area-map) names | 1-3 min |
+| **2** | the change touches a board's code | only that board, only the matching tests: `tests/hw/test_esp32p4.py --only NAME`, `test_rp2350.py --only NAME`, `test_visionfive2.py --only NAME` | minutes per board |
+| **3** | closing a milestone; before a release; after a major or cross-cutting change | everything: `tools/precommit.py`, `tests/runner.py` (all targets), the full board suites | about an hour, plus the boards |
+
+**Every commit**, whatever its tier, passes `python3 tools/precommit.py` (about 3 minutes): every preset in `build/` builds with no warning, no static RAM growth past the baselines (`tools/sizereport.py`), no documentation or generated-table drift, every shared static has its ownership verdict (`tools/racescan.py`). Plus the tier 0-2 runs for what the commit changes, named in its message.
+
+**Tier 3 is required** before a milestone is marked done, before a release, and after changes to the shared foundations -- the scheduler, locks and memory domains, the console and its input path, `ugui`, the screen and the compositor, the VFS, the build system, the test harness itself. A milestone closes on a tier 3 pass.
+
+**When tier 3 finds what a smaller tier should have caught**, the area map or a group was wrong: fix the map (or move the check into a group) in the same commit as the fix. The tiers are meant to be tuned this way.
+
+### Area map
+
+What a change in an area needs at tiers 1 and 2. `tests/quick.py --list` shows the groups; they are `tests/qemu_groups.py`'s, the same checks `tests/runner.py` runs.
+
+| Area (files) | Tier 1: `quick.py` groups | Tier 2: boards, `--only` |
+| :--- | :--- | :--- |
+| Screen, ribbon, vterms (`drivers/screen.c`, `vtterm.c`, `ribbon.c`, `lcdterm.c`, `kernel/vterm.c`) | `screen` | each panel board: `titlebar_menu`, `stacks_fullscreen` |
+| `ugui`, views (`drivers/ugui.c`, `view.c`, `launcher_view.c`, `lispui_view.c`) | `screen`, `settings` | P4: `view_and_mouse`, `touch_launcher`; RP2350: `hello_ugui` |
+| Settings, paper warmth, the Settings app (`kernel/settings.c`, `drivers/paper.c`, `settings_view.c`) | `settings` | `settings` on the P4s, `settings_app` on the RP2350 and the VF2 |
+| Reader, text sizes, Markdown (`drivers/reader_view.c`, `font_serif_faces.c`, `fs/markdown.c`) | `reader` | P4: `reader` |
+| Keys, USB input (`kernel/keyseq.c`, `drivers/usb*.c`, `kernel/console.c` input) | `input`, `screen` | the board whose input changed |
+| Editor, printk (`kernel/editor*.c`, `kernel/printk.c`) | `editor` | -- |
+| A panel driver (`drivers/dsi_esp32p4.c`, `lcd7_rp2350.c`, `dc8200_jh7110.c`) | `screen` | that board: `settings` / `settings_app` (colours), its panel tests |
+| Anything else | the closest group, and `--run` its self-test | the boards it runs on |
+
+An area with no group yet runs its own self-test through `quick.py --run`, and gets a group when it is next worked on: its checks move from `tests/runner.py` into `tests/qemu_groups.py`, where both tiers use them.
+
+---
+
+## 1. Test Layers
 
 ```
 +------------------------------------------------------------------------+
-|                        TIER 4: HARDWARE SILICON                        |
+|                        LAYER 4: HARDWARE SILICON                        |
 |   tests/hw/test_rp2350.py   *   tests/hw/test_esp32p4.py               |
 |   tests/hw/test_esp32c6.py  *   tests/hw/lcdterm_shots.py (PBM diffs)  |
 \-----------------------------------^------------------------------------+
                                     | Silicon Verification
 +-----------------------------------+------------------------------------+
-|                    TIER 3: AUTOMATED QEMU RUNNER                       |
+|                    LAYER 3: AUTOMATED QEMU RUNNER                       |
 |   tests/runner.py (750 tests: RV32, RV64, RV64 SMP, RV32 folded twin) |
 |   Preemption * Memory Domains * Copy-Always Channels * FAT32 * Net * VM|
 \-----------------------------------^------------------------------------+
                                     | Emulation & Architecture
 +-----------------------------------+------------------------------------+
-|                    TIER 2: HOST HARNESSES (ASan/UBSan)                 |
+|                    LAYER 2: HOST HARNESSES (ASan/UBSan)                 |
 |   tests/host/ (FAT32 engine, chibicc, 9P protocol, embedded IP stack)   |
 \-----------------------------------^------------------------------------+
                                     | Memory Safety & Host Sanitizers
 +-----------------------------------+------------------------------------+
-|                     TIER 1: PURE ALGORITHMIC TESTS                     |
+|                     LAYER 1: PURE ALGORITHMIC TESTS                     |
 |   tests/test_lisp_cas.py (Exact arithmetic, limits, Gaussian rationals)|
 |   tests/test_cas_simplify.py (AST canonical forms, polynomials)        |
 |   tools/gendocs.py --check (Documentation parity verification)         |
@@ -34,7 +70,7 @@ LugalOS maintains a comprehensive multi-tier testing framework spanning host uni
 
 ---
 
-## 2. Tier 1: Pure Algorithmic Unit Tests
+## 2. Layer 1: Pure Algorithmic Unit Tests
 
 Fast host-based Python test suites verifying core mathematical, algebraic, and documentation algorithms:
 
@@ -51,7 +87,7 @@ python3 tools/gendocs.py --check
 
 ---
 
-## 3. Tier 2: Host Harnesses with AddressSanitizer & UBSan
+## 3. Layer 2: Host Harnesses with AddressSanitizer & UBSan
 
 To ensure memory safety and catch buffer overflows, memory leaks, or undefined behavior before flashing hardware, LugalOS compiles core standalone subsystems natively for Linux using `clang`/`gcc` with `-fsanitize=address,undefined`:
 
@@ -62,7 +98,7 @@ To ensure memory safety and catch buffer overflows, memory leaks, or undefined b
 
 ---
 
-## 4. Tier 3: Automated QEMU Regression Runner (`tests/runner.py`)
+## 4. Layer 3: Automated QEMU Regression Runner (`tests/runner.py`)
 
 The primary continuous integration and regression suite is [`tests/runner.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/runner.py):
 
@@ -82,7 +118,7 @@ The static checks run first: `tools/racescan.py --check` (ownership of shared st
 
 ---
 
-## 5. Tier 4: Hardware-in-the-Loop Silicon Suites (`tests/hw/`)
+## 5. Layer 4: Hardware-in-the-Loop Silicon Suites (`tests/hw/`)
 
 Hardware tests communicate with physical development boards over serial and USB CDC interfaces. They are safe to run speculatively: if a target board is not connected, the test skips cleanly rather than failing.
 

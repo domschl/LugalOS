@@ -80,8 +80,8 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 - `tests/hw/lcdterm_shots.py` scenarios: launcher both faces, settings.
 - Docs: new `doc/user/launcher.md`; `doc/user/shell.md` for any new commands; `python3 tools/gendocs.py --all` and `--check`.
 - RAM baselines re-recorded; `sizereport` for RP2350 shows no SRAM growth.
-- **Version** (owner, 2026-11-11): the version number goes up -- `LUGALOS_VERSION` in `kernel/include/kernel/version.h`, 0.20.0 to 0.21.0 (a minor step: new apps and settings, nothing incompatible) -- and every preset is rebuilt so `/proc/version` and `/proc/buildid` say so.
-- **Release, the final step** (owner, 2026-11-11): once everything above passes, a new GitHub release `0.21.0` is published, tagged on the commit that closes the phase, with release notes in the style of the earlier ones (0.20.0: "Touch UX Mode, Classic Mac Micro-Toolkit & HiDPI Ribbon"): the Settings app, paper warmth, text sizes, the launcher's two faces, damage tracking.
+- **Version** (owner, 2026-11-11): the version number goes up -- `kernel/include/kernel/version.h` (`LUGALOS_VERSION` and its parts), 0.20.0 to 0.21.0 (a minor step: new apps and settings, nothing incompatible) -- and every preset is rebuilt so `/proc/version` and `/proc/buildid` say so.
+- **Release, the final step** (owner, 2026-11-11): once everything above passes -- the phase's tier 3 run (`doc/dev/testing.md` §0) -- a new GitHub release `0.21.0` is published by `doc/dev/releasing.md`, tagged on the commit that closes the phase, with release notes in the style of the earlier ones (0.20.0: "Touch UX Mode, Classic Mac Micro-Toolkit & HiDPI Ribbon"): the Settings app, paper warmth, text sizes, the launcher's two faces, damage tracking.
 - **Status:** planned.
 
 ---

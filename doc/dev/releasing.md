@@ -22,8 +22,10 @@ for d in build/*/; do ninja -C "$d"; done
 
 ## 3. Tests
 
+A release is a tier 3 run ([Testing Guide](testing.md#0-what-to-run-when-test-tiers-the-development-and-commit-rule)):
+
 * `python3 tests/runner.py`: everything passes, including the static checks (`racescan`, `sizereport`, `servecheck`) and the folded twin.
-* The hardware suites on the boards that are attached ([Testing Guide](testing.md#5-tier-4-hardware-in-the-loop-silicon-suites-testshw)).
+* The hardware suites on the boards that are attached ([Testing Guide](testing.md#5-layer-4-hardware-in-the-loop-silicon-suites-testshw)).
 * `python3 tools/gendocs.py --check`: no drift between `doc/` and the on-device help.
 
 ## 4. The boards

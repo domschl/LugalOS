@@ -125,18 +125,35 @@ See [Firmware Flashing Guide](doc/admin/flashing.md) and [Plan 9 Networking](doc
 
 ## 6. Testing Framework & Scripts
 
+> [!IMPORTANT]
+> **Test tiers -- the development and commit rule** ([Testing Guide §0](doc/dev/testing.md#0-what-to-run-when-test-tiers-the-development-and-commit-rule)).
+> Retest the smallest reasonable delta; the full all-platform run is for milestones.
+> * **Tier 0** (every edit): build the affected presets; the matching self-test or `python3 tests/quick.py --run "<cmd>"`.
+> * **Tier 1** (a change is done): `python3 tests/quick.py <group>...` -- the groups the guide's area map names for the files touched (`--list` shows them).
+> * **Tier 2** (a board's code touched): that board only, `--only NAME` in its `tests/hw/` suite.
+> * **Tier 3** (closing a milestone, a release, a change to shared foundations): `tests/runner.py`, all board suites.
+> * **Every commit**: `python3 tools/precommit.py` (all presets warning-free, RAM baselines, doc and generated-table drift, racescan), and its message names the tier 0-2 runs.
+> * When tier 3 finds what a smaller tier should have caught, fix the area map or the groups in the same commit.
+
+
 * **Pure Algorithmic Unit Tests:**
   ```bash
   python3 tests/test_lisp_cas.py        # CAS foundations, exact arithmetic, limits
   python3 tests/test_cas_simplify.py    # Canonical AST simplification, polynomials
   ```
-* **Comprehensive Automated Test Runner:**
+* **Quick QEMU Groups (tiers 0-1):**
+  ```bash
+  python3 tests/quick.py --list         # the groups and the areas they cover
+  python3 tests/quick.py settings       # one target (rv32 by default), only these groups
+  ```
+* **Comprehensive Automated Test Runner (tier 3):**
   ```bash
   python3 tests/runner.py               # Host harnesses (ASan/UBSan) and automated QEMU regression tests
+  python3 tests/runner.py --target rv32 # one part only: host, rv64, rv32, multinode, rv64-smp, rv32-fold
   ```
 * **Hardware-in-the-Loop Silicon Suites (`tests/hw/`):**
   Safe to run speculatively (skips cleanly when hardware is absent):
-  * `python3 tests/hw/test_rp2350.py`: RP2350 peripherals, memory pools, console.
+  * `python3 tests/hw/test_rp2350.py`: RP2350 peripherals, memory pools, console. Every suite below takes `--only NAME` (tier 2).
   * `python3 tests/hw/test_esp32p4.py --board <board>`: ESP32-P4 CLIC, PMP, I2C, PSRAM, SDMMC.
   * `python3 tests/hw/test_esp32c6.py --port <port>`: ESP32-C6 Wi-Fi and LLP radio.
   * `python3 tests/hw/test_visionfive2.py`: StarFive VisionFive 2 64-bit S-mode SBI boot, 4-core U74 SMP, Sv39 MMU, DW-MSHC SDIO1 (`/sd0`), CAS, Gigabit Ethernet (EQOS v5.20 / Motorcomm YT8531C loopback), dual PLDA PCIe 2.0, M.2 NVMe SSD (`/nvme0`), VIA VL805 xHCI USB 3.0 host, USB HID keyboard & mouse, DHCP, HTTP, TCP 9P, and PMIC cold reboot.
