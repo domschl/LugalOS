@@ -1,6 +1,6 @@
 # Phase 76 — Touch UX Foundation III: Long File Names, `ugui` for Lisp, the Portrait Ribbon
 
-**Status: DONE 2026-11-10 (split from phase 71 on 2026-11-09; its milestones were 71.6b, 71.4b and 71.5 there). 76.4 split into 76.4a and 76.4b on 2026-11-10; 76.5 moved to phase 77 as 77.3.**
+**Status: DONE 2026-11-10, released in version 0.21.0 (split from phase 71 on 2026-11-09; its milestones were 71.6b, 71.4b and 71.5 there). 76.4 split into 76.4a and 76.4b on 2026-11-10; 76.5 moved to phase 77 as 77.3.**
 **Target Hardware**:
 - **Primary**: M5Stack Tab5 (`esp32p4-tab5`, portrait and landscape), Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`)
 - **Also**: Waveshare RP2350-LCD-7 (`rp2350-terminal`: long names and Lisp `ugui`, no portrait), StarFive VisionFive 2 (`visionfive2`: long names on `/sd0` and `/nvme0`)

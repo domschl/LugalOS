@@ -1,6 +1,6 @@
 # Phase 71 — Touch UX Foundation II: Compositor, Input, Toolkit, Views and the Mouse
 
-**Status: DONE (closed 2026-11-09).** Drafted 2026-11-05, after 0.20.0; decisions in §4 confirmed by the owner 2026-11-05; split and renumbered 2026-11-09. Every milestone 71.0-71.9 done; what was measured and decided is in each milestone's status and result.
+**Status: DONE (closed 2026-11-09), released in version 0.21.0.** Drafted 2026-11-05, after 0.20.0; decisions in §4 confirmed by the owner 2026-11-05; split and renumbered 2026-11-09. Every milestone 71.0-71.9 done; what was measured and decided is in each milestone's status and result.
 
 **Continued in:** phase 76 (long file names, `ugui` for Lisp, the portrait ribbon: `plan/phase76_ux_foundation_lfn_lisp_portrait.md`), phase 77 (the launcher's faces and the Settings app: `plan/phase77_launcher_and_settings.md`), phase 78 (the book reader: `plan/phase78_book_reader.md`). The milestone mapping is at the start of §3.
 

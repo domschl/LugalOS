@@ -1,6 +1,6 @@
 # Phase 73 — StarFive VisionFive 2 Gigabit Ethernet, Native Network Services & Headless SD Auto-Boot
 
-**Status**: COMPLETE (all milestones 73.1, 73.2, 73.3, 73.4 implemented and verified on live VisionFive 2 hardware on 2026-11-07).
+**Status**: COMPLETE, released in version 0.21.0 (all milestones 73.1, 73.2, 73.3, 73.4 implemented and verified on live VisionFive 2 hardware on 2026-11-07).
 **Target Hardware**:
 - **Primary**: **StarFive VisionFive 2 v1.3B** (`visionfive2` preset, StarFive **JH7110** rev B, dual Synopsys DesignWare EQOS v5.20 Gigabit Ethernet MACs `gmac0@16030000` & `gmac1@16040000` + dual **Motorcomm YT8531C** RGMII-ID PHYs, 4× U74-MC RV64GC SMP, 8 GiB LPDDR4, 64 GB MicroSD at `/sd0`)
 - **Regression**: QEMU 64-bit (`rv64`, `rv64-smp`), QEMU 32-bit (`rv32`, `rv32-fold`), ESP32-P4 (`esp32p4`, `esp32p4-tab5`, `esp32p4-lcd7b`), and RP2350 (`rp2350-terminal`) — zero regressions, zero SRAM growth on 32-bit targets.

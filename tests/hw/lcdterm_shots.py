@@ -227,7 +227,8 @@ UX77: list[tuple[str, float, str | None]] = [
     ("clear", 1.0, None),
     ("settings set launcher.face shortcuts", 1.0, None),
     ("launcher", 3.0, "launcher-shortcuts"),
-    ("key ctrl-tab", 2.0, "launcher-files"),
+    ("key ctrl-tab", 2.0, None),
+    ("key tab bs bs bs bs", 2.0, "launcher-files"),  # up to the volumes: the folder is remembered
     ("key ctrl-tab", 2.0, None),                  # the face as it was
     ("launcher close", 2.0, None),
     ("settings open display", 3.0, "settings-display"),

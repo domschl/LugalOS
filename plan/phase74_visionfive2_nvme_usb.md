@@ -1,6 +1,6 @@
 # Phase 74 — StarFive VisionFive 2 Dual PCIe 2.0, M.2 NVMe SSD Storage & VIA VL805 xHCI USB 3.0 Host
 
-**Status**: COMPLETE  
+**Status**: COMPLETE, released in version 0.21.0.  
 **Target Hardware**:
 - **Primary**: **StarFive VisionFive 2 v1.3B** (`visionfive2` preset, StarFive **JH7110** rev B, 4× SiFive U74-MC RV64GC SMP @ 1.5 GHz, 8 GiB LPDDR4, 64 GB MicroSD at `/sd0`, Gigabit Ethernet at `192.168.178.25`):
   - **PCIe0 (`0x2B000000`, 1-lane Gen2)**: Onboard **VIA Labs VL805-Q6** (`1106:3483`) xHCI USB 3.0 Host Controller (`U16`) driving 4 USB Type-A ports (`J11`, `J12`), physically connected to a **USB keyboard** and **USB mouse**.

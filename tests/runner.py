@@ -4428,6 +4428,11 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             cmd_pool_exhaust, r"Node pool exhausted.*=> \(\)", timeout=25.0)
         results.append(("Node Pool Exhaustion Degrades Instead Of Hanging (P6 §6.4)",
                         ok, log if not ok else ""))
+        # The other seven calls and `exit` are still queued: on rv64 each one
+        # takes about 4 s. The checks below need the shell back, so wait for
+        # its prompt (an empty line, read once `exit` has run) -- not part of
+        # the assertion above.
+        session.send_and_expect("", r"lsh> ", timeout=90.0)
 
         # Phase 51: Shell Usability, Composability & Pipelines
         cmd_p51 = (

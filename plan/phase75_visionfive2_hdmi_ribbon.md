@@ -1,6 +1,6 @@
 # Phase 75 — StarFive VisionFive 2 HDMI 2.0 Display, VeriSilicon DC8200 & Ribbon Workstation
 
-**Status**: COMPLETED (Implemented & verified on live StarFive VisionFive 2 hardware, 2026-11-08)  
+**Status**: COMPLETED, released in version 0.21.0 (Implemented & verified on live StarFive VisionFive 2 hardware, 2026-11-08)  
 **Target Hardware**:
 - **Primary**: **StarFive VisionFive 2 v1.3B** (`visionfive2` preset, StarFive **JH7110** rev B, 4× SiFive U74-MC RV64GC SMP @ 1.5 GHz, 8 GiB LPDDR4, 64 GB MicroSD at `/sd0`, Gigabit Ethernet at `192.168.178.25`, 256 GB M.2 NVMe SSD at `/nvme0`):
   - **HDMI 2.0 Output**: Onboard HDMI Type-A connector (`J14`) driven by **Innosilicon HDMI TX PHY** (`0x29590000`) and **VeriSilicon Hantro DC8200 Display Controller** (`0x29400000`).

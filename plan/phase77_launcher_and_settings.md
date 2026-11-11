@@ -1,6 +1,6 @@
 # Phase 77 — The Launcher's Two Faces and the Settings App
 
-**Status: PLANNED (split from phase 71 on 2026-11-09; its milestones were 71.6 and 71.7 there).**
+**Status: CLOSED 2026-11-11, version 0.21.0.** (Split from phase 71 on 2026-11-09; its milestones were 71.6 and 71.7 there.)
 **Target Hardware**:
 - **Primary**: M5Stack Tab5 (`esp32p4-tab5`), Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`)
 - **Also**: Waveshare RP2350-LCD-7 (`rp2350-terminal`, reduced: phase 71 decision 5), StarFive VisionFive 2 (`visionfive2`, mouse and keyboard)
@@ -114,7 +114,16 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 - RAM baselines re-recorded; `sizereport` for RP2350 shows no SRAM growth.
 - **Version** (owner, 2026-11-11): the version number goes up -- `kernel/include/kernel/version.h` (`LUGALOS_VERSION` and its parts), 0.20.0 to 0.21.0 (a minor step: new apps and settings, nothing incompatible) -- and every preset is rebuilt so `/proc/version` and `/proc/buildid` say so.
 - **Release, the final step** (owner, 2026-11-11): once everything above passes -- the phase's tier 3 run (`doc/dev/testing.md` §0) -- a new GitHub release `0.21.0` is published by `doc/dev/releasing.md`, tagged on the commit that closes the phase, with release notes in the style of the earlier ones (0.20.0: "Touch UX Mode, Classic Mac Micro-Toolkit & HiDPI Ribbon"): the Settings app, paper warmth, text sizes, the launcher's two faces (damage tracking deferred: 77.3).
-- **Status:** planned.
+- **Done (2026-11-11):**
+  - `tests/hw/test_esp32p4.py`: `test_settings_persist_77` -- warmth, warm ink, text size, pointer speed and `launcher.face` survive a reboot, and the warmth is on the panel after it (`lcd`'s pair 0x3943 / 0xe674); each put back. The launcher's faces and the Settings app were already in the P4, RP2350 and VF2 suites (`launcher_faces.py`, `settings_app.py`).
+  - `tests/hw/lcdterm_shots.py --scenario ux77`: the launcher's Shortcuts and Files faces (Files from the volumes, whatever folder was left open) and the Settings app at Display and Input; recorded on the RP2350-LCD-7, the 7B and the Tab5. For it `settings open` takes a section (`settings open input`).
+  - Docs: `doc/user/launcher.md` was written in 77.2; the Settings app is in `doc/user/ribbon.md`, the user index names it; `shell.md` for `settings open SECTION` and `uxbench [doc [dir]]`; `gendocs --check` clean.
+  - RAM: baselines re-recorded. The RP2350's SRAM grew by 12 bytes over the phase (196,450 -> 196,462): two settings values (`display.warmth`, `display.warm_ink`), the console's "settings changed" bits (atomics, kept in SRAM) and the panel's ink/paper pair. **Owner decision (2026-11-11): accepted** as the cost of the new settings.
+  - Version 0.21.0 (`release: version 0.21.0`), every preset built from a clean tree: build 1432.c867d8aa.
+  - Boards installed through the update path, signed: the 7B's and the Tab5's C6 and P4 (`lota.py push-board` / `push`), the RP2350-LCD-7 over its 9P port; the VisionFive 2 by `vf2run.py --save-sd`, then booted from its card.
+- **Tier 3 (2026-11-11):** `tests/runner.py` 795/799; the four failures were one test fault, fixed: on rv64 the node-pool test's seven queued `(grow '())` calls (about 4 s each) outran the next four shell checks, three attempts out of three; the runner now waits for the shell's prompt after it, and `runner.py --target rv64` then passed 228/228 (the other parts were not run again). Board suites: Tab5 68/68, 7B 68/68, VisionFive 2 26/26, RP2350-LCD-7 40/41 -- the one failure is 38.8, the open issue that fails the first run(s) after a boot (here two, then two passes).
+- **Found on the way:** an ESP32-P4 update over the console (`lota.py push-board --p4 lcd7b`) stalls after the first 4 KB and the link closes; over TCP it works, and the C6's update over the same console did too (`plan/open_issues.md`).
+- **Status: done 2026-11-11.**
 
 ---
 

@@ -58,6 +58,9 @@ sets up (the per-layout store's allocation, the canvas's first size) rather than
 restore. Later the same day the full suite passed it after a fresh flash (40/40): intermittent, not
 every first run.
 
+**2026-11-11, the 0.21.0 tier 3 run:** after an update reboot it failed twice (the suite's run and
+the first `--only canvas_store`), then passed twice -- "the first runs", not only the first.
+
 ## The VisionFive 2 sees an older /sd0 right after U-Boot `fatwrite` (found 2026-11-09)
 
 **Destination: the VisionFive 2 SDMMC driver.** Booted by `test_visionfive2.py` (YMODEM, then
@@ -147,6 +150,17 @@ same pixels one after the other. Portrait is only 7-15 % faster, so the RGB565
 frame's PSRAM traffic dominates, not the rotation.
 
 ---
+
+## A P4 update over the console stalls after 4 KB on the LCD-7B (found 2026-11-11)
+
+**Destination: the next update work.** `lota.py push-board build/esp32p4-lcd7b --p4 lcd7b` (signed):
+the C6's image goes through the P4's console and confirms; the P4's own image is accepted for its
+first 4072 bytes, then the next write gets no answer for 30 s and the 9P link over the console
+closes ("connection closed while reading a SLIP frame"). Afterwards the console said nothing until
+a reset (the board then booted normally, nothing written). The same image over TCP
+(`--tcp ... --keyfile`) went through and confirmed. Likely where the P4 starts writing its slot:
+the console's 9P (`p9share`) and the slot erase or the log lines it prints. Not tried on the Tab5's
+console.
 
 # B. Unexplained intermittents
 

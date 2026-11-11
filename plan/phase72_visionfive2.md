@@ -1,6 +1,6 @@
 # Phase 72 — StarFive VisionFive 2 (JH7110) 64-Bit Hardware Bring-Up
 
-**Status**: PLANNED (drafted 2026-11-07; §0 preliminary evaluation verified against live hardware on `/dev/ttyUSB0` and `JH7110_TRM_StarFive_Preliminary_V2.pdf`).
+**Status**: DONE (milestones 72.1-72.6 implemented 2026-11-07), released in version 0.21.0. (Drafted 2026-11-07; §0 preliminary evaluation verified against live hardware on `/dev/ttyUSB0` and `JH7110_TRM_StarFive_Preliminary_V2.pdf`).
 **Target Hardware**:
 - **Primary**: **StarFive VisionFive 2 v1.3B** (`visionfive2` preset, StarFive **JH7110** rev B, 4× SiFive U74-MC RV64GC application harts + 1× S7 monitor hart, 8 GiB LPDDR4, 64 GB MicroSD, 256 GB M.2 NVMe, Gigabit Ethernet, HDMI 2.0)
 - **Regression**: QEMU 64-bit (`rv64`, `rv64-smp`), QEMU 32-bit (`rv32`, `rv32-fold`), ESP32-P4 (`esp32p4-tab5`, `esp32p4-lcd7b`), and RP2350 (`rp2350-terminal`) — zero regressions, zero SRAM growth on 32-bit targets.
