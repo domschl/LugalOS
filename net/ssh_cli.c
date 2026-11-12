@@ -315,7 +315,9 @@ void cmd_ssh(const char *args) {
             int n = ssh_channel_read(s, buf, sizeof(buf), &is_err);
             if (n == SSH_EOF || n < 0) break;
             if (n > 0) {
+                console_lock();
                 for (int i = 0; i < n; i++) console_putc((char)buf[i]);
+                console_unlock();
             } else {
                 if (console_interrupt_requested()) break;
                 sched_yield();
@@ -341,7 +343,9 @@ void cmd_ssh(const char *args) {
         int n = ssh_channel_read(s, buf, sizeof(buf), &is_err);
         if (n == SSH_EOF || n < 0) break;
         if (n > 0) {
+            console_lock();
             for (int i = 0; i < n; i++) console_putc((char)buf[i]);
+            console_unlock();
             did_work = true;
         }
         if (console_has_char()) {
