@@ -361,12 +361,16 @@ static void preprocess_internal(const char *src, int depth) {
                 /* Where to look: an absolute path is itself; a quoted name
                  * is tried beside the including file first, then in /ram0/
                  * and /ram0/include/ like an angle-bracket one. */
-                const char *dirs[5];
+                const char *dirs[7];
                 int ndirs = 0;
                 if (hdr_path[0] == '/') {
                     dirs[ndirs++] = "";
                 } else {
                     if (delim == '"' && inc_dir[depth][0]) dirs[ndirs++] = inc_dir[depth];
+                    if (vfs_volume_mounted("nvme0")) {
+                        dirs[ndirs++] = "/nvme0/";
+                        dirs[ndirs++] = "/nvme0/include/";
+                    }
                     dirs[ndirs++] = "/sd0/";
                     dirs[ndirs++] = "/sd0/include/";
                     dirs[ndirs++] = "/ram0/";

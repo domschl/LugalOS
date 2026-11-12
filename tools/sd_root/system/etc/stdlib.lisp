@@ -24,10 +24,12 @@
   (if (member mod *modules*)
       #t
       (let* ((name (if (symbol? mod) (symbol->string mod) mod))
+             (p0 (string-append "/nvme0/system/lib/" name ".lisp"))
              (p1 (string-append "/sd0/system/lib/" name ".lisp"))
              (p2 (string-append "/flash0/system/lib/" name ".lisp"))
-             (path (if (> (string-length (read-file p1)) 0) p1
-                       (if (> (string-length (read-file p2)) 0) p2 #f))))
+             (path (if (> (string-length (read-file p0)) 0) p0
+                       (if (> (string-length (read-file p1)) 0) p1
+                           (if (> (string-length (read-file p2)) 0) p2 #f)))))
         (if path
             (begin
               (set! *modules* (cons mod *modules*))

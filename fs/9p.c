@@ -675,6 +675,12 @@ uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap) {
  * the first code that ever creates this directory rather than assuming an
  * operator already put it on the card by hand. */
 static void p9_auth_ensure_key_dir(void) {
+    if (vfs_volume_mounted("nvme0")) {
+        vfs_mkdir("/nvme0/system");
+        vfs_mkdir("/nvme0/system/etc");
+        vfs_mkdir("/nvme0/system/etc/auth");
+        return;
+    }
     vfs_mkdir("/sd0/system");
     vfs_mkdir("/sd0/system/etc");
     vfs_mkdir(P9_AUTH_KEY_DIR);
@@ -967,8 +973,11 @@ static bool p9_path_is_secret(const char *path) {
      * uses -- readable by anyone who attached. */
     if (strcmp(path, P9_AUTH_FALLBACK_KEY_FILE) == 0) return true;
     size_t n = strlen(P9_AUTH_KEY_DIR);
-    if (strncmp(path, P9_AUTH_KEY_DIR, n) != 0) return false;
-    return path[n] == '\0' || path[n] == '/';
+    if (strncmp(path, P9_AUTH_KEY_DIR, n) == 0 && (path[n] == '\0' || path[n] == '/')) return true;
+    static const char nvme_auth[] = "/nvme0/system/etc/auth";
+    size_t nn = sizeof(nvme_auth) - 1;
+    if (strncmp(path, nvme_auth, nn) == 0 && (path[nn] == '\0' || path[nn] == '/')) return true;
+    return false;
 }
 
 /* Exposed for the self-test: the guard is the one piece of the auth gate that

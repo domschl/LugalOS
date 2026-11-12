@@ -7,7 +7,7 @@
   - **Video & Display**: VeriSilicon Hantro DC8200 Display Controller (`0x29400000`) and Innosilicon HDMI 2.0 TX PHY (`0x29590000`).
   - **USB Host & Peripherals**: Onboard VIA VL805-Q6 xHCI host controller (`pcie0`) driving onboard VIA VL817 4-port USB 2.0 Hub (`2109:3431`) and physical USB keyboard & mouse.
   - **High-Speed Storage**: M.2 PCIe Gen2 x1 NVMe SSD (`pcie1`) formatted with FAT32 long filenames (Phase 76 VFAT LFN).
-  - **Audio Subsystem**: Onboard StarFive JH7110 PWMDAC stereo audio engine (`0x100D0000`) routed through `SYS_IOMUX` to GPIO 33/34 and 3.5mm stereo headphone jack, with automatic idle carrier suppression (Hi-Z driver & clock gating).
+  - **Audio Subsystem**: Onboard StarFive JH7110 PWMDAC stereo audio engine (`0x100B0000`) routed through `SYS_IOMUX` to GPIO 33/34 and 3.5mm stereo headphone jack, with automatic idle carrier suppression (Hi-Z driver & clock gating).
   - **Network & Clock**: Synopsys DesignWare EQOS Gigabit Ethernet (`gmac1`) with Motorcomm YT8531C PHY, SNTP client (`net/ntp.c`).
 - **Regression**: QEMU 64-bit (`rv64`, `rv64-smp`), QEMU 32-bit (`rv32`, `rv32-fold`), ESP32-P4 (`esp32p4`, `esp32p4-tab5`, `esp32p4-lcd7b`), and RP2350 (`rp2350-terminal`, `rp2350-chess`) — zero regressions, zero SRAM overhead on microcontrollers.
 

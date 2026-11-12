@@ -137,6 +137,14 @@ void line_editor_init(void) {
 }
 
 
+static const char *history_sys_dir(void) {
+    return vfs_volume_mounted("nvme0") ? "/nvme0/system" : "/sd0/system";
+}
+
+static const char *history_file_path(void) {
+    return vfs_volume_mounted("nvme0") ? "/nvme0/system/history.lisp" : "/sd0/system/history.lisp";
+}
+
 static void line_editor_add_history_locked(const char *line) {
     if (!line || strlen(line) == 0) return;
     if (line[0] == '!') return;
@@ -193,20 +201,21 @@ static void line_editor_add_history_locked(const char *line) {
     if (history_given_up) return;
     if (!history_dir_ready) {
         vfs_stat_t st;
-        if (vfs_stat("/sd0/system", &st) != 0 || !st.is_dir) {
+        const char *sdir = history_sys_dir();
+        if (vfs_stat(sdir, &st) != 0 || !st.is_dir) {
             /* A mkdir that fails on a mounted card means the card is gone
              * or broken, and this boot will not see it come back (a card is
              * mounted at boot only). Trying again after every command made
              * each one log the failure -- after a card pull, forever. */
-            if (vfs_mkdir("/sd0/system") != 0) {
-                if (vfs_volume_mounted("sd0")) history_given_up = true;
+            if (vfs_mkdir(sdir) != 0) {
+                if (vfs_volume_mounted("nvme0") || vfs_volume_mounted("sd0")) history_given_up = true;
                 return;
             }
-            printk("[LineEditor] created /sd0/system for the command history\n");
+            printk("[LineEditor] created %s for the command history\n", sdir);
         }
         history_dir_ready = true;
     }
-    if (vfs_append("/sd0/system/history.lisp", entry_buf, elen) < 0) {
+    if (vfs_append(history_file_path(), entry_buf, elen) < 0) {
         history_dir_ready = false;
     }
 }
@@ -222,14 +231,17 @@ const char *line_editor_history_get(int idx) {
 
 static void line_editor_clear_history_locked(void) {
     history_count = 0;
-    (void)vfs_write("/sd0/system/history.lisp", "", 0);
+    (void)vfs_write(history_file_path(), "", 0);
 }
 
 static void line_editor_load_history_locked(int max_entries) {
     if (max_entries <= 0) return;
     if (max_entries > MAX_HIST_ITEMS) max_entries = MAX_HIST_ITEMS;
 
-    int fd = vfs_open("/sd0/system/history.lisp", VFS_O_READ);
+    int fd = vfs_open(history_file_path(), VFS_O_READ);
+    if (fd < 0 && vfs_volume_mounted("nvme0") && vfs_volume_mounted("sd0")) {
+        fd = vfs_open("/sd0/system/history.lisp", VFS_O_READ);
+    }
     if (fd < 0) return;
 
     vfs_stat_t st;
@@ -303,7 +315,7 @@ static void line_editor_load_history_locked(int max_entries) {
     scratch_release(&sc);
 
     if (st.size > 4096 && history_count > 0) {
-        int wfd = vfs_open("/sd0/system/history.lisp", VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+        int wfd = vfs_open(history_file_path(), VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
         if (wfd >= 0) {
             uint64_t woff = 0;
             for (int i = 0; i < history_count; i++) {

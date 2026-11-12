@@ -218,6 +218,17 @@ static bool resolve_doc_path(const char *topic, char *out_path, size_t out_sz) {
         *dot = '\0';
     }
 
+    /* 0. Try .md then .gmi on /nvme0/help */
+    if (vfs_volume_mounted("nvme0")) {
+        ksnprintf(out_path, out_sz, "/nvme0/help/%s.md", clean);
+        int fd = vfs_open(out_path, VFS_O_READ);
+        if (fd >= 0) { vfs_close(fd); return true; }
+
+        ksnprintf(out_path, out_sz, "/nvme0/help/%s.gmi", clean);
+        fd = vfs_open(out_path, VFS_O_READ);
+        if (fd >= 0) { vfs_close(fd); return true; }
+    }
+
     /* 1. Try .md then .gmi on /sd0/help */
     ksnprintf(out_path, out_sz, "/sd0/help/%s.md", clean);
     int fd = vfs_open(out_path, VFS_O_READ);
@@ -236,7 +247,18 @@ static bool resolve_doc_path(const char *topic, char *out_path, size_t out_sz) {
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
-    /* 3. Try /sd0/pub/ */
+    /* 3. Try /nvme0/pub/ */
+    if (vfs_volume_mounted("nvme0")) {
+        ksnprintf(out_path, out_sz, "/nvme0/pub/%s.md", clean);
+        fd = vfs_open(out_path, VFS_O_READ);
+        if (fd >= 0) { vfs_close(fd); return true; }
+
+        ksnprintf(out_path, out_sz, "/nvme0/pub/%s.gmi", clean);
+        fd = vfs_open(out_path, VFS_O_READ);
+        if (fd >= 0) { vfs_close(fd); return true; }
+    }
+
+    /* 4. Try /sd0/pub/ */
     ksnprintf(out_path, out_sz, "/sd0/pub/%s.md", clean);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
@@ -940,7 +962,7 @@ static void reader_key(uint8_t rid, uint32_t key, uint8_t mods) {
     }
     switch (key) {
     case 0x08: case '?': case 'h':
-        reader_open_instance(rid, "/sd0/help/reader.md");
+        reader_open_instance(rid, vfs_volume_mounted("nvme0") ? "/nvme0/help/reader.md" : "/sd0/help/reader.md");
         reader_update_instance(rid);
         return;
     case 'q': case 0x03: {

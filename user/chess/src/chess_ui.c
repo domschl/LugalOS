@@ -831,16 +831,19 @@ static int g_console_max_history_ply = 0;
  * auto-save there lasts only until reboot, which still beats nothing on a
  * board with no card in it. */
 static const char *console_save_dir(void) {
-    return vfs_volume_writable("/sd0") ? "/sd0/chess" : "/ram0/chess";
+    return vfs_volume_writable("/nvme0") ? "/nvme0/chess"
+         : vfs_volume_writable("/sd0") ? "/sd0/chess" : "/ram0/chess";
 }
 
 /* Where `new` retires the outgoing game to. */
 static const char *console_archive_dir(void) {
-    return vfs_volume_writable("/sd0") ? "/sd0/chess/games" : "/ram0/chess/games";
+    return vfs_volume_writable("/nvme0") ? "/nvme0/chess/games"
+         : vfs_volume_writable("/sd0") ? "/sd0/chess/games" : "/ram0/chess/games";
 }
 /* The auto-saved game in progress. */
 static const char *console_save_path(void) {
-    return vfs_volume_writable("/sd0") ? "/sd0/chess/current.pgn"
+    return vfs_volume_writable("/nvme0") ? "/nvme0/chess/current.pgn"
+         : vfs_volume_writable("/sd0") ? "/sd0/chess/current.pgn"
                                         : "/ram0/chess/current.pgn";
 }
 

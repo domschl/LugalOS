@@ -7989,8 +7989,15 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
         if (name) {
             char path[64];
             vfs_stat_t st;
-            /* 1. Try exact topic match .gmi or .txt across /sd0 and /flash0 */
-            ksnprintf(path, sizeof(path), "/sd0/help/%s.gmi", name);
+            /* 1. Try exact topic match .gmi or .txt across /nvme0, /sd0 and /flash0 */
+            path[0] = '\0';
+            if (vfs_volume_mounted("nvme0")) {
+                ksnprintf(path, sizeof(path), "/nvme0/help/%s.gmi", name);
+                if (vfs_stat(path, &st) != 0) ksnprintf(path, sizeof(path), "/nvme0/help/%s.txt", name);
+            }
+            if (!path[0] || vfs_stat(path, &st) != 0) {
+                ksnprintf(path, sizeof(path), "/sd0/help/%s.gmi", name);
+            }
             if (vfs_stat(path, &st) != 0) {
                 ksnprintf(path, sizeof(path), "/flash0/help/%s.gmi", name);
             }
@@ -8014,14 +8021,21 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
             }
 
             /* 2. Scan standard manuals for a section heading containing `name` */
-            const char *help_files[] = {
-                "/sd0/help/calculus.gmi", "/sd0/help/algebra.gmi",
-                "/sd0/help/plot.gmi",     "/sd0/help/demos.gmi",
-                "/sd0/help/lisp.gmi",     "/sd0/help/c_programming.gmi",
-                "/sd0/help/cas.gmi"
+            const char *help_topics[] = {
+                "calculus.gmi", "algebra.gmi",
+                "plot.gmi",     "demos.gmi",
+                "lisp.gmi",     "c_programming.gmi",
+                "cas.gmi"
             };
-            for (size_t f = 0; f < sizeof(help_files) / sizeof(help_files[0]); f++) {
-                int fd = vfs_open(help_files[f], VFS_O_READ);
+            const char *hprefix = vfs_volume_mounted("nvme0") ? "/nvme0/help/" : "/sd0/help/";
+            for (size_t f = 0; f < sizeof(help_topics) / sizeof(help_topics[0]); f++) {
+                char hpath[64];
+                ksnprintf(hpath, sizeof(hpath), "%s%s", hprefix, help_topics[f]);
+                int fd = vfs_open(hpath, VFS_O_READ);
+                if (fd < 0 && vfs_volume_mounted("nvme0")) {
+                    ksnprintf(hpath, sizeof(hpath), "/sd0/help/%s", help_topics[f]);
+                    fd = vfs_open(hpath, VFS_O_READ);
+                }
                 if (fd < 0) continue;
                 uint64_t foff = 0;
                 char rchunk[256];
@@ -8044,7 +8058,7 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
                                     found = true;
                                     heading_lvl = 0;
                                     while (lbuf[heading_lvl] == '#') heading_lvl++;
-                                    cprintf("\n[doc from %s]\n%s\n", help_files[f], lbuf);
+                                    cprintf("\n[doc from %s]\n%s\n", hpath, lbuf);
                                 }
                             } else {
                                 if (lbuf[0] == '#') {

@@ -6,7 +6,7 @@
   "heap_pages": 30750,
   "per_file": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 15421,
+    "(no line info: .rodata)": 15461,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 20,
     "arch/riscv/common/trap.c": 15,
@@ -75,7 +75,7 @@
     "drivers/vtterm.c": 16,
     "drivers/winclose.c": 308,
     "drivers/xhci_jh7110.c": 161726,
-    "fs/9p.c": 11478,
+    "fs/9p.c": 11501,
     "fs/fat32.c": 41,
     "fs/latex_math.c": 704,
     "fs/p9_chan.c": 12388,
@@ -116,7 +116,7 @@
     "kernel/lock.c": 7772,
     "kernel/orient.c": 1308,
     "kernel/palloc.c": 199800,
-    "kernel/path.c": 92,
+    "kernel/path.c": 100,
     "kernel/pointer.c": 17,
     "kernel/power.c": 296,
     "kernel/privilege.c": 8,
@@ -185,8 +185,8 @@
   },
   "per_subsystem": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 15421,
-    "9p": 65752,
+    "(no line info: .rodata)": 15461,
+    "9p": 65775,
     "agent": 3501,
     "app:cc": 598,
     "app:ed": 119,
@@ -209,11 +209,11 @@
     "radio": 3464,
     "selftest": 10607,
     "sensors": 20839,
-    "shell": 14417,
+    "shell": 14425,
     "storage": 6873,
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 754642,
-  "total": 7903748
+  "ram_code": 756070,
+  "total": 7905247
 }

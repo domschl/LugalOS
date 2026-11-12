@@ -677,6 +677,25 @@ static bool resolve_help_path(const char *topic, char *out_path, size_t out_sz) 
         *dot = '\0';
     }
 
+    /* 0. Try /nvme0 */
+    if (vfs_volume_mounted("nvme0")) {
+        ksnprintf(out_path, out_sz, "/nvme0/help/%s.md", clean);
+        int fd = vfs_open(out_path, VFS_O_READ);
+        if (fd >= 0) { vfs_close(fd); return true; }
+
+        ksnprintf(out_path, out_sz, "/nvme0/help/%s.gmi", clean);
+        fd = vfs_open(out_path, VFS_O_READ);
+        if (fd >= 0) { vfs_close(fd); return true; }
+
+        ksnprintf(out_path, out_sz, "/nvme0/help/%s", topic);
+        fd = vfs_open(out_path, VFS_O_READ);
+        if (fd >= 0) { vfs_close(fd); return true; }
+
+        ksnprintf(out_path, out_sz, "/nvme0/help/%s.txt", clean);
+        fd = vfs_open(out_path, VFS_O_READ);
+        if (fd >= 0) { vfs_close(fd); return true; }
+    }
+
     /* 1. Try .md on /sd0 */
     ksnprintf(out_path, out_sz, "/sd0/help/%s.md", clean);
     int fd = vfs_open(out_path, VFS_O_READ);
@@ -1225,7 +1244,7 @@ static void pager_view_file_locked(const char *initial_resource, bool is_topic, 
                                     s_help_stack[s_help_depth].title[sizeof(s_help_stack[0].title) - 1] = '\0';
                                     s_help_depth++;
                                 }
-                                strncpy(cur_resource, "/sd0/help/reader.md", sizeof(cur_resource) - 1);
+                                strncpy(cur_resource, vfs_volume_mounted("nvme0") ? "/nvme0/help/reader.md" : "/sd0/help/reader.md", sizeof(cur_resource) - 1);
                                 cur_resource[sizeof(cur_resource) - 1] = '\0';
                                 strncpy(cur_title, "Reader Guide", sizeof(cur_title) - 1);
                                 cur_title[sizeof(cur_title) - 1] = '\0';
@@ -1536,7 +1555,18 @@ static void cmd_md_or_gem_locked(const char *arg, const char *cmd_name) {
         return;
     }
 
-    /* Check relative path on /sd0 or /flash0 */
+    /* Check relative path on /nvme0, /sd0 or /flash0 */
+    if (vfs_volume_mounted("nvme0")) {
+        ksnprintf(resolved, sizeof(resolved), "/nvme0/%s", arg);
+        fd = vfs_open(resolved, VFS_O_READ);
+        if (fd >= 0) {
+            vfs_close(fd);
+            s_help_depth = 0;
+            pager_view_file(resolved, false, arg, NULL);
+            return;
+        }
+    }
+
     ksnprintf(resolved, sizeof(resolved), "/sd0/%s", arg);
     fd = vfs_open(resolved, VFS_O_READ);
     if (fd >= 0) {
@@ -9052,7 +9082,7 @@ void shell_run(void) {
         console_set_title("lsh");
         shell_idle_poll();
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));
-        if (idx == 0) continue;
+        if (idx <= 0) continue;
         s_serial_cmd_seen = true;
         /* The Lisp engine's
          * one safe point to collect garbage at -- see lisp_gc_safepoint()'s
@@ -9084,7 +9114,7 @@ void shell_worker_task_entry(void *arg) {
         console_set_title(vt->title);
         lisp_canvas_poll();
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));
-        if (idx == 0) continue;
+        if (idx <= 0) continue;
         lisp_gc_safepoint();
         if (strcmp(buf, "exit") == 0) {
             cprintf("[lsh] exiting terminal %d\n", vid);

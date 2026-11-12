@@ -34,6 +34,7 @@ void shortcuts_cmd(const char *args) { (void)args; cprintf("shortcuts: no screen
 
 #include <string.h>
 
+#define SC_NVME  "/nvme0/system/shortcuts"
 #define SC_SD    "/sd0/system/shortcuts"
 #define SC_FLASH "/flash0/system/shortcuts"
 #define SC_FILE_MAX (SHORTCUT_MAX * (8 + SHORTCUT_TARGET + SHORTCUT_LABEL + SHORTCUT_ICON))
@@ -97,8 +98,9 @@ static void defaults(void) {
     static const char *const k_apps[] = { "settings", "term", "chess", "moonbase" };
     for (unsigned i = 0; i < sizeof k_apps / sizeof k_apps[0]; i++)
         if (app_find(k_apps[i])) (void)append(SHORTCUT_APP, k_apps[i], NULL, NULL);
-    (void)append(SHORTCUT_DOC, "/sd0/help/index.md", "Help", "reader");
-    (void)append(SHORTCUT_DIR, "/sd0/docs", "Documents", "folder");
+    bool nvme = vfs_volume_mounted("nvme0");
+    (void)append(SHORTCUT_DOC, nvme ? "/nvme0/help/index.md" : "/sd0/help/index.md", "Help", "reader");
+    (void)append(SHORTCUT_DIR, nvme ? "/nvme0/docs" : "/sd0/docs", "Documents", "folder");
 }
 
 /* One line, `type<TAB>target<TAB>label<TAB>icon`, the last two optional. */
@@ -115,7 +117,9 @@ static void parse_line(char *line) {
 }
 
 void shortcuts_load(void) {
-    int n = vfs_read(SC_SD, s_sc.file, sizeof s_sc.file - 1);
+    int n = -1;
+    if (vfs_volume_mounted("nvme0")) n = vfs_read(SC_NVME, s_sc.file, sizeof s_sc.file - 1);
+    if (n < 0 && vfs_volume_mounted("sd0")) n = vfs_read(SC_SD, s_sc.file, sizeof s_sc.file - 1);
     if (n < 0) n = vfs_read(SC_FLASH, s_sc.file, sizeof s_sc.file - 1);
     s_sc.loaded = true;
     if (n <= 0) {
@@ -191,9 +195,11 @@ static bool save(void) {
                                  shortcuts_type_name((shortcut_type_t)s->type), s->target, s->label, s->icon);
     }
     if (o >= sizeof s_sc.file) return false;
-    bool sd = vfs_volume_mounted("sd0");
-    (void)vfs_mkdir(sd ? "/sd0/system" : "/flash0/system");
-    return vfs_write(sd ? SC_SD : SC_FLASH, s_sc.file, o) >= 0;
+    bool nvme = vfs_volume_mounted("nvme0");
+    bool sd = !nvme && vfs_volume_mounted("sd0");
+    const char *path = nvme ? SC_NVME : (sd ? SC_SD : SC_FLASH);
+    (void)vfs_mkdir(nvme ? "/nvme0/system" : (sd ? "/sd0/system" : "/flash0/system"));
+    return vfs_write(path, s_sc.file, o) >= 0;
 }
 
 bool shortcuts_add(shortcut_type_t type, const char *target, const char *label, const char *icon) {

@@ -59,13 +59,13 @@
 ;;    program usable by name straight away. It also means anything that can
 ;;    write /ram0/system/bin can shadow every system utility, so this line is
 ;;    where a board with different trust requirements says otherwise.
-(path-set "ram0 sd0 flash0")
-
-;; 3. Command history directory
-;;    A card fresh out of the packet has no /system. mkdir first: it is
-;;    a silent no-op when the directory exists or when there is no card.
-;;    Command history in /sd0/system/history.lisp is preserved across boots.
-(mkdir "/sd0/system")
+(if (mounted? "/nvme0")
+    (begin
+      (path-set "ram0 nvme0 sd0 flash0")
+      (mkdir "/nvme0/system"))
+    (begin
+      (path-set "ram0 sd0 flash0")
+      (mkdir "/sd0/system")))
 
 ;; 4. Kernel log and device policy (B0). Both registries are inspectable...
 ;;      (devices)      -- what hardware this board probed; also /proc/devices

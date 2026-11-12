@@ -59,6 +59,7 @@ static bool       g_loaded;               /* g_value holds values (else the defa
 static uint64_t   g_dirty_ms;             /* the last unsaved change; 0: saved */
 static spinlock_t g_settings_lock = SPINLOCK_INIT;
 
+#define SETTINGS_NVME  "/nvme0/system/settings"
 #define SETTINGS_SD    "/sd0/system/settings"
 #define SETTINGS_FLASH "/flash0/system/settings"
 #define SAVE_AFTER_MS  2000u
@@ -204,7 +205,9 @@ void settings_load(void) {
     defaults_once();
     spin_unlock_irqrestore(&g_settings_lock, f);
     char buf[512];
-    int n = vfs_read(SETTINGS_SD, buf, sizeof(buf) - 1);
+    int n = -1;
+    if (vfs_volume_mounted("nvme0")) n = vfs_read(SETTINGS_NVME, buf, sizeof(buf) - 1);
+    if (n < 0 && vfs_volume_mounted("sd0")) n = vfs_read(SETTINGS_SD, buf, sizeof(buf) - 1);
     if (n < 0) n = vfs_read(SETTINGS_FLASH, buf, sizeof(buf) - 1);
     if (n > 0) {
         buf[n] = '\0';
@@ -242,9 +245,10 @@ void settings_poll(void) {
         o += (unsigned)ksnprintf(buf + o, sizeof buf - o, "%s=%s\n", k_settings[i].key, v);
     }
     if (o > sizeof buf) o = sizeof buf;
-    bool sd = vfs_volume_mounted("sd0");
-    const char *path = sd ? SETTINGS_SD : SETTINGS_FLASH;
-    (void)vfs_mkdir(sd ? "/sd0/system" : "/flash0/system");
+    bool nvme = vfs_volume_mounted("nvme0");
+    bool sd = !nvme && vfs_volume_mounted("sd0");
+    const char *path = nvme ? SETTINGS_NVME : (sd ? SETTINGS_SD : SETTINGS_FLASH);
+    (void)vfs_mkdir(nvme ? "/nvme0/system" : (sd ? "/sd0/system" : "/flash0/system"));
     if (vfs_write(path, buf, o) < 0) printk("[Settings] could not write %s\n", path);
 }
 

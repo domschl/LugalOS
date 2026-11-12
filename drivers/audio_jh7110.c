@@ -5,7 +5,7 @@
  * hardware PWMDAC (Pulse-Width Modulation Digital-to-Analog Converter).
  *
  * Hardware Overview:
- * - PWMDAC Controller: MMIO at 0x100D0000
+ * - PWMDAC Controller: MMIO at 0x100B0000
  * - Pinmux: GPIO 33 (Left Channel, Signal 28), GPIO 34 (Right Channel, Signal 29)
  * - Clock / Reset: SYS_CRG PWMDAC APB (clk 157, 0x274) / Core (clk 158, 0x278)
  *                  and SYSCRG_RESET_ASSERT3 (rst 96, bit 0)
@@ -29,7 +29,7 @@
 /* Hardware Base Addresses */
 #define JH7110_SYS_CRG_BASE             0x13020000UL
 #define JH7110_SYS_IOMUX_BASE           0x13040000UL
-#define JH7110_PWMDAC_BASE              0x100D0000UL
+#define JH7110_PWMDAC_BASE              0x100B0000UL
 
 /* SYS_CRG Clocks and Resets */
 #define CRG_CLK_PWMDAC_APB              (JH7110_SYS_CRG_BASE + 0x274UL)
@@ -90,7 +90,7 @@ static const int16_t s_sin_tab[256] = {
    -27244,-26789,-26318,-25831,-25329,-24811,-24278,-23731,
    -23169,-22594,-22004,-21402,-20787,-20159,-19519,-18867,
    -18204,-17530,-16845,-16150,-15446,-14732,-14009,-13278,
-   -12539,-11792,-11038,-10278,  9511,  8739,  7961,  7179,
+   -12539,-11792,-11038,-10278, -9511, -8739, -7961, -7179,
     -6392, -5601, -4807, -4011, -3211, -2410, -1607,  -804
 };
 
@@ -194,13 +194,7 @@ int audio_jh7110_get_volume(void) {
     return vol;
 }
 
-bool audio_jh7110_play_pcm(const int16_t *samples, uint32_t num_frames, uint32_t sample_rate) {
-    if (!samples || num_frames == 0) return false;
-    if (!audio_jh7110_init()) return false;
-
-    ylock_acquire(&g_audio_lock);
-    int vol = g_audio_volume;
-
+static void pwmdac_start_locked(uint32_t sample_rate) {
     /* Adjust PWMDAC Core Clock divider if necessary for sample rate */
     uint32_t div = 12u; /* default for 44.1k / 48k */
     if (sample_rate <= 16000) {
@@ -216,7 +210,9 @@ bool audio_jh7110_play_pcm(const int16_t *samples, uint32_t num_frames, uint32_t
                     PWMDAC_CTRL_DUTY_CENTER | PWMDAC_CTRL_INVERT_MSB;
     REG32(PWMDAC_CTRL) = ctrl;
     g_audio_enabled = true;
+}
 
+static void pwmdac_write_frames_locked(const int16_t *samples, uint32_t num_frames, int vol) {
     for (uint32_t i = 0; i < num_frames; i++) {
         int16_t raw_l = samples[2 * i];
         int16_t raw_r = samples[2 * i + 1];
@@ -240,7 +236,9 @@ bool audio_jh7110_play_pcm(const int16_t *samples, uint32_t num_frames, uint32_t
 
         REG32(PWMDAC_WDATA) = frame_val;
     }
+}
 
+static void pwmdac_stop_locked(void) {
     /* Drain interpolator with silence frames */
     for (int k = 0; k < 64; k++) {
         int timeout = 50000;
@@ -255,7 +253,17 @@ bool audio_jh7110_play_pcm(const int16_t *samples, uint32_t num_frames, uint32_t
     REG32(PWMDAC_CTRL) = 0;
     hw_pin_mute(true);
     g_audio_enabled = false;
+}
 
+bool audio_jh7110_play_pcm(const int16_t *samples, uint32_t num_frames, uint32_t sample_rate) {
+    if (!samples || num_frames == 0) return false;
+    if (!audio_jh7110_init()) return false;
+
+    ylock_acquire(&g_audio_lock);
+    int vol = g_audio_volume;
+    pwmdac_start_locked(sample_rate);
+    pwmdac_write_frames_locked(samples, num_frames, vol);
+    pwmdac_stop_locked();
     ylock_release(&g_audio_lock);
     return true;
 }
@@ -275,6 +283,10 @@ void audio_jh7110_beep(uint32_t freq_hz, uint32_t duration_ms) {
 
     int16_t chunk[256 * 2]; /* 256 stereo frames */
     uint32_t played = 0;
+
+    ylock_acquire(&g_audio_lock);
+    int vol = g_audio_volume;
+    pwmdac_start_locked(sample_rate);
 
     while (played < total_samples) {
         uint32_t chunk_len = total_samples - played;
@@ -298,9 +310,12 @@ void audio_jh7110_beep(uint32_t freq_hz, uint32_t duration_ms) {
             phase = (phase + phase_inc) & 0xFFFFu;
         }
 
-        audio_jh7110_play_pcm(chunk, chunk_len, sample_rate);
+        pwmdac_write_frames_locked(chunk, chunk_len, vol);
         played += chunk_len;
     }
+
+    pwmdac_stop_locked();
+    ylock_release(&g_audio_lock);
 }
 
 bool audio_jh7110_play_wav(const char *path) {
@@ -342,16 +357,25 @@ bool audio_jh7110_play_wav(const char *path) {
     cprintf("[Audio] Playing '%s': %u Hz, %s, 16-bit PCM (Vol %d%%)\n",
             path, (unsigned)srate, channels == 2 ? "Stereo" : "Mono", audio_jh7110_get_volume());
 
+    if (!audio_jh7110_init()) {
+        vfs_close(fd);
+        return false;
+    }
+
     uint8_t raw_buf[1024];
     int16_t stereo_buf[512 * 2];
     uint64_t offset = 44;
+
+    ylock_acquire(&g_audio_lock);
+    int vol = g_audio_volume;
+    pwmdac_start_locked(srate);
 
     while ((nread = vfs_pread(fd, raw_buf, sizeof(raw_buf), offset)) > 0) {
         int frames = 0;
         if (channels == 2) {
             frames = nread / 4;
             const int16_t *src = (const int16_t *)(const void *)raw_buf;
-            audio_jh7110_play_pcm(src, (uint32_t)frames, srate);
+            pwmdac_write_frames_locked(src, (uint32_t)frames, vol);
         } else {
             frames = nread / 2;
             const int16_t *src = (const int16_t *)(const void *)raw_buf;
@@ -359,10 +383,13 @@ bool audio_jh7110_play_wav(const char *path) {
                 stereo_buf[2 * i] = src[i];
                 stereo_buf[2 * i + 1] = src[i];
             }
-            audio_jh7110_play_pcm(stereo_buf, (uint32_t)frames, srate);
+            pwmdac_write_frames_locked(stereo_buf, (uint32_t)frames, vol);
         }
         offset += (uint64_t)nread;
     }
+
+    pwmdac_stop_locked();
+    ylock_release(&g_audio_lock);
 
     vfs_close(fd);
     return true;
@@ -381,7 +408,7 @@ void audio_jh7110_status(void) {
     ylock_release(&g_audio_lock);
 
     cprintf("\nStarFive JH7110 Audio Subsystem (PWMDAC):\n");
-    cprintf("  Hardware Engine:   PWMDAC (0x100D0000)\n");
+    cprintf("  Hardware Engine:   PWMDAC (0x100B0000)\n");
     cprintf("  Output Jack:       3.5mm Stereo Headphone / Line-Out (GPIO 33/34)\n");
     cprintf("  State:             %s (CTRL: 0x%08x)\n", en ? "ENABLED" : "MUTED", (unsigned)ctrl);
     cprintf("  Volume:            %d%%\n", vol);

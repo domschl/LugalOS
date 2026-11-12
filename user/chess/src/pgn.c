@@ -283,7 +283,8 @@ int pgn_selftest(void) {
              * heap and that board has an SD card instead -- so hardcoding it
              * made this half of the test pass on QEMU and fail on the only
              * hardware anyone runs it on. */
-            const char *dir = vfs_volume_writable("/sd0") ? "/sd0/chess"
+            const char *dir = vfs_volume_writable("/nvme0") ? "/nvme0/chess"
+                            : vfs_volume_writable("/sd0") ? "/sd0/chess"
                             : vfs_volume_writable("/ram0") ? "/ram0/chess"
                             : NULL;
             if (!dir) {

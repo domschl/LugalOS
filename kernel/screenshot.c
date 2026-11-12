@@ -28,14 +28,15 @@ int screenshot_save(const char *path, char *out, uint32_t cap) {
         strncpy(name, path, sizeof(name) - 1u);
         name[sizeof(name) - 1u] = '\0';
     } else {
-        (void)vfs_mkdir(SHOT_DIR);               /* fails harmlessly if it exists */
+        const char *sdir = vfs_volume_mounted("nvme0") ? "/nvme0/screenshots" : SHOT_DIR;
+        (void)vfs_mkdir(sdir);               /* fails harmlessly if it exists */
         vfs_stat_t st;
         const char *ext = ".pbm";
         if (format == SCREEN_FORMAT_GRAY8) ext = ".pgm";
         else if (format == SCREEN_FORMAT_RGB565) ext = ".ppm";
         int k = 1;
         for (; k < 1000; k++) {
-            ksnprintf(name, sizeof(name), SHOT_DIR "/shot-%03d%s", k, ext);
+            ksnprintf(name, sizeof(name), "%s/shot-%03d%s", sdir, k, ext);
             if (vfs_stat(name, &st) != 0) break;
         }
         if (k == 1000) return -1;

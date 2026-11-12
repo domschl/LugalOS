@@ -221,24 +221,24 @@ def read_until_any(
 def ensure_uboot_prompt(ser: serial.Serial, timeout_s: float = 120.0) -> None:
     """Bring the VisionFive 2 to the `StarFive #` U-Boot prompt."""
     ser.reset_input_buffer()
-    ser.write(b"\x03\r")
+    ser.write(b"\r\n")
     ser.flush()
-    idx, _ = read_until_any(ser, ["StarFive #", "lsh> ", "/> ", "login:", "# "], 1.5, echo=False)
+    time.sleep(0.1)
+    idx, buf = read_until_any(ser, ["StarFive #", "lsh> ", "/> ", "login:", "# "], 2.0, echo=False)
     if idx == 0:
         return
 
     if idx in (1, 2):
         print("[vf2run] Board is running LugalOS; issuing 'reboot' via OpenSBI SRST...")
-        write_paced(ser, "reboot\r")
+        write_paced(ser, "\r\nreboot\r")
     else:
         print("[vf2run] Waiting for U-Boot prompt (interrupting autoboot if resetting)...")
-        write_paced(ser, "reboot\r")
+        write_paced(ser, "\r\nreboot\r")
 
     deadline = time.monotonic() + timeout_s
     buf = ""
+    last_reboot_attempt = time.monotonic()
     while time.monotonic() < deadline:
-        ser.write(b" ")
-        ser.flush()
         chunk = ser.read(4096)
         if chunk:
             text = chunk.decode("utf-8", errors="replace")
@@ -250,6 +250,19 @@ def ensure_uboot_prompt(ser: serial.Serial, timeout_s: float = 120.0) -> None:
                 ser.flush()
                 read_until_any(ser, ["StarFive #"], 1.0, echo=False)
                 return
+            if "Hit any key to stop autoboot" in buf or "autoboot:" in buf:
+                ser.write(b" ")
+                ser.flush()
+            if "lsh> " in buf and time.monotonic() - last_reboot_attempt > 3.0:
+                write_paced(ser, "\r\nreboot\r")
+                last_reboot_attempt = time.monotonic()
+        else:
+            if "autoboot" in buf.lower():
+                ser.write(b" ")
+                ser.flush()
+            elif time.monotonic() - last_reboot_attempt > 3.0 and "U-Boot" not in buf:
+                write_paced(ser, "\r\nreboot\r")
+                last_reboot_attempt = time.monotonic()
         time.sleep(0.05)
 
     sys.exit("[vf2run] Timed out waiting for 'StarFive #' U-Boot prompt.")
@@ -581,6 +594,9 @@ def main() -> int:
                 sys.exit("\n[vf2run] Timed out waiting for LugalOS `lsh> ` shell prompt.")
 
         if args.cmd:
+            ser.reset_input_buffer()
+            write_paced(ser, "\r")
+            read_until_any(ser, ["lsh> ", "/> "], timeout_s=2.0, echo=False)
             all_cmds = [c.strip() for group in args.cmd for c in group.split(";") if c.strip()]
             for single_cmd in all_cmds:
                 write_paced(ser, single_cmd + "\r")

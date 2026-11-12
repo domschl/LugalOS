@@ -110,20 +110,20 @@ bool spartan_sandbox_validate_path(const char *req_path, char *out_safe_path, si
         }
     }
 
-    /* If request path is "/" or empty after slash, map to "/sd0/pub/index.gmi" */
+    const char *pub_root = vfs_volume_mounted("nvme0") ? "/nvme0/pub" : SPARTAN_PUB_ROOT;
+
+    /* If request path is "/" or empty after slash, map to "<pub_root>/index.gmi" */
     if (strcmp(req_path, "/") == 0 || req_path[0] == '\0') {
-        const char *idx = SPARTAN_PUB_ROOT "/index.gmi";
-        if (strlen(idx) >= out_sz) return false;
-        strcpy(out_safe_path, idx);
-        return true;
+        int n = ksnprintf(out_safe_path, out_sz, "%s/index.gmi", pub_root);
+        return n > 0 && (size_t)n < out_sz;
     }
 
-    /* Concatenate SPARTAN_PUB_ROOT + req_path */
-    size_t root_len = strlen(SPARTAN_PUB_ROOT);
+    /* Concatenate pub_root + req_path */
+    size_t root_len = strlen(pub_root);
     size_t req_len = strlen(req_path);
     if (root_len + req_len >= out_sz) return false;
 
-    memcpy(out_safe_path, SPARTAN_PUB_ROOT, root_len);
+    memcpy(out_safe_path, pub_root, root_len);
     memcpy(out_safe_path + root_len, req_path, req_len + 1);
     return true;
 }

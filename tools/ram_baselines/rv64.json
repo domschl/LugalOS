@@ -68,7 +68,7 @@
     "drivers/virtio_net.c": 24172,
     "drivers/virtio_rng.c": 8282,
     "drivers/vtterm.c": 16,
-    "fs/9p.c": 11430,
+    "fs/9p.c": 11453,
     "fs/fat32.c": 41,
     "fs/latex_math.c": 704,
     "fs/p9_chan.c": 12388,
@@ -107,7 +107,7 @@
     "kernel/lock.c": 7427,
     "kernel/orient.c": 1308,
     "kernel/palloc.c": 37560,
-    "kernel/path.c": 92,
+    "kernel/path.c": 100,
     "kernel/power.c": 296,
     "kernel/privilege.c": 8,
     "kernel/radio_osi_test.c": 396,
@@ -176,7 +176,7 @@
   "per_subsystem": {
     "(no line info: .rodata)": 14597,
     "(no line info: .sdata)": 9,
-    "9p": 65704,
+    "9p": 65727,
     "agent": 3501,
     "app:cc": 598,
     "app:ed": 119,
@@ -199,11 +199,11 @@
     "radio": 3464,
     "selftest": 10607,
     "sensors": 20839,
-    "shell": 14369,
+    "shell": 14377,
     "storage": 20768,
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1366964,
-  "total": 7995134
+  "ram_code": 1368426,
+  "total": 7996627
 }

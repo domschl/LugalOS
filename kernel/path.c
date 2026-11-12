@@ -13,7 +13,7 @@ static int  g_count;
 /* Most volatile first: a utility written to the RAM disk shadows the one
  * shipped in flash. See the header on why that is deliberate and what it
  * implies. */
-static const char *const g_default[] = { "ram0", "sd0", "flash0" };
+static const char *const g_default[] = { "ram0", "nvme0", "sd0", "flash0" };
 
 void path_init(void) {
     g_count = 0;

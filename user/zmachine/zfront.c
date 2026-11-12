@@ -390,8 +390,9 @@ static void resolve_path(struct zfront_ctx *ctx, const char *name)
         || has_suffix_ci(name, ".z3") || has_suffix_ci(name, ".zip")) {
         ksnprintf(ctx->story_path, sizeof(ctx->story_path), "%s", name);
     } else {
+        const char *zdir = vfs_volume_mounted("nvme0") ? "/nvme0/games/" : Z_DIR_DEFAULT;
         ksnprintf(ctx->story_path, sizeof(ctx->story_path), "%s%s.z3",
-                  Z_DIR_DEFAULT, name);
+                  zdir, name);
     }
     size_t n = strlen(ctx->story_path), dot = n;
     for (size_t i = n; i > 0 && ctx->story_path[i - 1] != '/'; i--) {

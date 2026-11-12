@@ -142,7 +142,7 @@ The VisionFive 2 includes a full-size HDMI 2.0 port driven by the VeriSilicon DC
 
 ## 9. PWMDAC Audio Subsystem & 3.5mm Headphone Jack
 
-The VisionFive 2 onboard 3.5mm stereo audio jack is driven by the JH7110 internal Pulse-Width Modulation Digital-to-Analog Converter (PWMDAC) peripheral (`0x100D0000`), routed through the StarFive system I/O multiplexer (`SYS_IOMUX`):
+The VisionFive 2 onboard 3.5mm stereo audio jack is driven by the JH7110 internal Pulse-Width Modulation Digital-to-Analog Converter (PWMDAC) peripheral (`0x100B0000`), routed through the StarFive system I/O multiplexer (`SYS_IOMUX`):
 * **Pin Multiplexing & Carrier Mute:**
   * **Left Channel:** GPIO 33 mapped to GPO 28 (`PWMDAC_LEFT`).
   * **Right Channel:** GPIO 34 mapped to GPO 29 (`PWMDAC_RIGHT`).

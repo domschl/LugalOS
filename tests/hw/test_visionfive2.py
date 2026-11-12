@@ -573,7 +573,7 @@ def test_audio_pwmdac(ser: serial.Serial) -> tuple[str, bool, str]:
     out_st2 = run_cmd(ser, "audio status", timeout_s=10.0)
 
     checks = [
-        ("PWMDAC engine identified", "PWMDAC (0x100D0000)" in out_st),
+        ("PWMDAC engine identified", "PWMDAC (0x100B0000)" in out_st),
         ("3.5mm stereo jack output", "3.5mm Stereo Headphone" in out_st),
         ("Volume set to 85%", "volume: set to 85%" in out_vol and "Volume:            85%" in out_st2),
         ("Audio beep executed", "beeping 440 Hz for 200 ms" in out_beep),
