@@ -111,3 +111,13 @@ Focused, practical Git workflow built directly on FAT32 LFN (`/nvme0/`):
 - **82.3 Complete**: `net/ssh.c` + `net/ssh_cli.c` (`curve25519-sha256`, `chacha20-poly1305@openssh.com`, `ssh-ed25519` / `ecdsa-sha2-nistp256`, `known_hosts` TOFU, `ssh-keygen`, interactive PTY and `exec`).
 - **82.4 Complete**: `net/git.c` + `net/git_pack.c` + `net/git_cli.c` (`init`, `clone`, `status`, `diff`, `add`, `commit`, `log`, `checkout`, `fetch`, `pull`, `push` over Smart HTTP/HTTPS and SSH).
 - **82.5 Complete**: Host ASan/UBSan (`zlib_host`, `ssh_host`, `git_host`), QEMU (`quick.py screen`, `keyselftest`, `cryptotest`), live VisionFive 2 (`randtest`, `cryptotest`, `ssh-keygen`, `vtselftest`, `git init`), `doc/user/shell.md` + `doc/user/ssh_and_git.md` (`gendocs.py --all --check`), and `python3 tools/precommit.py` (all 18 presets, racescan, RAM baselines) passed.
+
+---
+
+## 4. Future Extensions
+
+1. **HTTPS Root CA Collection & Chain Verification**:
+   - Currently `git` over `https://` sets `.tls_insecure = true` in `net/git_cli.c` because LugalOS has no public root CA store on VFS (e.g. `/nvme0/etc/ssl/certs` or `/sd0/etc/ssl/certs`) and `net/tls.c` only validates direct leaf certificates against a single local `lugalos-ca` P-256 key (and only negotiates `ECDSA P-256` + `X25519` + `ChaCha20-Poly1305`).
+   - Adding a curated root CA bundle on `/sd0`/`/nvme0`, multi-certificate chain verification in `net/tls.c`, and (optionally) RSA-PSS/PKCS#1v1.5 verification would enable fully verified `https://` remotes without `.tls_insecure`.
+2. **`scp` Support**:
+   - Add an `scp` shell command layered on `net/ssh.c` (`exec` channel running `scp -f` / `scp -t` or SFTP subsystem) to copy files between local VFS (`/nvme0`, `/sd0`, `/ram0`) and remote SSH hosts.
