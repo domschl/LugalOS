@@ -12,6 +12,8 @@
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/audio_esp32p4.h"
 #include "drivers/dsi_esp32p4.h"
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+#include "drivers/audio_jh7110.h"
 #endif
 #if defined(CONFIG_BOARD_TAB5)
 #include "kernel/orient.h"
@@ -105,6 +107,8 @@ static void apply(const setting_def_t *d, int v) {
     if (strncmp(d->key, "display.warm", 12) == 0) paper_apply();
 #if defined(CONFIG_BOARD_ESP32P4)
     if (strcmp(d->key, "audio.volume") == 0) audio_p4_set_volume(v);
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+    if (strcmp(d->key, "audio.volume") == 0) audio_jh7110_set_volume(v);
 #endif
 #if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
     if (strcmp(d->key, "display.brightness") == 0) dsi_lcd_set_backlight((unsigned)v);

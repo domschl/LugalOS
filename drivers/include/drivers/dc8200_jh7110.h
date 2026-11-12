@@ -31,6 +31,7 @@ typedef struct {
 
 /* Bring up DC8200 display controller, VTG, and Layer 0 DMA scanout */
 int  jh7110_dc8200_init(hdmi_resolution_t res);
+int  jh7110_dc8200_set_mode(hdmi_resolution_t res);
 
 /* Start lcdterm terminal on DC8200 panel */
 int  jh7110_dc8200_term_start(void);
@@ -47,6 +48,7 @@ void jh7110_dc8200_repaint(void);
 void jh7110_dc8200_set_colours(uint16_t ink, uint16_t paper);
 void jh7110_dc8200_cmd_status(void);
 void jh7110_dc8200_cmd_test(void);
+void jh7110_dc8200_cmd_bench(void);
 
 /* Buffer accessors */
 uint16_t *jh7110_dc8200_get_front_fb(void);

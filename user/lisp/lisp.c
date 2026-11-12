@@ -4788,7 +4788,7 @@ static lisp_val_t *prim_canvas_text(lisp_val_t *args, lisp_val_t *env) {
  * element 0 (white) or anything else (black), each `scale` x `scale`
  * pixels: one request per row, the shape of a cellular automaton's
  * generation or an image's scan line. */
-#define CANVAS_ROW_MAX 1600
+#define CANVAS_ROW_MAX 4096
 static lisp_val_t *prim_canvas_row(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     uint8_t req[9 + CANVAS_ROW_MAX / 8], reply[SCREEN_REPLY_LEN];

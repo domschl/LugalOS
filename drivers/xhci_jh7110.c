@@ -180,16 +180,24 @@ static void xhci_enumerate_hub(uint8_t hub_slot, uint8_t root_port);
 static int xhci_control_transfer(uint8_t slot_id, uint8_t bmRequestType, uint8_t bRequest,
                                  uint16_t wValue, uint16_t wIndex, uint16_t wLength,
                                  void *data, bool in_direction);
+static void xhci_teardown_device(uint8_t slot_id);
+static void xhci_poll_hubs(void);
+static void xhci_handle_root_port_change(uint8_t root_port);
+static int xhci_enumerate_port(uint8_t port_num);
 
 static inline void ring_doorbell(uint32_t target, uint32_t slot) {
     REG32(g_xhci_db_base + slot * 4u) = target;
 }
 
 static void xhci_process_transfer_event(uint8_t slot_id, uint8_t dci, uint8_t cc, uint32_t residual) {
-    (void)cc;
     if (slot_id == 0 || slot_id > XHCI_MAX_SLOTS) return;
     xhci_device_t *dev = &g_devices[slot_id];
     if (!dev->present) return;
+
+    if (cc != 1u && cc != 13u) {
+        /* Transfer error or endpoint halted/disconnected (e.g. unplugged); do not re-queue */
+        return;
+    }
 
     if (slot_id == g_kbd_slot && dci == g_kbd_dci && g_kbd_online) {
         xhci_flush_l2_range((uintptr_t)g_kbd_report_buf,
@@ -1034,6 +1042,191 @@ static int xhci_enumerate_port(uint8_t port_num) {
     return xhci_setup_device(slot_id, port_num, 0, 0, speed);
 }
 
+static void xhci_teardown_device(uint8_t slot_id) {
+    if (slot_id == 0 || slot_id > XHCI_MAX_SLOTS) return;
+    xhci_device_t *dev = &g_devices[slot_id];
+    if (!dev->present) return;
+
+    /* If this device is a hub, first tear down all downstream children */
+    if (dev->is_hub) {
+        for (uint8_t s = 1; s <= XHCI_MAX_SLOTS; s++) {
+            if (g_devices[s].present && g_devices[s].parent_slot == slot_id) {
+                xhci_teardown_device(s);
+            }
+        }
+    }
+
+    /* Teardown keyboard or mouse state if this slot was hosting it */
+    if (slot_id == g_kbd_slot) {
+        g_kbd_online = false;
+        g_kbd_slot = 0;
+        g_kbd_dci = 0;
+        g_kbd_head = 0;
+        g_kbd_tail = 0;
+        console_input_present(WIN_INPUT_KEYBOARD, false);
+        printk("[xHCI] Slot %u: USB Keyboard removed\n", slot_id);
+    }
+    if (slot_id == g_mouse_slot) {
+        g_mouse_online = false;
+        g_mouse_slot = 0;
+        g_mouse_dci = 0;
+        g_mouse_pchanged = false;
+        g_mouse_pdx = g_mouse_pdy = g_mouse_pwheel = 0;
+        console_input_present(WIN_INPUT_POINTER, false);
+        printk("[xHCI] Slot %u: USB Mouse removed\n", slot_id);
+    }
+
+    /* Issue XHCI_TRB_DISABLE_SLOT to controller */
+    xhci_trb_t cmd, ev;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.control = (XHCI_TRB_DISABLE_SLOT << 10) | ((uint32_t)slot_id << 24);
+    if (xhci_submit_cmd(&cmd, &ev) != 0) {
+        printk("[xHCI] Slot %u: Disable Slot command timed out\n", slot_id);
+    }
+
+    /* Clear DCBAA entry and flush to DDR */
+    g_dcbaa[slot_id] = 0;
+    xhci_flush_l2_range((uintptr_t)&g_dcbaa[slot_id], (uintptr_t)(&g_dcbaa[slot_id] + 1));
+
+    /* Reset device context & EP0 ring */
+    memset(g_dev_ctx[slot_id], 0, sizeof(g_dev_ctx[slot_id]));
+    memset(g_ep0_ring[slot_id], 0, sizeof(g_ep0_ring[slot_id]));
+    g_ep0_cycle[slot_id] = 1;
+    g_ep0_enqueue[slot_id] = 0;
+
+    memset(dev, 0, sizeof(*dev));
+    printk("[xHCI] Slot %u: Teardown complete\n", slot_id);
+}
+
+static void xhci_handle_root_port_change(uint8_t root_port) {
+    if (root_port == 0 || root_port > g_max_ports) return;
+    uintptr_t port_reg = g_xhci_op_base + XHCI_OP_PORTSC_BASE + (root_port - 1u) * 0x10u;
+    uint32_t portsc = REG32(port_reg);
+
+    /* Clear change bits (CSC, PRC, PLC, etc.) with RW1C preserve mask */
+    REG32(port_reg) = (portsc & 0x0E000E00u) | (portsc & (XHCI_PORT_CSC | XHCI_PORT_PRC | XHCI_PORT_PLC));
+
+    bool ccs = (portsc & XHCI_PORT_CCS) != 0;
+
+    /* Find device on this root port */
+    uint8_t root_dev_slot = 0;
+    for (uint8_t s = 1; s <= XHCI_MAX_SLOTS; s++) {
+        if (g_devices[s].present && g_devices[s].root_port == root_port && g_devices[s].parent_slot == 0) {
+            root_dev_slot = s;
+            break;
+        }
+    }
+
+    if (!ccs && root_dev_slot != 0) {
+        printk("[xHCI] Root Port %u: Disconnect detected (slot %u)\n", root_port, root_dev_slot);
+        xhci_teardown_device(root_dev_slot);
+    } else if (ccs && root_dev_slot == 0) {
+        printk("[xHCI] Root Port %u: Connect detected, debouncing...\n", root_port);
+        time_delay_us(100000);
+        (void)xhci_enumerate_port(root_port);
+    }
+}
+
+static void xhci_poll_hubs(void) {
+    for (uint8_t hub_slot = 1; hub_slot <= XHCI_MAX_SLOTS; hub_slot++) {
+        if (!g_devices[hub_slot].present || !g_devices[hub_slot].is_hub) continue;
+        uint8_t num_ports = g_devices[hub_slot].hub_num_ports;
+
+        for (uint8_t p = 1; p <= num_ports; p++) {
+            uint32_t port_status = 0;
+            if (xhci_control_transfer(hub_slot, 0xA3, 0x00, 0, p, 4, &port_status, true) != 0) {
+                continue;
+            }
+
+            uint16_t status = (uint16_t)(port_status & 0xFFFF);
+            uint16_t change = (uint16_t)(port_status >> 16);
+
+            /* Clear C_PORT_OVER_CURRENT if set */
+            if (change & (1u << 3)) {
+                (void)xhci_control_transfer(hub_slot, 0x23, 0x01, 19 /* C_PORT_OVER_CURRENT */, p, 0, NULL, false);
+                (void)xhci_control_transfer(hub_slot, 0x23, 0x03, 8 /* PORT_POWER */, p, 0, NULL, false);
+            }
+
+            /* Check Connect Status Change (bit 0 of change) */
+            if (!(change & 1u)) {
+                continue;
+            }
+
+            /* Clear C_PORT_CONNECTION */
+            (void)xhci_control_transfer(hub_slot, 0x23, 0x01, 16 /* C_PORT_CONNECTION */, p, 0, NULL, false);
+
+            /* Find if a child was already attached to this hub port */
+            uint8_t child_slot = 0;
+            for (uint8_t s = 1; s <= XHCI_MAX_SLOTS; s++) {
+                if (g_devices[s].present && g_devices[s].parent_slot == hub_slot && g_devices[s].port_num == p) {
+                    child_slot = s;
+                    break;
+                }
+            }
+
+            if (child_slot != 0) {
+                printk("[xHCI] Hub Slot %u Port %u: Disconnect detected (child slot %u)\n",
+                       hub_slot, p, child_slot);
+                xhci_teardown_device(child_slot);
+            }
+
+            /* If device is now connected, enumerate it */
+            if (status & 1u) {
+                printk("[xHCI] Hub Slot %u Port %u: Connect detected, debouncing...\n", hub_slot, p);
+                time_delay_us(100000); /* 100 ms debounce delay */
+
+                /* Issue Port Reset */
+                (void)xhci_control_transfer(hub_slot, 0x23, 0x03, 4 /* PORT_RESET */, p, 0, NULL, false);
+                time_delay_us(50000); /* 50 ms reset pulse */
+
+                uint64_t t0 = time_get_us();
+                while (time_get_us() - t0 < 200000ULL) {
+                    port_status = 0;
+                    if (xhci_control_transfer(hub_slot, 0xA3, 0x00, 0, p, 4, &port_status, true) == 0) {
+                        uint16_t ws = (uint16_t)(port_status & 0xFFFF);
+                        if (!(ws & (1u << 4))) break; /* Reset finished */
+                    }
+                    time_delay_us(5000);
+                }
+
+                /* Clear C_PORT_RESET */
+                (void)xhci_control_transfer(hub_slot, 0x23, 0x01, 20 /* C_PORT_RESET */, p, 0, NULL, false);
+                time_delay_us(10000);
+
+                /* Query status again to check negotiated speed */
+                port_status = 0;
+                (void)xhci_control_transfer(hub_slot, 0xA3, 0x00, 0, p, 4, &port_status, true);
+                uint16_t ws = (uint16_t)(port_status & 0xFFFF);
+
+                uint8_t dev_speed;
+                if (ws & (1u << 9)) dev_speed = XHCI_SPEED_LOW;
+                else if (ws & (1u << 10)) dev_speed = XHCI_SPEED_HIGH;
+                else dev_speed = XHCI_SPEED_FULL;
+
+                /* Enable Slot */
+                xhci_trb_t cmd, ev;
+                memset(&cmd, 0, sizeof(cmd));
+                cmd.control = (XHCI_TRB_ENABLE_SLOT << 10);
+                if (xhci_submit_cmd(&cmd, &ev) != 0) {
+                    printk("[xHCI] Hub Slot %u Port %u: Enable Slot timed out\n", hub_slot, p);
+                    continue;
+                }
+
+                uint8_t cc = (ev.status >> 24) & 0xFFu;
+                if (cc != 1u) {
+                    printk("[xHCI] Hub Slot %u Port %u: Enable Slot cc=%u\n", hub_slot, p, cc);
+                    continue;
+                }
+
+                uint8_t new_slot = (ev.control >> 24) & 0xFFu;
+                if (new_slot == 0 || new_slot > XHCI_MAX_SLOTS) continue;
+
+                (void)xhci_setup_device(new_slot, g_devices[hub_slot].root_port, hub_slot, p, dev_speed);
+            }
+        }
+    }
+}
+
 /* Console Input Integration for physical USB Keyboard */
 static void xhci_kbd_pump(void) {
     xhci_poll();
@@ -1268,8 +1461,22 @@ void xhci_poll(void) {
     ylock_acquire(&g_xhci_lock);
     xhci_trb_t ev;
     while (xhci_wait_event(0, &ev, 0) == 0) {
-        /* Event handled and acknowledged in xhci_wait_event */
+        uint8_t type = (ev.control >> 10) & 0x3Fu;
+        if (type == XHCI_TRB_PORT_STATUS_CHANGE) {
+            uint8_t root_port = (uint8_t)((ev.parameter >> 24) & 0xFFu);
+            xhci_handle_root_port_change(root_port);
+        }
     }
+
+    /* Periodic downstream hub port monitoring for connect/disconnect.
+     * guarded by: g_xhci_lock */
+    static uint32_t s_last_hub_poll = 0;
+    uint32_t now = (uint32_t)time_get_ms();
+    if (now - s_last_hub_poll >= 150) {
+        s_last_hub_poll = now;
+        xhci_poll_hubs();
+    }
+
     ylock_release(&g_xhci_lock);
 }
 

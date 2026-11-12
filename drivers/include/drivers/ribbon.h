@@ -72,8 +72,8 @@
  * left of the pair, or the split is refused: only on screens far smaller
  * than either panel -- at 800 and 1024 the smallest share is 38. */
 #define RIBBON_TERM_MIN_COLS       (FONT_CELL_W == 16 ? 12u : 20u)
-#define RIBBON_COLS_FULL(w)        ((uint8_t)((unsigned)(w) / (unsigned)FONT_CELL_W - 2u))
-#define RIBBON_COLS_PAIR(w)        ((unsigned)(w) / (unsigned)FONT_CELL_W - 4u)
+#define RIBBON_COLS_FULL(w)        (((unsigned)(w) / (unsigned)FONT_CELL_W - 2u > 240u) ? 240u : (uint8_t)((unsigned)(w) / (unsigned)FONT_CELL_W - 2u))
+#define RIBBON_COLS_PAIR(w)        (((unsigned)(w) / (unsigned)FONT_CELL_W - 4u > 238u) ? 238u : ((unsigned)(w) / (unsigned)FONT_CELL_W - 4u))
 #define RIBBON_COLS_TWO_THIRDS(w)  ((uint8_t)(2u * RIBBON_COLS_PAIR(w) / 3u))
 #define RIBBON_COLS_HALF(w)        ((uint8_t)(RIBBON_COLS_PAIR(w) / 2u))
 #define RIBBON_COLS_TWO_FIFTHS(w)  ((uint8_t)(2u * RIBBON_COLS_PAIR(w) / 5u))

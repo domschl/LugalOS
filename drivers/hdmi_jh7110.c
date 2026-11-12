@@ -95,6 +95,84 @@ static const hdmi_phy_reg_t k_pll_cfg_720p[] = {
     {0x1a0, 0x00},
 };
 
+/* PLL configuration for 1440p60 (241.5 MHz pixel clock) */
+static const hdmi_phy_reg_t k_pll_cfg_1440p[] = {
+    {0x1a0, 0x01},
+    {0x1aa, 0x0f},
+    {0x1a1, 0x01},
+    {0x1a2, 0xf0},
+    {0x1a3, 0xa1},
+    {0x1a4, 0x15},
+    {0x1a5, 0x04},
+    {0x1a6, 0x42},
+    {0x1ab, 0x01},
+    {0x1ac, 0x14},
+    {0x1ad, 0x01},
+    {0x1aa, 0x0e},
+    {0x1a0, 0x00},
+};
+
+/* PLL configuration for 4K30 (3840x2160 @ 30 Hz, 297.0 MHz pixel clock) */
+static const hdmi_phy_reg_t k_pll_cfg_4k30[] = {
+    {0x1a0, 0x01},
+    {0x1aa, 0x0f},
+    {0x1a1, 0x01},
+    {0x1a2, 0xf0},
+    {0x1a3, 0x63},
+    {0x1a4, 0x10},
+    {0x1a5, 0x41},
+    {0x1a6, 0x21},
+    {0x1ab, 0x04},
+    {0x1ac, 0x14},
+    {0x1ad, 0x00},
+    {0x1aa, 0x02},
+    {0x1a0, 0x00},
+};
+
+typedef struct {
+    uint16_t h_active;
+    uint16_t h_sync_start;
+    uint16_t h_sync_end;
+    uint16_t h_total;
+    uint16_t v_active;
+    uint16_t v_sync_start;
+    uint16_t v_sync_end;
+    uint16_t v_total;
+    uint32_t pix_clk_khz;
+    uint8_t  pix_div;
+    uint8_t  vic;
+    const char *name;
+    const hdmi_phy_reg_t *pll_cfg;
+    size_t pll_cfg_count;
+} hdmi_mode_desc_t;
+
+static const hdmi_mode_desc_t k_hdmi_modes[] = {
+    [HDMI_RES_1280_720P_60HZ] = {
+        .h_active = 1280, .h_sync_start = 1390, .h_sync_end = 1430, .h_total = 1650,
+        .v_active = 720,  .v_sync_start = 725,  .v_sync_end = 730,  .v_total = 750,
+        .pix_clk_khz = 74250, .pix_div = 16, .vic = 4, .name = "720p60",
+        .pll_cfg = k_pll_cfg_720p, .pll_cfg_count = sizeof(k_pll_cfg_720p)/sizeof(k_pll_cfg_720p[0])
+    },
+    [HDMI_RES_1920_1080P_60HZ] = {
+        .h_active = 1920, .h_sync_start = 2008, .h_sync_end = 2052, .h_total = 2200,
+        .v_active = 1080, .v_sync_start = 1084, .v_sync_end = 1089, .v_total = 1125,
+        .pix_clk_khz = 148500, .pix_div = 8, .vic = 16, .name = "1080p60",
+        .pll_cfg = k_pll_cfg_1080p, .pll_cfg_count = sizeof(k_pll_cfg_1080p)/sizeof(k_pll_cfg_1080p[0])
+    },
+    [HDMI_RES_2560_1440P_60HZ] = {
+        .h_active = 2560, .h_sync_start = 2608, .h_sync_end = 2640, .h_total = 2720,
+        .v_active = 1440, .v_sync_start = 1443, .v_sync_end = 1448, .v_total = 1481,
+        .pix_clk_khz = 241500, .pix_div = 5, .vic = 0, .name = "1440p60",
+        .pll_cfg = k_pll_cfg_1440p, .pll_cfg_count = sizeof(k_pll_cfg_1440p)/sizeof(k_pll_cfg_1440p[0])
+    },
+    [HDMI_RES_3840_2160P_30HZ] = {
+        .h_active = 3840, .h_sync_start = 4016, .h_sync_end = 4104, .h_total = 4400,
+        .v_active = 2160, .v_sync_start = 2168, .v_sync_end = 2178, .v_total = 2250,
+        .pix_clk_khz = 297000, .pix_div = 4, .vic = 95, .name = "4K30",
+        .pll_cfg = k_pll_cfg_4k30, .pll_cfg_count = sizeof(k_pll_cfg_4k30)/sizeof(k_pll_cfg_4k30[0])
+    },
+};
+
 /* single task: driver initialization and shell diagnostics; guarded by: lockless read after init */
 static hdmi_monitor_info_t g_hdmi_info;
 static bool g_hdmi_initialized = false;
@@ -328,7 +406,9 @@ static void jh7110_hdmi_parse_edid(const uint8_t *edid, hdmi_monitor_info_t *inf
         info->dpi = 96; /* standard desktop display default */
     }
 
-    /* Target resolution selection: 1080p if native is >= 1920, else 720p */
+    /* Target resolution selection based on native DTD.
+     * Default to 1080p60 for optimal 60 Hz desktop framerate, crisp 238-column UI,
+     * and smooth graphics. High-DPI modes (1440p, 4K30) can be selected via `display mode`. */
     if (info->active_w >= 1920 && info->active_h >= 1080) {
         info->target_res = HDMI_RES_1920_1080P_60HZ;
     } else {
@@ -338,6 +418,11 @@ static void jh7110_hdmi_parse_edid(const uint8_t *edid, hdmi_monitor_info_t *inf
 
 /* Configure Innosilicon HDMI TX PHY and serializers */
 static int jh7110_hdmi_configure_phy(hdmi_resolution_t res) {
+    if ((unsigned)res >= sizeof(k_hdmi_modes) / sizeof(k_hdmi_modes[0])) {
+        res = HDMI_RES_1920_1080P_60HZ;
+    }
+    const hdmi_mode_desc_t *m = &k_hdmi_modes[res];
+
     /* 1. Detect sequence */
     uint8_t val = hdmi_readb(HDMI_PHY_1B0);
     val |= 0x04u;
@@ -348,13 +433,8 @@ static int jh7110_hdmi_configure_phy(hdmi_resolution_t res) {
     hdmi_writeb(HDMI_SYS_CTRL, 0x63u);
 
     /* 3. Program PLL registers */
-    const hdmi_phy_reg_t *cfg = (res == HDMI_RES_1920_1080P_60HZ) ? k_pll_cfg_1080p : k_pll_cfg_720p;
-    size_t count = (res == HDMI_RES_1920_1080P_60HZ)
-        ? (sizeof(k_pll_cfg_1080p) / sizeof(k_pll_cfg_1080p[0]))
-        : (sizeof(k_pll_cfg_720p) / sizeof(k_pll_cfg_720p[0]));
-
-    for (size_t i = 0; i < count; i++) {
-        hdmi_writeb(cfg[i].reg, cfg[i].val);
+    for (size_t i = 0; i < m->pll_cfg_count; i++) {
+        hdmi_writeb(m->pll_cfg[i].reg, m->pll_cfg[i].val);
     }
 
     /* 4. Turn on pre-PLL and post-PLL */
@@ -386,12 +466,12 @@ static int jh7110_hdmi_configure_phy(hdmi_resolution_t res) {
     hdmi_writeb(HDMI_PHY_1B4, 0x07u);
     hdmi_writeb(HDMI_PHY_1BE, 0x70u);
 
-    /* Eye diagram improvement (VIC 16 / 31) */
+    /* Eye diagram improvement */
     hdmi_writeb(0x1BFu, 0x02u);
     hdmi_writeb(0x1C0u, 0x22u);
 
-    /* Set DC8200 pixel clock divider: 1188 MHz / 8 = 148.5 MHz for 1080p, / 16 for 720p */
-    REG32(JH7110_VOUTCRG_BASE + 0x04u) = (res == HDMI_RES_1920_1080P_60HZ) ? 8u : 16u;
+    /* Set DC8200 pixel clock divider: 1188 MHz / pix_div */
+    REG32(JH7110_VOUTCRG_BASE + 0x04u) = m->pix_div;
 
     /* Video input and color space control:
      * 0x01: DE_EXTERNAL (bit 0 = 1)
@@ -409,40 +489,29 @@ static int jh7110_hdmi_configure_phy(hdmi_resolution_t res) {
     hdmi_writeb(0x52u, 0x00u);
 
     /* 7. Configure external video receiver timing (accepts parallel stream from DC8200) */
-    if (res == HDMI_RES_1920_1080P_60HZ) {
-        hdmi_writeb(0x08u, 0x0Du); /* EXTERNAL_VIDEO(1) | HSYNC_POS | VSYNC_POS */
-        hdmi_writeb(0x09u, 0x98u); /* HTOTAL_L (2200) */
-        hdmi_writeb(0x0Au, 0x08u); /* HTOTAL_H */
-        hdmi_writeb(0x0Bu, 0x18u); /* HBLANK_L (280) */
-        hdmi_writeb(0x0Cu, 0x01u); /* HBLANK_H */
-        hdmi_writeb(0x0Du, 0xC0u); /* HDELAY_L (192) */
-        hdmi_writeb(0x0Eu, 0x00u); /* HDELAY_H */
-        hdmi_writeb(0x0Fu, 0x2Cu); /* HDURATION_L (44) */
-        hdmi_writeb(0x10u, 0x00u); /* HDURATION_H */
-        hdmi_writeb(0x11u, 0x65u); /* VTOTAL_L (1125) */
-        hdmi_writeb(0x12u, 0x04u); /* VTOTAL_H */
-        hdmi_writeb(0x13u, 0x2Du); /* VBLANK (45) */
-        hdmi_writeb(0x14u, 0x29u); /* VDELAY (41) */
-        hdmi_writeb(0x15u, 0x05u); /* VDURATION (5) */
-    } else {
-        hdmi_writeb(0x08u, 0x0Du); /* EXTERNAL_VIDEO(1) | HSYNC_POS | VSYNC_POS */
-        hdmi_writeb(0x09u, 0x72u); /* HTOTAL_L (1650) */
-        hdmi_writeb(0x0Au, 0x06u); /* HTOTAL_H */
-        hdmi_writeb(0x0Bu, 0x72u); /* HBLANK_L (370) */
-        hdmi_writeb(0x0Cu, 0x01u); /* HBLANK_H */
-        hdmi_writeb(0x0Du, 0x04u); /* HDELAY_L (260) */
-        hdmi_writeb(0x0Eu, 0x01u); /* HDELAY_H */
-        hdmi_writeb(0x0Fu, 0x28u); /* HDURATION_L (40) */
-        hdmi_writeb(0x10u, 0x00u); /* HDURATION_H */
-        hdmi_writeb(0x11u, 0xEEu); /* VTOTAL_L (750) */
-        hdmi_writeb(0x12u, 0x02u); /* VTOTAL_H */
-        hdmi_writeb(0x13u, 0x1Eu); /* VBLANK (30) */
-        hdmi_writeb(0x14u, 0x19u); /* VDELAY (25) */
-        hdmi_writeb(0x15u, 0x05u); /* VDURATION (5) */
-    }
+    hdmi_writeb(0x08u, 0x0Du); /* EXTERNAL_VIDEO(1) | HSYNC_POS | VSYNC_POS */
+    hdmi_writeb(0x09u, (uint8_t)(m->h_total & 0xFFu));
+    hdmi_writeb(0x0Au, (uint8_t)((m->h_total >> 8) & 0xFFu));
+    uint16_t h_blank = m->h_total - m->h_active;
+    hdmi_writeb(0x0Bu, (uint8_t)(h_blank & 0xFFu));
+    hdmi_writeb(0x0Cu, (uint8_t)((h_blank >> 8) & 0xFFu));
+    uint16_t h_delay = m->h_total - m->h_sync_start;
+    hdmi_writeb(0x0Du, (uint8_t)(h_delay & 0xFFu));
+    hdmi_writeb(0x0Eu, (uint8_t)((h_delay >> 8) & 0xFFu));
+    uint16_t h_duration = m->h_sync_end - m->h_sync_start;
+    hdmi_writeb(0x0Fu, (uint8_t)(h_duration & 0xFFu));
+    hdmi_writeb(0x10u, (uint8_t)((h_duration >> 8) & 0xFFu));
+
+    hdmi_writeb(0x11u, (uint8_t)(m->v_total & 0xFFu));
+    hdmi_writeb(0x12u, (uint8_t)((m->v_total >> 8) & 0xFFu));
+    uint16_t v_blank = m->v_total - m->v_active;
+    hdmi_writeb(0x13u, (uint8_t)(v_blank & 0xFFu));
+    uint16_t v_delay = m->v_total - m->v_sync_start;
+    hdmi_writeb(0x14u, (uint8_t)(v_delay & 0xFFu));
+    uint16_t v_duration = m->v_sync_end - m->v_sync_start;
+    hdmi_writeb(0x15u, (uint8_t)(v_duration & 0xFFu));
 
     /* 8. Configure video format (VIC) */
-    uint8_t vic = (res == HDMI_RES_1920_1080P_60HZ) ? 16u : 4u; /* CEA-861 VIC 16 = 1080p60, 4 = 720p60 */
     hdmi_writeb(HDMI_CTRL_9F, 0x06u);
     hdmi_writeb(HDMI_CTRL_A0, 0x82u);
     hdmi_writeb(HDMI_CTRL_A2, 0x0Du);
@@ -450,7 +519,7 @@ static int jh7110_hdmi_configure_phy(hdmi_resolution_t res) {
     hdmi_writeb(HDMI_CTRL_A4, 0x00u);
     hdmi_writeb(HDMI_CTRL_A5, 0x08u);
     hdmi_writeb(HDMI_CTRL_A6, 0x70u);
-    hdmi_writeb(HDMI_CTRL_A7, vic);
+    hdmi_writeb(HDMI_CTRL_A7, m->vic);
     hdmi_writeb(HDMI_CTRL_C9, 0x10u); /* Normal mode */
 
     /* 9. Power on PHY */
@@ -517,7 +586,7 @@ int jh7110_hdmi_init(void) {
                    g_hdmi_info.active_w, g_hdmi_info.active_h,
                    g_hdmi_info.pixel_clock_khz / 1000u,
                    g_hdmi_info.dpi);
-            if (g_hdmi_info.target_res == HDMI_RES_1280_720P_60HZ) {
+            if (g_hdmi_info.target_res != HDMI_RES_1920_1080P_60HZ) {
                 (void)jh7110_hdmi_configure_phy(g_hdmi_info.target_res);
             }
         } else {
@@ -527,9 +596,23 @@ int jh7110_hdmi_init(void) {
 
     g_hdmi_initialized = true;
     printk("[HDMI] Innosilicon HDMI 2.0 TX Online (%s, TMDS PLL locked)\n",
-           (g_hdmi_info.target_res == HDMI_RES_1920_1080P_60HZ) ? "1080p60" : "720p60");
+           jh7110_hdmi_mode_name(g_hdmi_info.target_res));
 
     return 0;
+}
+
+int jh7110_hdmi_set_mode(hdmi_resolution_t res) {
+    if ((unsigned)res >= sizeof(k_hdmi_modes) / sizeof(k_hdmi_modes[0])) return -1;
+    g_hdmi_info.target_res = res;
+    g_hdmi_info.active_w = k_hdmi_modes[res].h_active;
+    g_hdmi_info.active_h = k_hdmi_modes[res].v_active;
+    g_hdmi_info.pixel_clock_khz = k_hdmi_modes[res].pix_clk_khz;
+    return jh7110_hdmi_configure_phy(res);
+}
+
+const char *jh7110_hdmi_mode_name(hdmi_resolution_t res) {
+    if ((unsigned)res >= sizeof(k_hdmi_modes) / sizeof(k_hdmi_modes[0])) return "unknown";
+    return k_hdmi_modes[res].name;
 }
 
 bool jh7110_hdmi_is_connected(void) {
@@ -548,9 +631,10 @@ void jh7110_hdmi_cmd_status(void) {
     cprintf("  Driver State:     %s\n", g_hdmi_initialized ? "ONLINE" : "OFFLINE");
     cprintf("  Hot Plug Detect:  %s (status=0x%02x, gpio15=%u)\n",
             ((st & HDMI_STATUS_HOTPLUG) || gpio_hpd) ? "CONNECTED" : "DISCONNECTED", st, gpio_hpd ? 1 : 0);
-    cprintf("  Resolution:       %ux%u @ 60 Hz (%s)\n",
+    cprintf("  Resolution:       %ux%u @ %u Hz (%s)\n",
             g_hdmi_info.active_w, g_hdmi_info.active_h,
-            (g_hdmi_info.target_res == HDMI_RES_1920_1080P_60HZ) ? "1080p60" : "720p60");
+            (g_hdmi_info.target_res == HDMI_RES_3840_2160P_30HZ) ? 30 : 60,
+            jh7110_hdmi_mode_name(g_hdmi_info.target_res));
     cprintf("  Pixel Clock:      %u.%03u MHz\n",
             g_hdmi_info.pixel_clock_khz / 1000u, g_hdmi_info.pixel_clock_khz % 1000u);
     cprintf("  Monitor Size:     %u cm x %u cm (%u DPI)\n",

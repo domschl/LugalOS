@@ -2,10 +2,10 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 125427712,
-  "heap_pages": 30622,
+  "heap_bytes": 125423616,
+  "heap_pages": 30621,
   "per_file": {
-    "(no line info: .rodata)": 9421,
+    "(no line info: .rodata)": 9451,
     "(no line info: .sdata)": 9,
     "/build/riscv64-elf-gcc/src/gcc-16.2.0/libgcc/libgcc2.c": 256,
     "arch/riscv/common/elf.c": 1484,
@@ -54,7 +54,7 @@
     "drivers/tmp117.c": 180,
     "drivers/tsl2561.c": 223,
     "drivers/tsl2591.c": 100,
-    "drivers/uart_16550.c": 899,
+    "drivers/uart_16550.c": 1931,
     "drivers/uart_net.c": 14740,
     "drivers/ugui.c": 40,
     "drivers/usb_crc.c": 16,
@@ -129,7 +129,7 @@
     "kernel/x509.c": 38,
     "kernel/zonetest.c": 69,
     "net/arp.c": 208,
-    "net/dhcp.c": 51,
+    "net/dhcp.c": 61,
     "net/dns.c": 349,
     "net/httpd.c": 55,
     "net/llm.c": 261,
@@ -172,7 +172,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 9421,
+    "(no line info: .rodata)": 9451,
     "(no line info: .sdata)": 9,
     "/build/riscv64-elf-gcc/src/gcc-16.2.0/libgcc/libgcc2.c": 256,
     "9p": 64084,
@@ -185,7 +185,7 @@
     "clock-app": 484,
     "crypto": 1042,
     "display": 179594,
-    "drivers": 124271,
+    "drivers": 125303,
     "fs": 457,
     "httpd": 172,
     "identity": 140,
@@ -194,7 +194,7 @@
     "llp": 4144,
     "log": 8322,
     "mqtt": 4310,
-    "net": 25814,
+    "net": 25824,
     "radio": 3104,
     "selftest": 2487,
     "sensors": 19483,
@@ -203,6 +203,6 @@
     "usb": 902,
     "vfs": 3894
   },
-  "ram_code": 1399098,
-  "total": 6641874
+  "ram_code": 1400908,
+  "total": 6644756
 }

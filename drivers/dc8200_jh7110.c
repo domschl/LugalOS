@@ -91,8 +91,6 @@ static const int16_t k_rgb2yuv[12] = {
     64, 512, 512
 };
 
-/* Uncached alias offset in Sv39 paging: 0x400000000UL */
-#define UNCACHED_DRAM_OFFSET 0x400000000UL
 
 /* single task: driver initialization and flip engine; guarded by: g_dc_lock */
 static dc8200_state_t g_state;
@@ -115,7 +113,11 @@ static volatile bool g_cursor_moved;
 static void dc8200_pointer(void) {
     g_cursor_moved = true;
 }
+/* guarded by: g_dc_lock */
 static bool g_force[2] = { true, true };
+/* Dirty row tracking for coherent L2 cache line flushes to DRAM. guarded by: g_dc_lock */
+static unsigned g_dirty_y0[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
+static unsigned g_dirty_y1[2] = { 0, 0 };
 
 static inline void dc_write(uint32_t offset, uint32_t val) {
     REG32(DC8200_BASE_ADDR + offset) = val;
@@ -131,10 +133,6 @@ static inline void dc_set_clear(uint32_t offset, uint32_t set_bits, uint32_t clr
     dc_write(offset, val);
 }
 
-static void *pa_to_uncached(uint32_t pa) {
-    return (void *)(uintptr_t)(UNCACHED_DRAM_OFFSET + (uintptr_t)pa);
-}
-
 /* The pair the LUT maps to (drivers/paper.h). guarded by: g_dc_lock */
 static uint16_t g_fg = 0x0000, g_bg = 0xFFFF;
 
@@ -148,6 +146,30 @@ static void dc8200_build_lut(uint16_t fg, uint16_t bg) {
     }
 }
 
+static void dc8200_calc_timings(hdmi_resolution_t res,
+                                uint16_t *out_ha, uint16_t *out_ht, uint16_t *out_hss, uint16_t *out_hse,
+                                uint16_t *out_va, uint16_t *out_vt, uint16_t *out_vss, uint16_t *out_vse) {
+    switch (res) {
+    case HDMI_RES_1280_720P_60HZ:
+        *out_ha = 1280; *out_ht = 1650; *out_hss = 1390; *out_hse = 1430;
+        *out_va = 720;  *out_vt = 750;  *out_vss = 725;  *out_vse = 730;
+        break;
+    case HDMI_RES_2560_1440P_60HZ:
+        *out_ha = 2560; *out_ht = 2720; *out_hss = 2608; *out_hse = 2640;
+        *out_va = 1440; *out_vt = 1481; *out_vss = 1443; *out_vse = 1448;
+        break;
+    case HDMI_RES_3840_2160P_30HZ:
+        *out_ha = 3840; *out_ht = 4400; *out_hss = 4016; *out_hse = 4104;
+        *out_va = 2160; *out_vt = 2250; *out_vss = 2168; *out_vse = 2178;
+        break;
+    case HDMI_RES_1920_1080P_60HZ:
+    default:
+        *out_ha = 1920; *out_ht = 2200; *out_hss = 2008; *out_hse = 2052;
+        *out_va = 1080; *out_vt = 1125; *out_vss = 1084; *out_vse = 1089;
+        break;
+    }
+}
+
 int jh7110_dc8200_init(hdmi_resolution_t res) {
     if (g_state.initialized) return 0;
 
@@ -157,14 +179,14 @@ int jh7110_dc8200_init(hdmi_resolution_t res) {
     g_state.revision = dc_read(DC_HW_REVISION);
     g_state.chip_cid = dc_read(DC_HW_CHIP_CID);
 
-    /* 2. Determine display resolution */
-    if (res == HDMI_RES_1280_720P_60HZ) {
-        g_state.width = 1280;
-        g_state.height = 720;
-    } else {
-        g_state.width = 1920;
-        g_state.height = 1080;
-    }
+    /* 2. Determine display resolution and timing */
+    uint16_t h_active, h_total, h_sync_start, h_sync_end;
+    uint16_t v_active, v_total, v_sync_start, v_sync_end;
+    dc8200_calc_timings(res, &h_active, &h_total, &h_sync_start, &h_sync_end,
+                             &v_active, &v_total, &v_sync_start, &v_sync_end);
+
+    g_state.width = h_active;
+    g_state.height = v_active;
     g_state.stride_bytes = (uint16_t)(g_state.width * 2u); /* RGB565 */
 
     /* 3. Allocate double-buffered scanout memory in DRAM */
@@ -182,17 +204,17 @@ int jh7110_dc8200_init(hdmi_resolution_t res) {
     g_state.back_fb_pa = (uint32_t)(uintptr_t)p2;
     g_state.front_idx = 0;
     g_state.back_idx = 1;
-    g_state.front_fb = (uint16_t *)pa_to_uncached(g_state.front_fb_pa);
-    g_state.back_fb = (uint16_t *)pa_to_uncached(g_state.back_fb_pa);
+    g_state.front_fb = (uint16_t *)(uintptr_t)g_state.front_fb_pa;
+    g_state.back_fb = (uint16_t *)(uintptr_t)g_state.back_fb_pa;
 
-    /* Drop all L1/L2 cache lines populated during palloc's zone_zero so stale
-     * dirty zeroes can never be evicted to overwrite DDR scanout buffers. */
+    /* Clear both framebuffers to clean white background and flush to DDR */
+    memset(g_state.front_fb, 0xFF, fb_bytes);
+    memset(g_state.back_fb, 0xFF, fb_bytes);
     jh7110_flush_l2_range(g_state.front_fb_pa, g_state.front_fb_pa + fb_bytes);
     jh7110_flush_l2_range(g_state.back_fb_pa, g_state.back_fb_pa + fb_bytes);
 
-    /* Clear both framebuffers to clean white background */
-    memset(g_state.front_fb, 0xFF, fb_bytes);
-    memset(g_state.back_fb, 0xFF, fb_bytes);
+    g_dirty_y0[0] = 0; g_dirty_y1[0] = g_state.height;
+    g_dirty_y0[1] = 0; g_dirty_y1[1] = g_state.height;
 
     /* 4. Load filter coefficients and color conversion tables */
     dc_write(DC_FRAMEBUFFER_SCALE_CONFIG, 0x33u);
@@ -224,17 +246,6 @@ int jh7110_dc8200_init(hdmi_resolution_t res) {
     dc_write(DC_DISPLAY_RGBTOYUV_COEFD2, (uint32_t)k_rgb2yuv[11]);
 
     /* 5. Program VTG video timing */
-    uint16_t h_active, h_total, h_sync_start, h_sync_end;
-    uint16_t v_active, v_total, v_sync_start, v_sync_end;
-
-    if (res == HDMI_RES_1280_720P_60HZ) {
-        h_active = 1280; h_total = 1650; h_sync_start = 1390; h_sync_end = 1430;
-        v_active = 720;  v_total = 750;  v_sync_start = 725;  v_sync_end = 730;
-    } else {
-        h_active = 1920; h_total = 2200; h_sync_start = 2008; h_sync_end = 2052;
-        v_active = 1080; v_total = 1125; v_sync_start = 1084; v_sync_end = 1089;
-    }
-
     dc_write(DC_DISPLAY_H, (uint32_t)h_active | ((uint32_t)h_total << 16));
     dc_write(DC_DISPLAY_H_SYNC, (uint32_t)h_sync_start | ((uint32_t)h_sync_end << 15) | (1u << 30));
     dc_write(DC_DISPLAY_V, (uint32_t)v_active | ((uint32_t)v_total << 16));
@@ -335,6 +346,35 @@ void jh7110_dc8200_flip(void) {
     /* Render mouse cursor onto back buffer before flip */
     cursor_render(g_state.back_fb, g_state.width, g_state.height);
 
+    uint8_t b_idx = g_state.back_idx;
+
+    /* Include mouse cursor row region in dirty cache lines */
+    int cx = 0, cy = 0;
+    if (console_pointer_shown(&cx, &cy)) {
+        int cy0 = cy < 0 ? 0 : cy;
+        int cy1 = cy + 16 > (int)g_state.height ? (int)g_state.height : cy + 16;
+        if ((unsigned)cy0 < g_dirty_y0[b_idx]) g_dirty_y0[b_idx] = (unsigned)cy0;
+        if ((unsigned)cy1 > g_dirty_y1[b_idx]) g_dirty_y1[b_idx] = (unsigned)cy1;
+    }
+    /* guarded by: g_dc_lock */
+    static int s_prev_cy[2] = { -1, -1 };
+    if (s_prev_cy[b_idx] >= 0) {
+        int cy0 = s_prev_cy[b_idx] < 0 ? 0 : s_prev_cy[b_idx];
+        int cy1 = s_prev_cy[b_idx] + 16 > (int)g_state.height ? (int)g_state.height : s_prev_cy[b_idx] + 16;
+        if ((unsigned)cy0 < g_dirty_y0[b_idx]) g_dirty_y0[b_idx] = (unsigned)cy0;
+        if ((unsigned)cy1 > g_dirty_y1[b_idx]) g_dirty_y1[b_idx] = (unsigned)cy1;
+    }
+    s_prev_cy[b_idx] = console_pointer_shown(&cx, &cy) ? cy : -1;
+
+    /* Flush modified lines from SiFive L2 cache controller to DDR for DC8200 DMA scanout */
+    if (g_dirty_y0[b_idx] < g_dirty_y1[b_idx]) {
+        uintptr_t flush_start = g_state.back_fb_pa + (uintptr_t)g_dirty_y0[b_idx] * g_state.stride_bytes;
+        uintptr_t flush_end   = g_state.back_fb_pa + (uintptr_t)g_dirty_y1[b_idx] * g_state.stride_bytes;
+        jh7110_flush_l2_range(flush_start, flush_end);
+        g_dirty_y0[b_idx] = 0xFFFFFFFFu;
+        g_dirty_y1[b_idx] = 0;
+    }
+
     /* Hardware shadow registers latch the new address at VBLANK.
      * Follow Linux dc_hw_enable_shadow_register() to latch smoothly: */
     dc_set_clear(DC_FRAMEBUFFER_CONFIG_EX, 0, (1u << 12));
@@ -365,6 +405,11 @@ void jh7110_dc8200_flip(void) {
 
 void jh7110_dc8200_test_pattern(void) {
     if (!g_state.initialized) return;
+
+    ylock_acquire(&g_dc_lock);
+    g_dirty_y0[g_state.back_idx] = 0;
+    g_dirty_y1[g_state.back_idx] = g_state.height;
+    ylock_release(&g_dc_lock);
 
     /* 8 standard SMPTE color bars in RGB565 */
     static const uint16_t k_colors[8] = {
@@ -440,6 +485,11 @@ static void jh7110_dc8200_flush(unsigned y0, unsigned y1) {
     g_force[b_idx] = false;
     bool dirty = false;
 
+    if (force) {
+        g_dirty_y0[b_idx] = 0;
+        g_dirty_y1[b_idx] = g_state.height;
+    }
+
     for (unsigned y = y0; y < y1; y++) {
         const uint8_t *src = &g_t1[y * bytes_per_row];
         uint8_t *sh = &shadow[y * bytes_per_row];
@@ -448,6 +498,8 @@ static void jh7110_dc8200_flush(unsigned y0, unsigned y1) {
         if (!force && memcmp(src, sh, bytes_per_row) == 0) continue;
         memcpy(sh, src, bytes_per_row);
         dirty = true;
+        if (y < g_dirty_y0[b_idx]) g_dirty_y0[b_idx] = y;
+        if (y + 1 > g_dirty_y1[b_idx]) g_dirty_y1[b_idx] = y + 1;
 
         uint16_t *dst_b = &back[y * g_state.width];
         for (unsigned b = 0; b < bytes_per_row; b++) {
@@ -540,11 +592,11 @@ int jh7110_dc8200_term_start(void) {
 
     /* Synchronize both scanout buffers to identical initial clean state */
     g_state.back_idx = 0;
-    g_state.back_fb = (uint16_t *)pa_to_uncached(g_state.front_fb_pa);
+    g_state.back_fb = (uint16_t *)(uintptr_t)g_state.front_fb_pa;
     jh7110_dc8200_flush(0, g_state.height);
 
     g_state.back_idx = 1;
-    g_state.back_fb = (uint16_t *)pa_to_uncached(g_state.back_fb_pa);
+    g_state.back_fb = (uint16_t *)(uintptr_t)g_state.back_fb_pa;
     jh7110_dc8200_flush(0, g_state.height);
 
     printk("[DC8200] Workstation Desktop Online: %ux%u on HDMI\n", g_state.width, g_state.height);
@@ -611,6 +663,101 @@ const dc8200_state_t *jh7110_dc8200_get_state(void) {
     return &g_state;
 }
 
+int jh7110_dc8200_set_mode(hdmi_resolution_t res) {
+    if (!g_state.initialized) return -1;
+    ylock_acquire(&g_dc_lock);
+
+    /* 1. Stop DC8200 panel */
+    dc_write(DC_DISPLAY_PANEL_START, 0x00000000u);
+    g_state.panel_started = false;
+
+    /* 2. Configure HDMI TX for new mode */
+    if (jh7110_hdmi_set_mode(res) != 0) {
+        dc_write(DC_DISPLAY_PANEL_START, 0x00000001u);
+        g_state.panel_started = true;
+        ylock_release(&g_dc_lock);
+        return -1;
+    }
+
+    /* 3. Determine new dimensions and timing */
+    uint16_t h_active, h_total, h_sync_start, h_sync_end;
+    uint16_t v_active, v_total, v_sync_start, v_sync_end;
+    dc8200_calc_timings(res, &h_active, &h_total, &h_sync_start, &h_sync_end,
+                        &v_active, &v_total, &v_sync_start, &v_sync_end);
+
+    g_state.width = h_active;
+    g_state.height = v_active;
+    g_state.stride_bytes = (uint16_t)(g_state.width * 2u);
+
+    /* 4. Allocate new scanout memory */
+    uint32_t fb_bytes = (uint32_t)g_state.stride_bytes * g_state.height;
+    uint32_t pages = (fb_bytes + 4095u) / 4096u;
+    void *p1 = palloc_pages_bulk(pages);
+    void *p2 = palloc_pages_bulk(pages);
+    if (!p1 || !p2) {
+        printk("[DC8200] Failed to allocate bulk pages for mode change\n");
+        ylock_release(&g_dc_lock);
+        return -1;
+    }
+    g_state.front_fb_pa = (uint32_t)(uintptr_t)p1;
+    g_state.back_fb_pa = (uint32_t)(uintptr_t)p2;
+    g_state.front_idx = 0;
+    g_state.back_idx = 1;
+    g_state.front_fb = (uint16_t *)(uintptr_t)g_state.front_fb_pa;
+    g_state.back_fb = (uint16_t *)(uintptr_t)g_state.back_fb_pa;
+
+    memset(g_state.front_fb, 0xFF, fb_bytes);
+    memset(g_state.back_fb, 0xFF, fb_bytes);
+    jh7110_flush_l2_range(g_state.front_fb_pa, g_state.front_fb_pa + fb_bytes);
+    jh7110_flush_l2_range(g_state.back_fb_pa, g_state.back_fb_pa + fb_bytes);
+
+    /* 5. Reconfigure VTG and layer */
+    dc_write(DC_DISPLAY_H, (uint32_t)h_active | ((uint32_t)h_total << 16));
+    dc_write(DC_DISPLAY_H_SYNC, (uint32_t)h_sync_start | ((uint32_t)h_sync_end << 15) | (1u << 30));
+    dc_write(DC_DISPLAY_V, (uint32_t)v_active | ((uint32_t)v_total << 16));
+    dc_write(DC_DISPLAY_V_SYNC, (uint32_t)v_sync_start | ((uint32_t)v_sync_end << 15) | (1u << 30));
+
+    dc_write(DC_FRAMEBUFFER_ADDRESS, g_state.front_fb_pa);
+    dc_write(DC_FRAMEBUFFER_STRIDE, g_state.stride_bytes);
+    dc_write(DC_FRAMEBUFFER_SIZE, (uint32_t)g_state.width | ((uint32_t)g_state.height << 15));
+    dc_write(DC_FRAMEBUFFER_TOP_LEFT, 0u);
+    dc_write(DC_FRAMEBUFFER_BOTTOM_RIGHT, (uint32_t)g_state.width | ((uint32_t)g_state.height << 15));
+
+    /* 6. Reallocate 1-bpp text frame for lcdterm */
+    g_t1_bytes = (uint32_t)(g_state.width / 8u) * g_state.height;
+    uint32_t tpages = ((g_t1_bytes * 3u) + 4095u) / 4096u;
+    uint8_t *mem = (uint8_t *)palloc_pages_bulk(tpages);
+    if (mem) {
+        memset(mem, 0, g_t1_bytes);
+        g_t1 = mem;
+        g_t1_shadow[0] = mem + g_t1_bytes;
+        g_t1_shadow[1] = mem + 2u * g_t1_bytes;
+        memset(g_t1_shadow[0], 0, g_t1_bytes);
+        memset(g_t1_shadow[1], 0, g_t1_bytes);
+        g_force[0] = true;
+        g_force[1] = true;
+        g_backend.fb = g_t1;
+        g_backend.w = g_state.width;
+        g_backend.h = g_state.height;
+        g_backend.stride = g_state.width / 8u;
+        (void)lcdterm_reinit(&g_backend);
+    }
+
+    /* 7. Restart panel */
+    dc_write(DC_DISPLAY_PANEL_START, 0x00000001u);
+    g_state.panel_started = true;
+
+    g_dirty_y0[0] = 0; g_dirty_y1[0] = g_state.height;
+    g_dirty_y0[1] = 0; g_dirty_y1[1] = g_state.height;
+
+    ylock_release(&g_dc_lock);
+
+    printk("[DC8200] Display mode switched to %s (%ux%u)\n",
+           jh7110_hdmi_mode_name(res), g_state.width, g_state.height);
+    jh7110_dc8200_repaint();
+    return 0;
+}
+
 void jh7110_dc8200_cmd_status(void) {
     ylock_acquire(&g_dc_lock);
     dc8200_state_t st = g_state;
@@ -668,4 +815,57 @@ void jh7110_dc8200_cmd_test(void) {
     time_delay_us(3000000);
     jh7110_dc8200_repaint();
     cprintf("DC8200: Terminal restored.\n");
+}
+
+void jh7110_dc8200_cmd_bench(void) {
+    if (!g_state.initialized) {
+        cprintf("display: not initialized\n");
+        return;
+    }
+    cprintf("DC8200 Graphics Pipeline Benchmark (%ux%u RGB565):\n", g_state.width, g_state.height);
+    uint32_t fb_bytes = (uint32_t)g_state.stride_bytes * g_state.height;
+
+    /* 1. L2 Cache Flush Benchmark */
+    uint64_t t0 = time_get_us();
+    const int flush_iters = 20;
+    for (int i = 0; i < flush_iters; i++) {
+        jh7110_flush_l2_range(g_state.back_fb_pa, g_state.back_fb_pa + fb_bytes);
+    }
+    uint64_t t1 = time_get_us();
+    uint64_t flush_us_per_frame = (t1 - t0) / (uint64_t)flush_iters;
+    uint64_t flush_mb_s = (flush_us_per_frame > 0) ? (((uint64_t)fb_bytes * 1000000ULL) / (flush_us_per_frame * 1024ULL * 1024ULL)) : 0;
+    cprintf("  L2 Cache Flush:   %lu us/frame (%lu MB/s, %u KB buffer)\n",
+            (unsigned long)flush_us_per_frame, (unsigned long)flush_mb_s, fb_bytes / 1024u);
+
+    /* 2. 1-bpp to RGB565 LUT Scanline Conversion Benchmark */
+    t0 = time_get_us();
+    const int conv_iters = 20;
+    for (int it = 0; it < conv_iters; it++) {
+        unsigned bytes_per_row = g_state.width / 8u;
+        uint16_t *dst = g_state.back_fb;
+        const uint8_t *src = g_t1;
+        for (unsigned y = 0; y < g_state.height; y++) {
+            const uint8_t *src_row = &src[y * bytes_per_row];
+            uint16_t *dst_row = &dst[y * g_state.width];
+            for (unsigned b = 0; b < bytes_per_row; b++) {
+                uint8_t val = src_row[b];
+                const uint16_t *lut = g_lut565[val];
+                uint64_t *d64 = (uint64_t *)(dst_row + b * 8);
+                const uint64_t *s64 = (const uint64_t *)lut;
+                d64[0] = s64[0];
+                d64[1] = s64[1];
+            }
+        }
+    }
+    t1 = time_get_us();
+    uint64_t conv_us_per_frame = (t1 - t0) / (uint64_t)conv_iters;
+    uint64_t conv_mb_s = (conv_us_per_frame > 0) ? (((uint64_t)fb_bytes * 1000000ULL) / (conv_us_per_frame * 1024ULL * 1024ULL)) : 0;
+    cprintf("  LUT Conversion:   %lu us/frame (%lu MB/s)\n",
+            (unsigned long)conv_us_per_frame, (unsigned long)conv_mb_s);
+
+    /* 3. Combined Frame Throughput */
+    uint64_t total_us = flush_us_per_frame + conv_us_per_frame;
+    uint64_t max_fps = 1000000ULL / (total_us > 0 ? total_us : 1);
+    cprintf("  Max Render Rate:  %lu FPS (render budget: %lu us, 60Hz limit: 16666 us)\n",
+            (unsigned long)max_fps, (unsigned long)total_us);
 }

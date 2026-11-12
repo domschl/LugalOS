@@ -14,6 +14,8 @@
 typedef enum {
     HDMI_RES_1280_720P_60HZ  = 0,
     HDMI_RES_1920_1080P_60HZ = 1,
+    HDMI_RES_2560_1440P_60HZ = 2,
+    HDMI_RES_3840_2160P_30HZ = 3,
 } hdmi_resolution_t;
 
 typedef struct {
@@ -34,6 +36,8 @@ typedef struct {
 
 /* Initialize JH7110 VOUT power domain, clocks, resets, and HDMI transmitter */
 int  jh7110_hdmi_init(void);
+int  jh7110_hdmi_set_mode(hdmi_resolution_t res);
+const char *jh7110_hdmi_mode_name(hdmi_resolution_t res);
 
 /* Check monitor connection and status */
 bool jh7110_hdmi_is_connected(void);

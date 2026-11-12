@@ -1325,6 +1325,11 @@ static void cmd_help_summary(void) {
     cprintf("  audiotest [cmd] - Audio hardware diagnostics (codec, PA, I2S0)\n");
 #endif
     cprintf("  volume [0-100]  - Get or set audio output volume\n");
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+    cprintf("  audio [cmd]     - Audio hardware (beep, volume, play <file.wav>, status)\n");
+    cprintf("  play <file.wav> - Play 16-bit PCM WAV audio file\n");
+    cprintf("  volume [0-100]  - Get or set audio output volume\n");
+    cprintf("  gemm [bench]    - Multicore INT8 GEMM neural engine benchmark\n");
 #endif
     cprintf("  imu [watch [s]] - Accelerometer, gyroscope, pitch and roll\n");
     cprintf("  orient [auto|off] - Turn the display with the board (IMU)\n");
@@ -7520,6 +7525,30 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "display test") == 0) {
         jh7110_dc8200_cmd_test();
         return;
+    } else if (strncmp(cmd_line, "display mode ", 13) == 0 || strncmp(cmd_line, "hdmi mode ", 10) == 0) {
+        const char *m = (cmd_line[0] == 'd') ? cmd_line + 13 : cmd_line + 10;
+        hdmi_resolution_t res;
+        if (strcmp(m, "1080p") == 0 || strcmp(m, "1080p60") == 0) {
+            res = HDMI_RES_1920_1080P_60HZ;
+        } else if (strcmp(m, "720p") == 0 || strcmp(m, "720p60") == 0) {
+            res = HDMI_RES_1280_720P_60HZ;
+        } else if (strcmp(m, "1440p") == 0 || strcmp(m, "1440p60") == 0) {
+            res = HDMI_RES_2560_1440P_60HZ;
+        } else if (strcmp(m, "4k") == 0 || strcmp(m, "4k30") == 0 || strcmp(m, "2160p") == 0) {
+            res = HDMI_RES_3840_2160P_30HZ;
+        } else {
+            cprintf("Usage: display mode [1080p|1440p|4k30|720p]\n");
+            return;
+        }
+        if (jh7110_dc8200_set_mode(res) == 0) {
+            cprintf("display: switched to %s\n", jh7110_hdmi_mode_name(res));
+        } else {
+            cprintf("display: mode switch failed\n");
+        }
+        return;
+    } else if (strcmp(cmd_line, "display bench") == 0 || strcmp(cmd_line, "lcd bench") == 0) {
+        jh7110_dc8200_cmd_bench();
+        return;
     } else if (strcmp(cmd_line, "display repaint") == 0 || strcmp(cmd_line, "lcd repaint") == 0) {
         jh7110_dc8200_repaint();
         cprintf("display: screen repainted\n");
@@ -8146,6 +8175,24 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "volume") == 0 || strncmp(cmd_line, "volume ", 7) == 0) {
         extern void volume_cmd(const char *arg);
         volume_cmd(cmd_line + 6);
+        return;
+#endif
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    } else if (strcmp(cmd_line, "audio") == 0 || strncmp(cmd_line, "audio ", 6) == 0) {
+        extern void audio_cmd(const char *arg);
+        audio_cmd(cmd_line + 5);
+        return;
+    } else if (strcmp(cmd_line, "play") == 0 || strncmp(cmd_line, "play ", 5) == 0) {
+        extern void play_cmd(const char *arg);
+        play_cmd(cmd_line + 4);
+        return;
+    } else if (strcmp(cmd_line, "volume") == 0 || strncmp(cmd_line, "volume ", 7) == 0) {
+        extern void volume_cmd(const char *arg);
+        volume_cmd(cmd_line + 6);
+        return;
+    } else if (strcmp(cmd_line, "gemm") == 0 || strncmp(cmd_line, "gemm ", 5) == 0) {
+        extern void gemm_cmd(const char *arg);
+        gemm_cmd(cmd_line + 4);
         return;
 #endif
     } else if (strcmp(cmd_line, "imu") == 0 || strncmp(cmd_line, "imu ", 4) == 0) {

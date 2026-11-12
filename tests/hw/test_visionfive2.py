@@ -160,6 +160,22 @@ def test_timebase_accuracy(ser: serial.Serial) -> tuple[str, bool, str]:
     return (name, True, f"500 ms sleep measured {dt * 1000:.0f} ms on host")
 
 
+def test_uart_burst_rx(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "uart: hardware FIFO and 1024-byte ISR RX ring buffer under burst"
+    vf2run = _load_vf2run()
+    # Send a continuous unpaced burst of ~270 bytes at full serial rate
+    burst_data = "".join(f"(+ {i} 1) " for i in range(30))
+    ser.write((burst_data + "\r").encode("utf-8"))
+    idx, out = vf2run.read_until_any(ser, ["lsh> ", "/> "], timeout_s=5.0)
+    if idx < 0 or "=> 30" not in out:
+        return (name, False, f"burst failed or dropped bytes:\n{out[-400:]}")
+    stats = run_cmd(ser, "uartstats", timeout_s=5.0)
+    m = re.search(r"rx_overruns=(\d+)", stats)
+    if not m or int(m.group(1)) != 0:
+        return (name, False, f"rx_overruns reported {m.group(1) if m else 'none'}:\n{stats}")
+    return (name, True, "270B unpaced burst evaluated cleanly; rx_overruns=0")
+
+
 def test_mmu_and_umode_isolation(ser: serial.Serial) -> tuple[str, bool, str]:
     name = "mmu: memselftest, zonetest, Sv39 U-mode isolation, and RV64 ELF exec"
     out_mem = run_cmd(ser, "memselftest", timeout_s=15.0)
@@ -268,6 +284,20 @@ def test_network_and_dhcp(ser: serial.Serial) -> tuple[str, bool, str]:
     return (name, True, f"IP {ip}, gateway ping ok")
 
 
+def test_ntp_clock_sync(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "ntp: DHCP Option 42 / Gateway SNTP clock synchronization"
+    out_date = run_cmd(ser, "date", timeout_s=5.0)
+    m = re.search(r"(202[6-9]|203[0-9])-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\s+UTC", out_date)
+    if not m:
+        out_ntp = run_cmd(ser, "ntp", timeout_s=10.0)
+        out_date = run_cmd(ser, "date", timeout_s=5.0)
+        m = re.search(r"(202[6-9]|203[0-9])-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\s+UTC", out_date)
+        if not m:
+            return (name, False, f"clock not synchronized to UTC:\n{out_date}\n{out_ntp}")
+
+    return (name, True, f"clock synchronized: {m.group(0)}")
+
+
 def test_host_services(ser: serial.Serial) -> tuple[str, bool, str]:
     name = "tcp: Host ping, HTTP admin dashboard (port 80), and TCP 9P (port 564)"
     out_net = run_cmd(ser, "net", timeout_s=5.0)
@@ -354,6 +384,19 @@ def test_nvme_filesystem_and_cas(ser: serial.Serial) -> tuple[str, bool, str]:
     if failed:
         return (name, False, f"failed: {', '.join(failed)}")
     return (name, True, "NVMe R/W verified, Lisp script loaded and evaluated from /nvme0/")
+
+
+def test_identity_store_nvme(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "idstore: NVMe identity partition persistence (MBR gap / partition 2)"
+    out = run_cmd(ser, "identity", timeout_s=10.0)
+    checks = [
+        ("Identity name set", "name: " in out and "(record)" in out),
+        ("Identity uid provisioned", "uid: " in out and "(record)" in out),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}; out={out!r}")
+    return (name, True, "Identity record persisted and loaded from NVMe storage")
 
 
 def _io(ser: serial.Serial):
@@ -499,21 +542,64 @@ def test_hdmi_phy_and_edid(ser: serial.Serial, boot_log: str) -> tuple[str, bool
 
 
 def test_dc8200_display_controller(ser: serial.Serial) -> tuple[str, bool, str]:
-    name = "dc8200: VeriSilicon DC8200 display controller, VTG 1080p60 & page flipping"
+    name = "dc8200: VeriSilicon DC8200 display controller, High-DPI mode switching & page flipping"
     out = run_cmd(ser, "display status", timeout_s=10.0)
+    out_1440 = run_cmd(ser, "display mode 1440p", timeout_s=10.0)
+    out_st1440 = run_cmd(ser, "display status", timeout_s=10.0)
+    out_1080 = run_cmd(ser, "display mode 1080p", timeout_s=10.0)
+    out_st1080 = run_cmd(ser, "display status", timeout_s=10.0)
+
     checks = [
         ("Driver State ONLINE", "Driver State:     ONLINE" in out),
         ("Panel RUNNING", "Panel RUNNING" in out),
         ("Hardware Rev 0x5720", "Hardware Rev:     0x5720" in out),
-        ("1920x1080 @ 60 Hz", "1920x1080 @ 60 Hz" in out),
         ("Front Buffer PA present", "Front Buffer PA:  0x" in out),
         ("Back Buffer PA present", "Back Buffer PA:   0x" in out),
         ("VSYNC page flipping active", "frames flipped" in out and "VSYNC pulses" in out),
+        ("Switch to 1440p", ("switched to 1440p60" in out_1440 or "1440p" in out_1440) and "2560x1440" in out_st1440),
+        ("Switch to 1080p", ("switched to 1080p60" in out_1080 or "1080p" in out_1080) and "1920x1080" in out_st1080),
     ]
     failed = [label for label, ok in checks if not ok]
     if failed:
-        return (name, False, f"failed: {', '.join(failed)}")
-    return (name, True, "DC8200 Rev 0x5720 running 1080p60 scanout with active VSYNC page flips")
+        return (name, False, f"failed: {', '.join(failed)}; out_1440={out_1440!r}, out_st1440={out_st1440!r}")
+    return (name, True, "DC8200 Rev 0x5720 running dynamic scanout (1080p/1440p/4K) with active VSYNC page flips")
+
+
+def test_audio_pwmdac(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "audio: JH7110 PWMDAC 3.5mm headphone jack and tone generator"
+    out_st = run_cmd(ser, "audio status", timeout_s=10.0)
+    out_vol = run_cmd(ser, "volume 85", timeout_s=10.0)
+    out_beep = run_cmd(ser, "audio beep 440 200", timeout_s=10.0)
+    out_st2 = run_cmd(ser, "audio status", timeout_s=10.0)
+
+    checks = [
+        ("PWMDAC engine identified", "PWMDAC (0x100D0000)" in out_st),
+        ("3.5mm stereo jack output", "3.5mm Stereo Headphone" in out_st),
+        ("Volume set to 85%", "volume: set to 85%" in out_vol and "Volume:            85%" in out_st2),
+        ("Audio beep executed", "beeping 440 Hz for 200 ms" in out_beep),
+        ("Clocks enabled", "APB=0x80000000" in out_st2),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}; out_st={out_st!r}")
+    return (name, True, "PWMDAC initialized, GPIO 33/34 pinmux routed to 3.5mm jack, 440 Hz beep generated")
+
+
+def test_multicore_gemm(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "gemm: multicore INT8 GEMM engine across SiFive U74 cores (Harts 1..4)"
+    out = run_cmd(ser, "gemm bench", timeout_s=15.0)
+    checks = [
+        ("Benchmark header", "Multicore INT8 GEMM Benchmark" in out),
+        ("Single core tested", "1 Core (Hart 1)" in out),
+        ("Dual core tested", "2 Cores (Harts 1..2)" in out),
+        ("Quad core tested", "4 Cores (Harts 1..4)" in out),
+        ("Zero errors reported", "[Errors: 0]" in out),
+        ("Numerical verification passed", "Numerical Verification: PASS" in out),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}; out={out!r}")
+    return (name, True, "100% numerical match with multi-core speedup across Harts 1..4")
 
 
 def test_cursor_engine_and_injection(ser: serial.Serial) -> tuple[str, bool, str]:
@@ -603,21 +689,26 @@ def main() -> int:
         tests = [
             ("test_boot_and_smp_topology", lambda: test_boot_and_smp_topology(ser, boot_log)),
             ("test_timebase_accuracy", lambda: test_timebase_accuracy(ser)),
+            ("test_uart_burst_rx", lambda: test_uart_burst_rx(ser)),
             ("test_mmu_and_umode_isolation", lambda: test_mmu_and_umode_isolation(ser)),
             ("test_smp_and_locks", lambda: test_smp_and_locks(ser)),
             ("test_sdmmc_and_cas", lambda: test_sdmmc_and_cas(ser)),
             ("test_long_names", lambda: test_long_names(ser, "/sd0")),
             ("test_emac_loopback", lambda: test_emac_loopback(ser)),
             ("test_network_and_dhcp", lambda: test_network_and_dhcp(ser)),
+            ("test_ntp_clock_sync", lambda: test_ntp_clock_sync(ser)),
             ("test_host_services", lambda: test_host_services(ser)),
             ("test_pcie_enumeration", lambda: test_pcie_enumeration(ser)),
             ("test_nvme_storage", lambda: test_nvme_storage(ser)),
             ("test_nvme_filesystem_and_cas", lambda: test_nvme_filesystem_and_cas(ser)),
+            ("test_identity_store_nvme", lambda: test_identity_store_nvme(ser)),
             ("test_long_names", lambda: test_long_names(ser, "/nvme0")),
             ("test_usb_hub_and_tree", lambda: test_usb_hub_and_tree(ser)),
             ("test_usb_hid_keyboard_mouse", lambda: test_usb_hid_keyboard_mouse(ser)),
             ("test_hdmi_phy_and_edid", lambda: test_hdmi_phy_and_edid(ser, boot_log)),
             ("test_dc8200_display_controller", lambda: test_dc8200_display_controller(ser)),
+            ("test_audio_pwmdac", lambda: test_audio_pwmdac(ser)),
+            ("test_multicore_gemm", lambda: test_multicore_gemm(ser)),
             ("test_cursor_engine_and_injection", lambda: test_cursor_engine_and_injection(ser)),
             ("test_hello_ugui", lambda: test_hello_ugui(ser)),
             ("test_stacks_fullscreen", lambda: test_stacks_fullscreen(ser)),

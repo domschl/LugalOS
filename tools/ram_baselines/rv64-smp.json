@@ -5,7 +5,7 @@
   "heap_bytes": 123834368,
   "heap_pages": 30233,
   "per_file": {
-    "(no line info: .rodata)": 14674,
+    "(no line info: .rodata)": 14704,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 8,
@@ -55,7 +55,7 @@
     "drivers/tmp117.c": 248,
     "drivers/tsl2561.c": 263,
     "drivers/tsl2591.c": 140,
-    "drivers/uart_16550.c": 935,
+    "drivers/uart_16550.c": 1967,
     "drivers/uart_net.c": 14836,
     "drivers/ugui.c": 64,
     "drivers/usb_crc.c": 16,
@@ -131,7 +131,7 @@
     "kernel/x509.c": 38,
     "kernel/zonetest.c": 69,
     "net/arp.c": 208,
-    "net/dhcp.c": 51,
+    "net/dhcp.c": 61,
     "net/dns.c": 349,
     "net/httpd.c": 67,
     "net/llm.c": 261,
@@ -174,7 +174,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 14674,
+    "(no line info: .rodata)": 14704,
     "(no line info: .sdata)": 9,
     "9p": 65704,
     "agent": 3501,
@@ -186,7 +186,7 @@
     "clock-app": 616,
     "crypto": 1054,
     "display": 180242,
-    "drivers": 125475,
+    "drivers": 126507,
     "fs": 853,
     "httpd": 184,
     "identity": 669,
@@ -195,7 +195,7 @@
     "llp": 4324,
     "log": 8370,
     "mqtt": 4646,
-    "net": 26114,
+    "net": 26124,
     "radio": 3464,
     "selftest": 10607,
     "sensors": 20839,
@@ -204,6 +204,6 @@
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1368176,
-  "total": 7995449
+  "ram_code": 1369940,
+  "total": 7998285
 }

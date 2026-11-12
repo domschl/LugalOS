@@ -216,6 +216,7 @@ __attribute__((weak)) bool ipv4_parse(const char *s, uint8_t out[4]) {
 }
 
 __attribute__((weak)) bool dhcp_dns_server(uint8_t out[4]) { (void)out; return false; }
+__attribute__((weak)) bool dhcp_ntp_server(uint8_t out[4]) { (void)out; return false; }
 /* net/tcp.c tells the 9P link layer a server connection ended. */
 __attribute__((weak)) void p9_link_closed(void *link) { (void)link; }
 __attribute__((weak)) const void *net_state(void) { return NULL; }

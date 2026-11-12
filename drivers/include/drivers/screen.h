@@ -69,7 +69,7 @@
 #define SCREEN_MENU_MAX      16u     /* a title-bar menu's items at most */
 #define SCREEN_TEXT_X        (FONT_CELL_W)
 #define SCREEN_TEXT_Y        (40 * CHROME_SCALE)
-#define SCREEN_TEXT_COLS(w)  ((unsigned)(w) / (unsigned)FONT_CELL_W - 2u)
+#define SCREEN_TEXT_COLS(w)  (((unsigned)(w) / (unsigned)FONT_CELL_W - 2u > 240u) ? 240u : ((unsigned)(w) / (unsigned)FONT_CELL_W - 2u))
 #define SCREEN_TEXT_ROWS(h)  (((unsigned)(h) > (unsigned)(SCREEN_TEXT_Y + 3 * CHROME_SCALE)) ? (((unsigned)(h) - (unsigned)SCREEN_TEXT_Y - 3u * (unsigned)CHROME_SCALE) / (unsigned)FONT_CELL_H) : 1u)
 
 #define SCREEN_RIGHT_MAX  24u           /* bytes of UTF-8, with the NUL */
@@ -201,7 +201,7 @@ typedef struct {
  * screen has no chrome), or on a panel that turns (`rotates`: w and h trade
  * places at run time) the wider and the taller of both, so a turn never
  * indexes past a terminal's share into the next one. */
-#define SCREEN_GRID_COLS(w) ((unsigned)(w) / (unsigned)FONT_CELL_W)
+#define SCREEN_GRID_COLS(w) (((unsigned)(w) / (unsigned)FONT_CELL_W > 240u) ? 240u : ((unsigned)(w) / (unsigned)FONT_CELL_W))
 #define SCREEN_GRID_ROWS(h) ((unsigned)(h) / (unsigned)FONT_CELL_H)
 #define SCREEN_SHADOW_COLS(w, h, rotates) \
     ((rotates) && SCREEN_GRID_COLS(h) > SCREEN_GRID_COLS(w) ? SCREEN_GRID_COLS(h) : SCREEN_GRID_COLS(w))

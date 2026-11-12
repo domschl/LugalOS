@@ -3087,6 +3087,37 @@ static canvas1_t *chess_touch_get_backing(void) {
     return NULL;
 }
 
+
+static inline void chess_draw_piece_row(const canvas1_t *c1, int ox, int dy,
+                                        uint64_t black_mask, uint64_t white_mask) {
+    if (!c1 || !c1->fb) return;
+    int ay = dy + (int)c1->oy;
+    if (ay < 0) return;
+    uint8_t *row = c1->fb + (uint32_t)ay * c1->stride;
+    int base_ax = ox + (int)c1->ox;
+    int max_ax = (int)c1->w + (int)c1->ox;
+
+    for (int b = 0; b < 6; b++) {
+        uint8_t b_mask = (uint8_t)((black_mask >> (40 - b * 8)) & 0xFFu);
+        uint8_t w_mask = (uint8_t)((white_mask >> (40 - b * 8)) & 0xFFu);
+        if (!b_mask && !w_mask) continue;
+
+        for (int p = 0; p < 8; p++) {
+            uint8_t bit = (uint8_t)(1u << (7 - p));
+            if (!((b_mask | w_mask) & bit)) continue;
+            int ax = base_ax + b * 8 + p;
+            if (ax < 0 || ax >= max_ax) continue;
+            uint8_t *ptr = &row[ax >> 3];
+            uint8_t pbit = (uint8_t)(1u << (ax & 7));
+            if (b_mask & bit) {
+                *ptr |= pbit;
+            } else {
+                *ptr &= (uint8_t)~pbit;
+            }
+        }
+    }
+}
+
 static void chess_touch_draw(void) {
     int w = 0, h = 0;
     if (!cb_canvas(&w, &h) || w <= 0 || h <= 0) return;
@@ -3197,6 +3228,7 @@ static void chess_touch_draw(void) {
                 canvas1_fill(c1, sx + sq_sz - 1 - 2 * s, sy, sx + sq_sz - 1, sy + sq_sz - 1, CANVAS1_BLACK);
             }
 
+
             /* Draw piece */
             int piece = g_chess_pos.board[sq];
             if (piece != NO_PIECE && (unsigned)piece < 6u) {
@@ -3206,28 +3238,9 @@ static void chess_touch_draw(void) {
                 for (int py = 0; py < 48; py++) {
                     int dy = oy + py;
                     if (dy < 0 || dy >= h) continue;
-                    uint64_t w_str = canvas_white_strokes[piece][py];
-                    uint64_t w_bod = canvas_white_body[piece][py];
-                    uint64_t b_fg  = canvas_black_fg[piece][py];
-                    uint64_t b_hal = canvas_black_halo[piece][py];
-                    for (int px = 0; px < 48; px++) {
-                        int dx = ox + px;
-                        if (dx < 0 || dx >= w) continue;
-                        uint64_t bit = 1ULL << (47 - px);
-                        if (white) {
-                            if (w_str & bit) {
-                                canvas1_fill(c1, dx, dy, dx, dy, CANVAS1_BLACK);
-                            } else if (w_bod & bit) {
-                                canvas1_fill(c1, dx, dy, dx, dy, CANVAS1_WHITE);
-                            }
-                        } else {
-                            if (b_fg & bit) {
-                                canvas1_fill(c1, dx, dy, dx, dy, CANVAS1_BLACK);
-                            } else if (b_hal & bit) {
-                                canvas1_fill(c1, dx, dy, dx, dy, CANVAS1_WHITE);
-                            }
-                        }
-                    }
+                    uint64_t blk = white ? canvas_white_strokes[piece][py] : canvas_black_fg[piece][py];
+                    uint64_t wht = white ? canvas_white_body[piece][py]    : canvas_black_halo[piece][py];
+                    chess_draw_piece_row(c1, ox, dy, blk, wht);
                 }
             }
 

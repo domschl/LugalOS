@@ -22,10 +22,17 @@ static volatile uint8_t *uart_base = (volatile uint8_t *)0x10000000; // QEMU vir
 #define UART_THR 0 // Transmit Holding Register
 #define UART_IER 1 // Interrupt Enable Register
 #define UART_IIR 2 // Interrupt Identity Register
+#define UART_FCR 2 // FIFO Control Register
 #define UART_LSR 5 // Line Status Register
 #define UART_USR 0x1F // DesignWare UART Status Register (clears IIR_BUSY)
 #define UART_IIR_BUSY 0x07
 #define UART_LSR_DR   0x01 // Data Ready
+
+/* FIFO Control Register bit definitions */
+#define UART_FCR_ENABLE  0x01u // Enable FIFO
+#define UART_FCR_RCVRST  0x02u // Reset Receiver FIFO
+#define UART_FCR_XMITRST 0x04u // Reset Transmitter FIFO
+#define UART_FCR_TRIG_8  0x80u // Receiver Trigger Level: 8 bytes (or 1/2 FIFO)
 
 #ifndef CONFIG_UART_REG_SHIFT
 #define CONFIG_UART_REG_SHIFT 0
@@ -136,6 +143,14 @@ static volatile uint32_t g_rx_claim, g_tx_claim;
  * is a leaf, and task_unblock() takes the scheduler's). */
 static spinlock_t g_ier_lock;
 
+/* interrupt-shared: g_uart_rx_ring, g_uart_rx_head, g_uart_rx_tail.
+ * Populated by uart_isr() and hw_uart_has_char(); drained by hw_uart_getc().
+ * Protected under g_ier_lock. */
+#define UART_RX_RING_SIZE 1024u
+static uint8_t g_uart_rx_ring[UART_RX_RING_SIZE];
+static volatile uint32_t g_uart_rx_head;
+static volatile uint32_t g_uart_rx_tail;
+
 static void ier_arm(volatile int *slot, int me, uint8_t bit) {
     uintptr_t f = spin_lock_irqsave(&g_ier_lock);
     *slot = me;
@@ -148,7 +163,10 @@ static void ier_disarm(volatile int *slot, int me, uint8_t bit) {
     uintptr_t f = spin_lock_irqsave(&g_ier_lock);
     if (*slot == me) {
         *slot = -1;
-        uart_reg_write(UART_IER, (uint8_t)(uart_reg_read(UART_IER) & (uint8_t)~bit));
+        /* Keep ERBFI armed so the ISR continuously buffers incoming bursts */
+        if (bit != UART_IER_ERBFI) {
+            uart_reg_write(UART_IER, (uint8_t)(uart_reg_read(UART_IER) & (uint8_t)~bit));
+        }
     }
     spin_unlock_irqrestore(&g_ier_lock, f);
 }
@@ -167,8 +185,24 @@ static void uart_isr(void *ctx) {
 #endif
     uint8_t lsr = uart_reg_read(UART_LSR);
     if (lsr & UART_LSR_THRE) g_uart_irq_tx_seen++;
-    if ((lsr & UART_LSR_DR) && g_rx_waiter >= 0) {
-        uart_reg_write(UART_IER, (uint8_t)(uart_reg_read(UART_IER) & (uint8_t)~UART_IER_ERBFI));
+
+    /* Drain all available bytes from the hardware receive FIFO into the software ring */
+    bool rx_got = false;
+    while (lsr & UART_LSR_DR) {
+        uint8_t c = uart_reg_read(UART_RBR);
+        uint32_t next = (g_uart_rx_head + 1u) & (UART_RX_RING_SIZE - 1u);
+        if (next != g_uart_rx_tail) {
+            g_uart_rx_ring[g_uart_rx_head] = c;
+            g_uart_rx_head = next;
+            rx_got = true;
+        } else {
+            note_rx_overrun();
+        }
+        lsr = uart_reg_read(UART_LSR);
+    }
+
+    if (rx_got && g_rx_waiter >= 0) {
+        /* Leave ERBFI armed in IER so subsequent bursts are caught immediately */
         g_uart_irq_rx_wakes++;
         rx = g_rx_waiter;
         g_rx_waiter = -1;
@@ -192,13 +226,37 @@ static void uart_isr(void *ctx) {
 // is itself responsible for providing.
 static bool hw_uart_has_char(void) {
     if (!uart_base) return false;
+    uintptr_t f = spin_lock_irqsave(&g_ier_lock);
+    /* In polling mode or bootstrap before devirq is attached, drain hardware FIFO */
     uint8_t lsr = uart_reg_read(UART_LSR);
+    while (lsr & UART_LSR_DR) {
+        uint8_t c = uart_reg_read(UART_RBR);
+        uint32_t next = (g_uart_rx_head + 1u) & (UART_RX_RING_SIZE - 1u);
+        if (next != g_uart_rx_tail) {
+            g_uart_rx_ring[g_uart_rx_head] = c;
+            g_uart_rx_head = next;
+        } else {
+            note_rx_overrun();
+        }
+        lsr = uart_reg_read(UART_LSR);
+    }
+    bool has = (g_uart_rx_head != g_uart_rx_tail);
+    spin_unlock_irqrestore(&g_ier_lock, f);
     if (lsr & UART_LSR_OE) note_rx_overrun();
-    return (lsr & UART_LSR_DR) != 0;
+    return has;
 }
 
 static uint8_t hw_uart_getc(void) {
-    return uart_reg_read(UART_RBR);
+    uintptr_t f = spin_lock_irqsave(&g_ier_lock);
+    uint8_t c = 0;
+    if (g_uart_rx_head != g_uart_rx_tail) {
+        c = g_uart_rx_ring[g_uart_rx_tail];
+        g_uart_rx_tail = (g_uart_rx_tail + 1u) & (UART_RX_RING_SIZE - 1u);
+    } else {
+        c = uart_reg_read(UART_RBR);
+    }
+    spin_unlock_irqrestore(&g_ier_lock, f);
+    return c;
 }
 
 /* The actual hardware wait/transfer,  * pulled out of uart_putc()/uart_getc() so both the uart task's own service
@@ -435,8 +493,10 @@ void uart_init(uintptr_t base_addr) {
     if (base_addr != 0) {
         uart_base = (volatile uint8_t *)base_addr;
     }
-    /* Start with all UART interrupt sources masked until a waiter arms one. */
-    uart_reg_write(UART_IER, 0);
+    /* Enable FIFO, clear RX/TX, set RX trigger level (8 bytes / half FIFO). */
+    uart_reg_write(UART_FCR, UART_FCR_ENABLE | UART_FCR_RCVRST | UART_FCR_XMITRST | UART_FCR_TRIG_8);
+    /* Enable RX data available interrupt so the ISR continually buffers arrivals into g_uart_rx_ring */
+    uart_reg_write(UART_IER, UART_IER_ERBFI);
     uart_demux_init(hw_uart_has_char, hw_uart_getc);
     /* Handler before enable (arch/trap.h): so that if the IRQ somehow fires
      * before this returns, there is a handler to find it rather than an

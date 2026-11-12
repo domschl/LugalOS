@@ -2,6 +2,7 @@
 
 #include "drivers/ui_sound.h"
 #include "kernel/settings.h"
+#include "kernel/console.h"
 #include "lugalos_config.h"
 
 #if defined(CONFIG_BOARD_ESP32P4)
@@ -102,6 +103,23 @@ void ui_click_report(void) {
             (unsigned)g_n_started, (unsigned)g_n_refused, (unsigned)g_n_played,
             (unsigned)g_n_pumps, audio_p4_is_playing() ? "playing" : "idle",
             audio_p4_is_owner(click_render) ? "yes" : "no");
+}
+
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+#include "drivers/audio_jh7110.h"
+
+void ui_click(void) {
+    if (settings_get("ui.click_sound") != 1) return;
+    ui_click_now();
+}
+
+void ui_click_now(void) {
+    audio_jh7110_beep(1600, 25);
+}
+
+void ui_click_report(void) {
+    cprintf("click: setting %d, volume %d%%\n",
+            settings_get("ui.click_sound"), audio_jh7110_get_volume());
 }
 
 #else

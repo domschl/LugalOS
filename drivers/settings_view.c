@@ -164,6 +164,10 @@ static void page_sound(const ugui_surface_t *s, ugui_rect_t *col) {
     int vol = settings_get("audio.volume");
     ksnprintf(v, sizeof v, "%d%%", vol);
     s_st.sliders[2] = slider_row(s, col, "Speaker", v, vol, 0, 100, ID_VOLUME, 0);
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+    int vol = settings_get("audio.volume");
+    ksnprintf(v, sizeof v, "%d%%", vol);
+    s_st.sliders[2] = slider_row(s, col, "Headphones", v, vol, 0, 100, ID_VOLUME, 0);
 #else
     (void)v;
     s_st.sliders[2] = slider_row(s, col, "Speaker", "none on this board", 0, 0, 100, ID_VOLUME, 1);
@@ -171,7 +175,7 @@ static void page_sound(const ugui_surface_t *s, ugui_rect_t *col) {
     ugui_toggle(s, &s_st.ui, ugui_cut_top(col, 34 * sc), "Click on each tap", settings_get("ui.click_sound") == 1, ID_CLICK);
     gap(col, 10 * sc);
     ugui_rect_t row = ugui_cut_top(col, 32 * sc);
-#if !defined(CONFIG_BOARD_ESP32P4)
+#if !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_VISIONFIVE2)
     ugui_disable_next(&s_st.ui, 1);
 #endif
     ugui_button(s, &s_st.ui, (ugui_rect_t){ row.x, row.y, (int16_t)(120 * sc), row.h }, "Test sound", ID_TEST, false);

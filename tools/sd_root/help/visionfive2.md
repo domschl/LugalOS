@@ -119,11 +119,14 @@ The VisionFive 2 includes an onboard VIA Labs VL805-Q6 USB 3.0 Host Controller d
 
 ## 8. HDMI 2.0 Display, VeriSilicon DC8200 & Ribbon Workstation
 
-The VisionFive 2 includes a full-size HDMI 2.0 port driven by the VeriSilicon DC8200 display controller and an Innosilicon HDMI TX PHY, providing an interactive workstation desktop at 1080p60 (1920x1080 @ 60 Hz RGB565) or 720p60:
-
+The VisionFive 2 includes a full-size HDMI 2.0 port driven by the VeriSilicon DC8200 display controller and an Innosilicon HDMI TX PHY, providing an interactive workstation desktop supporting dynamic modes up to 4K30:
+* **Dynamic Resolution Modes:**
+  * **1080p60 (1920x1080 @ 60 Hz):** 148.5 MHz pixel clock (`display mode 1080p`), standard desktop default.
+  * **1440p60 (2560x1440 @ 60 Hz):** 241.5 MHz pixel clock (`display mode 1440p`), wide Quad HD workstation canvas.
+  * **4K30 (3840x2160 @ 30 Hz):** 297.0 MHz TMDS clock (`display mode 4k`), ultra-high-resolution scanout on 4K monitors.
 * **Hardware Architecture:**
-  * **Innosilicon HDMI PHY (`0x29590000`):** Configured via PLL post-dividers (`0x0C=0x12`, `0x10=0x01`, `0x14=0x25`) and pre-emphasis driver registers (`0x28=0x27`, `0x2C=0x22`, `0x30=0x24`) for clean 1.485 Gbps TMDS high-speed transmission.
-  * **DDC EDID (`i2c@13010000` / `0x50`):** Reads monitor capabilities and automatically selects native 1080p60 or 720p60 timing.
+  * **Innosilicon HDMI PHY (`0x29590000`):** Configured via PLL post-dividers (`0x0C=0x12`, `0x10=0x01`, `0x14=0x25`) and pre-emphasis driver registers (`0x28=0x27`, `0x2C=0x22`, `0x30=0x24`) for clean 1.485-2.970 Gbps TMDS high-speed transmission.
+  * **DDC EDID (`i2c@13010000` / `0x50`):** Reads monitor capabilities and automatically selects native 1080p60, 1440p60, or 4K30 timing.
   * **VeriSilicon DC8200 (`0x29400000`):** Configured with Primary Layer 0 scanout in DRAM, horizontal/vertical polyphase scaling filters, RGB-to-RGB matrix, and DP/DPI 24-bit bridge routing.
 * **Tear-Free Double Buffering & Dual-Shadow Tracking:**
   * Uses double-buffered scanout memory with hardware shadow registers (`DC_FRAMEBUFFER_CONFIG_EX` bit 12) automatically latching `DC_FRAMEBUFFER_ADDRESS` on VBLANK in hardware.
@@ -133,11 +136,40 @@ The VisionFive 2 includes a full-size HDMI 2.0 port driven by the VeriSilicon DC
   * **Cursor Engine:** Thread-safe software arrow sprite rendered directly onto the back buffer before presentation with background save and restore.
   * **Click Hysteresis:** Sub-pixel movement damping distinguishes stationary clicks/taps from window drags, allowing reliable chess piece movement and Macintosh close box window dismissal.
   * **Ribbon Tiling WM:** Full integration with LugalOS Ribbon window manager, supporting terminal splits, on-screen console logging, and graphical canvases (`chess touch`).
-* **Diagnostics:** Run `display`, `display test`, or `cursor` from `lsh`.
+* **Diagnostics:** Run `display`, `display mode [1080p|1440p|4k]`, `display test`, or `cursor` from `lsh`.
 
 ---
 
-## 9. Unattended Headless SD Auto-Boot (`vf2_uEnv.txt`)
+## 9. PWMDAC Audio Subsystem & 3.5mm Headphone Jack
+
+The VisionFive 2 onboard 3.5mm stereo audio jack is driven by the JH7110 internal Pulse-Width Modulation Digital-to-Analog Converter (PWMDAC) peripheral (`0x100D0000`), routed through the StarFive system I/O multiplexer (`SYS_IOMUX`):
+* **Pin Multiplexing & Carrier Mute:**
+  * **Left Channel:** GPIO 33 mapped to GPO 28 (`PWMDAC_LEFT`).
+  * **Right Channel:** GPIO 34 mapped to GPO 29 (`PWMDAC_RIGHT`).
+  * **Idle Carrier Suppression:** When idle or muted, GPIO 33/34 output drivers are tri-stated (`OEN_HIGH = 1`) and the PWMDAC modulator is clock-gated to eliminate high-frequency carrier whine. Active driving is enabled strictly during active PCM streaming or tone synthesis.
+* **Sample Rates & Tone Generation:**
+  * 16-bit stereo delta-sigma PWM modulation with internal sample rate converter (`APB = 100 MHz`).
+  * Shell commands `audio beep [freq] [ms]`, `play FILE.WAV`, and `volume [0..100]` provide audio tone and WAV file playback.
+
+---
+
+## 10. Multicore INT8 GEMM Engine & Hardware Acceleration
+
+LugalOS features a native multicore General Matrix Multiply (GEMM) engine optimized for the SiFive U74 quad-core SMP cluster:
+* **Mathematical Specification:**
+  * INT8 quantized matrix multiplication: $C = A \cdot B^T$ with 32-bit integer accumulation.
+  * Quantized layer clamping: $\text{out} = \text{clamp}_{[-128, 127]}((C + \text{bias}) \gg \text{shift})$.
+  * Zero floating-point instructions (`sstatus.FS = 0`).
+* **SMP Parallelism:**
+  * Work partitioning across 1, 2, or 4 cores with dedicated pinned worker tasks (`gemm_w1`, `gemm_w2`, `gemm_w3` on Harts 2..4).
+  * 64-byte cache-line aligned control structures to eliminate false sharing across U74 L1/L2 caches.
+  * Benchmark throughput: ~215 MMACs/sec (1 core) to ~425+ MMACs/sec (multicore) on 128x128 matrices. Run `gemm bench` from `lsh`.
+* **Hardware Acceleration Architecture:**
+  * For full analysis of the VeriSilicon DC8200 2D hardware cursor engine and PowerVR Series B-Series GPU (BXS-4-64) firmware command stream architecture, see [VisionFive 2 Acceleration Architecture](visionfive2_acceleration.md).
+
+---
+
+## 11. Unattended Headless SD Auto-Boot (`vf2_uEnv.txt`)
 
 To boot LugalOS automatically on power-on without a UART cable and without touching the onboard QSPI flash:
 
@@ -155,7 +187,7 @@ To boot LugalOS automatically on power-on without a UART cable and without touch
 
 ---
 
-## 10. Build, Boot, Storage Sync & HIL Testing Workflows
+## 12. Build, Boot, Storage Sync & HIL Testing Workflows
 
 ### Building the Kernel
 ```bash

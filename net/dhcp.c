@@ -15,6 +15,7 @@
 
 #include "net/ip.h"
 #include "net/netif.h"
+#include "net/ntp.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -32,7 +33,7 @@ enum { DHCPDISCOVER = 1, DHCPOFFER = 2, DHCPREQUEST = 3, DHCPNAK = 6, DHCPACK = 
 typedef struct {
     volatile bool got;
     uint8_t type;
-    uint8_t yiaddr[4], server[4], mask[4], router[4], dns[4];
+    uint8_t yiaddr[4], server[4], mask[4], router[4], dns[4], ntp[4];
     uint32_t lease_s;
     uint32_t xid;
 } dhcp_rx_t;
@@ -52,6 +53,16 @@ static bool g_has_dns;
 bool dhcp_dns_server(uint8_t out[IPV4_LEN]) {
     if (!g_has_dns || !out) return false;
     memcpy(out, g_dns, 4);
+    return true;
+}
+
+/* accepted: the DHCP task sets the NTP server, callers copy it unlocked. */
+static uint8_t g_ntp[4];
+static bool g_has_ntp;
+
+bool dhcp_ntp_server(uint8_t out[IPV4_LEN]) {
+    if (!g_has_ntp || !out) return false;
+    memcpy(out, g_ntp, 4);
     return true;
 }
 
@@ -80,6 +91,7 @@ static void rx_cb(void *ctx, const uint8_t src_ip[IPV4_LEN], uint16_t src_port, 
         else if (code == 1 && n == 4) memcpy(r.mask, v, 4);
         else if (code == 3 && n >= 4) memcpy(r.router, v, 4);
         else if (code == 6 && n >= 4) memcpy(r.dns, v, 4);
+        else if (code == 42 && n >= 4) memcpy(r.ntp, v, 4);
         else if (code == 51 && n == 4) r.lease_s = get32(v);
         i += 2u + n;
     }
@@ -106,7 +118,7 @@ static int send_msg(uint8_t type, const uint8_t *req_ip, const uint8_t *server) 
     if (hl > 0 && hl < 32) { m[o++] = 12; m[o++] = (uint8_t)hl; memcpy(m + o, host, hl); o += hl; }
     if (req_ip)  { m[o++] = 50; m[o++] = 4; memcpy(m + o, req_ip, 4); o += 4; }
     if (server)  { m[o++] = 54; m[o++] = 4; memcpy(m + o, server, 4); o += 4; }
-    m[o++] = 55; m[o++] = 4; m[o++] = 1; m[o++] = 3; m[o++] = 6; m[o++] = 51;         /* parameter request: mask, router, dns, lease */
+    m[o++] = 55; m[o++] = 5; m[o++] = 1; m[o++] = 3; m[o++] = 6; m[o++] = 42; m[o++] = 51; /* mask, router, dns, ntp, lease */
     m[o++] = 255;
     static const uint8_t bcast[4] = { 255, 255, 255, 255 };
     return udp_send(bcast, DHCP_SERVER_PORT, DHCP_CLIENT_PORT, m, o < 300 ? 300 : o) > 0 ? 0 : -1;
@@ -149,6 +161,10 @@ static bool dhcp_exchange(uint8_t ip[4], uint8_t mask[4], uint8_t gw[4], uint32_
             memcpy(g_dns, g_rx.dns, 4);
             g_has_dns = true;
         }
+        if (g_rx.ntp[0] != 0 || g_rx.ntp[1] != 0 || g_rx.ntp[2] != 0 || g_rx.ntp[3] != 0) {
+            memcpy(g_ntp, g_rx.ntp, 4);
+            g_has_ntp = true;
+        }
         *lease_s = g_rx.lease_s ? g_rx.lease_s : 3600;
         ok = true;
     }
@@ -178,7 +194,14 @@ static void dhcp_task(void *arg) {
         if (!ok) { task_sleep_ms(5000); continue; }
         if (net_set_address(ip, mask, gw) == 0) {
             g_owned = true;
-            if (g_has_dns) {
+            if (g_has_dns && g_has_ntp) {
+                printk("[DHCP] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u dns %u.%u.%u.%u ntp %u.%u.%u.%u, lease %us\n",
+                       ip[0], ip[1], ip[2], ip[3],
+                       mask[0], mask[1], mask[2], mask[3],
+                       gw[0], gw[1], gw[2], gw[3],
+                       g_dns[0], g_dns[1], g_dns[2], g_dns[3],
+                       g_ntp[0], g_ntp[1], g_ntp[2], g_ntp[3], (unsigned)lease_s);
+            } else if (g_has_dns) {
                 printk("[DHCP] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u dns %u.%u.%u.%u, lease %us\n",
                        ip[0], ip[1], ip[2], ip[3],
                        mask[0], mask[1], mask[2], mask[3],
@@ -187,6 +210,31 @@ static void dhcp_task(void *arg) {
             } else {
                 printk("[DHCP] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u, lease %us\n", ip[0], ip[1], ip[2], ip[3],
                        mask[0], mask[1], mask[2], mask[3], gw[0], gw[1], gw[2], gw[3], (unsigned)lease_s);
+            }
+
+            /* Step the system clock via NTP on initial lease acquisition.
+             * single task: dhcp_task */
+            static bool s_ntp_synced = false;
+            if (!s_ntp_synced) {
+                const uint8_t *ntp_target = NULL;
+                if (g_has_ntp) {
+                    ntp_target = g_ntp;
+                } else if (gw[0] != 0 || gw[1] != 0 || gw[2] != 0 || gw[3] != 0) {
+                    ntp_target = gw;
+                }
+                if (ntp_target) {
+                    ntp_result_t res;
+                    if (ntp_sync(ntp_target, 3000u, &res) == 0) {
+                        s_ntp_synced = true;
+                        rtc_time_t tm;
+                        time_get_utc(&tm);
+                        printk("[NTP] Clock synchronized via %u.%u.%u.%u: UTC %04u-%02u-%02u %02u:%02u:%02u (offset %s%ld ms)\n",
+                               ntp_target[0], ntp_target[1], ntp_target[2], ntp_target[3],
+                               tm.year, tm.month, tm.day, tm.hour, tm.min, tm.sec,
+                               res.offset_us >= 0 ? "+" : "",
+                               (long)(res.offset_us / 1000));
+                    }
+                }
             }
         }
         /* Renew at half the lease (clamped to something that is not a busy loop). */

@@ -89,7 +89,7 @@
     "kernel/vterm.c": 1729,
     "kernel/zonetest.c": 4,
     "net/arp.c": 196,
-    "net/dhcp.c": 47,
+    "net/dhcp.c": 57,
     "net/dhcpd.c": 101,
     "net/dns.c": 349,
     "net/httpd.c": 55,
@@ -119,7 +119,7 @@
     "lisp": 48395,
     "log": 4226,
     "mqtt": 4220,
-    "net": 1703,
+    "net": 1713,
     "ota": 126,
     "radio": 12072,
     "selftest": 1653,
@@ -130,5 +130,5 @@
     "vfs": 3727
   },
   "ram_code": 434,
-  "total": 173505
+  "total": 173515
 }

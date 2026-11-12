@@ -123,7 +123,7 @@ static screen_t *g_scr;             /* the state block: g_scr_bytes, naturally a
 static uint32_t  g_scr_bytes;
 static bool      g_vt_ready;
 
-#define LCDTERM_BATCH     256u
+#define LCDTERM_BATCH     1024u
 #define LCDTERM_OP_WRITE  'W'       /* terminal output */
 #define LCDTERM_OP_TITLE  'T'       /* 37.1: the status bar's title */
 #define LCDTERM_OP_RIGHT  'S'       /* 37.1: its indicators */

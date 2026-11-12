@@ -162,8 +162,10 @@ LugalOS features a ring buffer kernel logging subsystem ([logging](../dev/kernel
 * `usb tree`: Hierarchical topology of all connected USB root hubs, downstream hubs, and active device functions (VID:PID, device class, driver).
 * `mouse [test]`: Reports USB HID mouse state, device slot, cursor coordinates, button flags, and scroll wheel; `mouse test` runs interactive live coordinate tracking until keypress.
 * `hdmi` / `hdmi info` / `hdmi status`: Innosilicon HDMI 2.0 TX PHY status, TMDS PLL lock state, and active resolution (StarFive VisionFive 2).
+* `hdmi mode [1080p|1440p|4k]`: Switches HDMI transmitter pixel clocks and TMDS PLL timings (StarFive VisionFive 2).
 * `hdmi edid`: Reads and parses connected HDMI monitor EDID block over DDC I2C.
 * `display` / `display info` / `display status` / `lcd`: VeriSilicon DC8200 display controller status (scanout dimensions, RGB565 stride, front/back framebuffer physical and virtual addresses, scanline, frames flipped, and VSYNC counter).
+* `display mode [1080p|1440p|4k]`: Dynamically reconfigures DC8200 scanout resolution, back/front framebuffers, and terminal layout (StarFive VisionFive 2).
 * `display test`: Renders standard 8-color SMPTE test bars to the HDMI display for 3 seconds, then restores the active terminal.
 * `display repaint` / `lcd repaint`: Forces a complete re-conversion of terminal lines to both front and back scanout framebuffers.
 * `tz [POSIX-TZ]`: Shows the time zone and whether summer time is in force; with a rule (`tz CET-1CEST,M3.5.0,M10.5.0/3`, `tz UTC0`) sets it.
@@ -197,7 +199,10 @@ These are bring-up aids for developers. They read hardware state, and some chang
 * `i2cdiag` (ESP32-P4): I2C controller diagnostics.
 * `emac [scan|link|linktest|stats|promisc on/off|loopback|loopback phy [N]|loopback stress [N]]` (ESP32-P4, VisionFive 2): Ethernet MAC diagnostics. `scan` probes PHY addresses on the MDIO bus, `link` checks speed and duplex, `linktest` verifies link down/up detection, `loopback` runs internal MAC and Motorcomm/RTL PHY loopback tests across frame sizes (60 to 1514 bytes), and `stats` prints hardware DMA descriptors and error counters.
 * `audiotest [status|init|dump|reg [register] [value]|exp|amp on|off|vol [0-100]|tone [hz] [ms]|chord|melody|click [n]]` (ESP32-P4): Hardware diagnostic tool for audio codecs (ES8388 on Tab5, ES8311 on LCD-7B/NANO), power amplifier control (NS4150B), and I2S0 peripheral AHB-GDMA streaming audio. `reg` reads or writes codec registers, `exp` dumps IO expanders on Tab5, `vol` sets hardware codec output volume (0-100%), `tone` plays a pure fixed-point sine wave, `chord` plays a 4-voice celestial ambient chime chord, and `melody` plays Beethoven Fuer Elise. `click [n]` makes n on-screen keyboard clicks 300 ms apart (5 by default) whatever `ui.click_sound` says, then prints what they did: the click stream's starts and refusals, the clicks played.
-* `volume [0-100]` (ESP32-P4): Query or adjust hardware audio volume percentage (0% to 100%).
+* `audio [status|beep|volume|mute|unmute|play]` (ESP32-P4, VisionFive 2): Audio subsystem management and tone generation. `status` reports hardware audio controller, sample rate, mute status, and volume; `beep [freq_hz] [duration_ms]` generates a pure sine tone; `volume [0..100]` sets output volume; `mute` and `unmute` control hardware pin drivers; `play FILE.WAV` streams 16-bit uncompressed PCM audio from the filesystem.
+* `volume [0-100]` (ESP32-P4, VisionFive 2): Query or adjust hardware audio volume percentage (0% to 100%).
+* `play FILE.WAV` (ESP32-P4, VisionFive 2): Stream and play a WAV audio file through the speaker or 3.5mm headphone jack.
+* `gemm [bench|test]` (VisionFive 2): Multicore INT8 General Matrix Multiply (GEMM) engine and neural network quantized layer benchmark across SiFive U74 cores (Harts 1..4). Compares single-core, dual-core, and quad-core throughput and validates 100% numerical accuracy.
 * `kbd [desc|on|off]`, `kbdlog [s]`: The USB keyboard host (keyboards and boot mice, behind one hub): state, the devices found (`BOOT KEYBOARD`, `BOOT MOUSE`), descriptors, switching it off to leave the port to `usbprobe`, and a log of reports for `s` seconds (default 30).
 * `usbprobe`, `usbprobe loop`, `boardprobe`, `uart1pins`, `uart1test [ms]` (RP2350): PIO-USB and UART1 pin and loopback probes for board bring-up.
 * `led R G B` / `led off` (ESP32-C6): The on-board RGB LED, 0-255 per channel.

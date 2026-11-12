@@ -57,7 +57,7 @@
     "drivers/idstore_esp32p4.c": 4137,
     "drivers/ina226.c": 52,
     "drivers/launcher_view.c": 4,
-    "drivers/lcdterm.c": 331,
+    "drivers/lcdterm.c": 1099,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
     "drivers/mhz19b.c": 80,
@@ -133,7 +133,7 @@
     "kernel/winevent.c": 4,
     "kernel/zonetest.c": 5,
     "net/arp.c": 196,
-    "net/dhcp.c": 47,
+    "net/dhcp.c": 57,
     "net/dns.c": 349,
     "net/httpd.c": 55,
     "net/llm.c": 261,
@@ -187,7 +187,7 @@
     "chess": 21396,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3870,
+    "display": 4638,
     "drivers": 1305,
     "fs": 4160,
     "httpd": 70,
@@ -197,7 +197,7 @@
     "llp": 3579,
     "log": 8322,
     "mqtt": 4220,
-    "net": 1610,
+    "net": 1620,
     "ota": 120,
     "radio": 12564,
     "selftest": 3962,
@@ -208,5 +208,5 @@
     "vfs": 3727
   },
   "ram_code": 1806,
-  "total": 216451
+  "total": 217229
 }

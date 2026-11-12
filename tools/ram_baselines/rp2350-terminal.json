@@ -47,7 +47,7 @@
     "drivers/ina226.c": 52,
     "drivers/launcher_view.c": 4,
     "drivers/lcd7_rp2350.c": 254,
-    "drivers/lcdterm.c": 2650,
+    "drivers/lcdterm.c": 4186,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
     "drivers/mhz19b.c": 80,
@@ -121,7 +121,7 @@
     "kernel/winevent.c": 4,
     "kernel/zonetest.c": 5,
     "net/arp.c": 196,
-    "net/dhcp.c": 47,
+    "net/dhcp.c": 57,
     "net/dns.c": 349,
     "net/httpd.c": 55,
     "net/llm.c": 261,
@@ -161,7 +161,7 @@
     "chess": 32335,
     "clock-app": 136,
     "crypto": 67,
-    "display": 3189,
+    "display": 4725,
     "drivers": 2700,
     "fs": 64,
     "httpd": 70,
@@ -171,7 +171,7 @@
     "llp": 4091,
     "log": 8322,
     "mqtt": 4220,
-    "net": 1610,
+    "net": 1620,
     "ota": 126,
     "selftest": 1654,
     "sensors": 8689,
@@ -181,5 +181,5 @@
     "vfs": 3727
   },
   "ram_code": 24484,
-  "total": 196462
+  "total": 198008
 }

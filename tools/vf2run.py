@@ -440,14 +440,19 @@ def main() -> int:
     ap.add_argument("--kernel", help="Path to lugalos.bin, lugalos.elf, or build directory")
     ap.add_argument(
         "--method",
-        choices=["ymodem", "tftp", "sd"],
+        choices=["ymodem", "tftp", "sd", "nvme"],
         default="ymodem",
-        help="RAM upload transport (default: ymodem @ 1.5 Mbps + gzip; 'sd' loads /sd0/lugalos.bin via U-Boot fatload)",
+        help="RAM upload transport (default: ymodem @ 1.5 Mbps + gzip; 'sd' loads /sd0/lugalos.bin; 'nvme' loads /nvme0/lugalos.bin)",
     )
     ap.add_argument(
         "--save-sd",
         action="store_true",
         help="Persist the loaded kernel image to /sd0/lugalos.bin via U-Boot fatwrite",
+    )
+    ap.add_argument(
+        "--save-nvme",
+        action="store_true",
+        help="Persist the loaded kernel image to /nvme0/lugalos.bin via U-Boot fatwrite",
     )
     ap.add_argument(
         "--enable-autoboot",
@@ -496,11 +501,11 @@ def main() -> int:
                 read_until_any(ser, ["lsh> ", "/> "], timeout_s=30.0, echo=True)
             return 0
 
-        if args.kernel or args.method == "sd":
+        if args.kernel or args.method in ("sd", "nvme"):
             file_bytes = b""
-            if args.method != "sd":
+            if args.method not in ("sd", "nvme"):
                 if not args.kernel:
-                    sys.exit("[vf2run] --kernel is required unless --method sd is used")
+                    sys.exit("[vf2run] --kernel is required unless --method sd/nvme is used")
                 bin_path = resolve_kernel_bin(args.kernel)
                 with open(bin_path, "rb") as f:
                     file_bytes = f.read()
@@ -522,6 +527,20 @@ def main() -> int:
                 if "bytes read" not in out:
                     sys.exit("[vf2run] Failed to fatload lugalos.bin from mmc 1:1")
                 loaded = True
+            elif args.method == "nvme":
+                print("[vf2run] Initializing PCIe and NVMe in U-Boot...")
+                uboot_cmd(ser, "pci enum", timeout_s=10.0, echo=True)
+                uboot_cmd(ser, "nvme scan", timeout_s=10.0, echo=True)
+                print("[vf2run] Loading lugalos.bin from NVMe SSD (nvme 0:1) to 0x40200000...")
+                out = uboot_cmd(
+                    ser,
+                    f"fatload nvme 0:1 0x{LOAD_ADDR:08x} lugalos.bin",
+                    timeout_s=10.0,
+                    echo=True,
+                )
+                if "bytes read" not in out:
+                    sys.exit("[vf2run] Failed to fatload lugalos.bin from nvme 0:1")
+                loaded = True
             elif args.method == "tftp":
                 host_ip = args.host_ip or detect_host_ip()
                 loaded = load_via_tftp(ser, file_bytes, host_ip, LOAD_ADDR)
@@ -537,6 +556,19 @@ def main() -> int:
                 uboot_cmd(
                     ser,
                     f"fatwrite mmc 1:1 0x{LOAD_ADDR:08x} lugalos.bin {len(file_bytes):x}",
+                    timeout_s=20.0,
+                    echo=True,
+                )
+
+            if args.save_nvme and file_bytes:
+                print(
+                    f"[vf2run] Saving {len(file_bytes)} bytes to /nvme0/lugalos.bin via U-Boot fatwrite..."
+                )
+                uboot_cmd(ser, "pci enum", timeout_s=10.0, echo=True)
+                uboot_cmd(ser, "nvme scan", timeout_s=10.0, echo=True)
+                uboot_cmd(
+                    ser,
+                    f"fatwrite nvme 0:1 0x{LOAD_ADDR:08x} lugalos.bin {len(file_bytes):x}",
                     timeout_s=20.0,
                     echo=True,
                 )
