@@ -85,4 +85,5 @@
 ## 3. Out of scope — future extensions
 
 - **Book images and inline figures**: the converter writes epub images as gray image files next to the chapters (4-bpp, sized for the panel, cover-style dithering for 1-bpp). The reader draws them as image blocks through the `.GIC` blit (`ugui_image4()`), and the layout index gets an `image` block kind with known height. The groundwork is there: alt text keeps the image's place in the text, the icon format and blit exist, and the converter's report counts the dropped images.
+- **Native on-device `.epub` reading (depends on Phase 82 §82.2)**: replace or supplement the host `epub2lmd.py` pre-conversion step by reading `.epub` (ZIP + raw DEFLATE) archives directly on-device, reusing the freestanding MIT/zlib-licensed DEFLATE/inflate engine introduced in [phase82_ssh_and_git_clients.md](phase82_ssh_and_git_clients.md) (32 KB sliding window in PSRAM) alongside a minimal ZIP directory/CRC-32 reader and XHTML-to-text/markdown stream adapter.
 - Hyphenation; justified text.
