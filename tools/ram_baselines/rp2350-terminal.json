@@ -24,8 +24,8 @@
     "selftest": 64
   },
   "bulk_total": 1715944,
-  "heap_bytes": 299008,
-  "heap_pages": 73,
+  "heap_bytes": 294912,
+  "heap_pages": 72,
   "per_file": {
     "(no line info: .data)": 9,
     "arch/riscv/common/elf.c": 1468,
@@ -117,7 +117,7 @@
     "kernel/timezone.c": 101,
     "kernel/tls_cert.c": 29,
     "kernel/umode_probe.c": 720,
-    "kernel/vterm.c": 3441,
+    "kernel/vterm.c": 3665,
     "kernel/winevent.c": 4,
     "kernel/zonetest.c": 5,
     "net/arp.c": 196,
@@ -175,11 +175,11 @@
     "ota": 126,
     "selftest": 1654,
     "sensors": 8689,
-    "shell": 12856,
+    "shell": 13080,
     "storage": 3152,
     "usb": 20933,
     "vfs": 3727
   },
   "ram_code": 24484,
-  "total": 198008
+  "total": 198232
 }

@@ -544,7 +544,10 @@ set_source_files_properties(libc/string.c PROPERTIES COMPILE_OPTIONS -fno-tree-l
 # The vendored crypto files hold much more than the kernel calls (Monocypher's
 # Argon2, EdDSA, BLAKE2b and Elligator): one section per function and object,
 # so --gc-sections keeps only what kernel/crypto.c reaches.
-set_source_files_properties(third_party/crypto/monocypher/monocypher.c third_party/crypto/p256-m/p256-m.c
+set_source_files_properties(
+    third_party/crypto/monocypher/monocypher.c
+    third_party/crypto/monocypher/monocypher-ed25519.c
+    third_party/crypto/p256-m/p256-m.c
     PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections")
 # The reader's text sizes: three faces generated, two used by a build (its
 # panel's scale), so one section each and the third collected.
@@ -712,9 +715,11 @@ set(SOURCES
     # third_party/crypto/*/ORIGIN.md and doc/about.md).
     kernel/crypto.c
     kernel/crypto_selftest.c
+    kernel/zlib.c
     # what an agent's tool call may not do (kernel/ea.c)
     kernel/privilege.c
     third_party/crypto/monocypher/monocypher.c
+    third_party/crypto/monocypher/monocypher-ed25519.c
     third_party/crypto/p256-m/p256-m.c
     # R3/R4: who this node is -- a
     # name and a MAC of its own. Above every wire on purpose: put
@@ -922,6 +927,11 @@ set(SOURCES
     net/dhcpd.c
     net/mdnsd.c
     net/llm.c
+    net/ssh.c
+    net/ssh_cli.c
+    net/git.c
+    net/git_pack.c
+    net/git_cli.c
     # P3: timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is
     # where the off-by-one lives; the interrupt half compiles away on anything

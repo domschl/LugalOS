@@ -197,6 +197,11 @@ LCDTERM_UTEXT static int screen_alloc_term(screen_t *scr, uint8_t vterm_id) {
             fbtext_init(&text, 0, 0, scr->full_cols, SCREEN_TEXT_ROWS(scr->cv.h));
             vtterm_init(&scr->terms[i].vt, &text, t_shadow);
             vtterm_set_shadow_capacity(&scr->terms[i].vt, scr->cap_cols, scr->cap_rows);
+            if (SCREEN_ALT_SHADOW) {
+                uint16_t *t_alt = scr->shadow + (SCREEN_MAX_TERMS + i) * term_cells;
+                shadow_clear(t_alt, term_cells);
+                vtterm_set_alt_shadow(&scr->terms[i].vt, t_alt);
+            }
             vtterm_set_hidden(&scr->terms[i].vt, true);
             scr->terms[i].vt.title[0] = '\0';
             scr->terms[i].vt.title_seq = 0;
@@ -216,6 +221,8 @@ LCDTERM_UTEXT static void screen_free_term(screen_t *scr, uint8_t vterm_id) {
         vtterm_set_hidden(&scr->terms[idx].vt, true);
         uint32_t term_cells = (uint32_t)scr->cap_cols * (uint32_t)scr->cap_rows;
         shadow_clear(scr->shadow + idx * term_cells, term_cells);
+        if (SCREEN_ALT_SHADOW)
+            shadow_clear(scr->shadow + (SCREEN_MAX_TERMS + (uint32_t)idx) * term_cells, term_cells);
     }
 }
 
@@ -2128,6 +2135,11 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
                     SCREEN_TEXT_COLS(w), SCREEN_TEXT_ROWS(h));
         vtterm_init(&scr->terms[t].vt, &t_text, t_shadow);
         vtterm_set_shadow_capacity(&scr->terms[t].vt, cap_cols, cap_rows);
+        if (SCREEN_ALT_SHADOW) {
+            uint16_t *t_alt = scr->shadow + (SCREEN_MAX_TERMS + t) * term_cells;
+            shadow_clear(t_alt, term_cells);
+            vtterm_set_alt_shadow(&scr->terms[t].vt, t_alt);
+        }
         scr->terms[t].in_use = (t == 0);
         scr->terms[t].vterm_id = (uint8_t)t;
     }
@@ -2138,6 +2150,8 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
                 SCREEN_TEXT_COLS(w), SCREEN_TEXT_ROWS(h));
     vtterm_init(&scr->vt, &text, scr->shadow);
     vtterm_set_shadow_capacity(&scr->vt, cap_cols, cap_rows);
+    if (SCREEN_ALT_SHADOW)
+        vtterm_set_alt_shadow(&scr->vt, scr->shadow + SCREEN_MAX_TERMS * term_cells);
     vtterm_set_title(&scr->vt, name, 7);
 
     ribbon_init(&scr->ribbon, (uint16_t)w, (uint16_t)h);

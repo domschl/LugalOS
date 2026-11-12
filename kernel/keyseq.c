@@ -229,6 +229,133 @@ key_event_t keyseq_read_canvas(void) {
     return keyseq_read(&src);
 }
 
+/* --- Reverse encoding: key_event_t -> VT bytes ---------------------------- */
+
+static size_t encode_uint(uint32_t v, uint8_t *out, size_t cap) {
+    char tmp[10];
+    size_t n = 0;
+    do {
+        tmp[n++] = (char)('0' + (v % 10u));
+        v /= 10u;
+    } while (v && n < sizeof(tmp));
+    if (n > cap) return 0;
+    for (size_t i = 0; i < n; i++) out[i] = (uint8_t)tmp[n - 1u - i];
+    return n;
+}
+
+static size_t encode_utf8(uint32_t cp, uint8_t *out, size_t cap) {
+    if (cp < 0x80u) {
+        if (cap < 1u) return 0;
+        out[0] = (uint8_t)cp;
+        return 1u;
+    }
+    if (cp < 0x800u) {
+        if (cap < 2u) return 0;
+        out[0] = (uint8_t)(0xc0u | (cp >> 6));
+        out[1] = (uint8_t)(0x80u | (cp & 0x3fu));
+        return 2u;
+    }
+    if (cp < 0x10000u) {
+        if (cap < 3u) return 0;
+        out[0] = (uint8_t)(0xe0u | (cp >> 12));
+        out[1] = (uint8_t)(0x80u | ((cp >> 6) & 0x3fu));
+        out[2] = (uint8_t)(0x80u | (cp & 0x3fu));
+        return 3u;
+    }
+    if (cp <= 0x10ffffu) {
+        if (cap < 4u) return 0;
+        out[0] = (uint8_t)(0xf0u | (cp >> 18));
+        out[1] = (uint8_t)(0x80u | ((cp >> 12) & 0x3fu));
+        out[2] = (uint8_t)(0x80u | ((cp >> 6) & 0x3fu));
+        out[3] = (uint8_t)(0x80u | (cp & 0x3fu));
+        return 4u;
+    }
+    return 0;
+}
+
+size_t keyseq_encode(key_event_t ev, uint8_t *out, size_t cap) {
+    if (!out || cap == 0 || ev.key == KEY_UNKNOWN) return 0;
+    uint8_t mods = ev.mods & 0x0fu;
+    char csi_let = 0;
+    uint8_t tilde_num = 0;
+    switch (ev.key) {
+    case KEY_UP:     csi_let = 'A'; break;
+    case KEY_DOWN:   csi_let = 'B'; break;
+    case KEY_RIGHT:  csi_let = 'C'; break;
+    case KEY_LEFT:   csi_let = 'D'; break;
+    case KEY_HOME:   csi_let = 'H'; break;
+    case KEY_END:    csi_let = 'F'; break;
+    case KEY_INSERT: tilde_num = 2; break;
+    case KEY_DELETE: tilde_num = 3; break;
+    case KEY_PGUP:   tilde_num = 5; break;
+    case KEY_PGDN:   tilde_num = 6; break;
+    default: break;
+    }
+    if (csi_let) {
+        if (mods == 0) {
+            if (cap < 3u) return 0;
+            out[0] = 0x1bu; out[1] = '['; out[2] = (uint8_t)csi_let;
+            return 3u;
+        }
+        if (cap < 6u) return 0;
+        out[0] = 0x1bu; out[1] = '['; out[2] = '1'; out[3] = ';';
+        size_t p = 4u + encode_uint(1u + mods, out + 4u, cap - 5u);
+        if (p == 4u || p >= cap) return 0;
+        out[p++] = (uint8_t)csi_let;
+        return p;
+    }
+    if (tilde_num) {
+        if (cap < 4u) return 0;
+        out[0] = 0x1bu; out[1] = '[';
+        size_t p = 2u + encode_uint(tilde_num, out + 2u, cap - 2u);
+        if (p == 2u) return 0;
+        if (mods) {
+            if (p + 2u >= cap) return 0;
+            out[p++] = ';';
+            size_t m = encode_uint(1u + mods, out + p, cap - p - 1u);
+            if (!m) return 0;
+            p += m;
+        }
+        if (p >= cap) return 0;
+        out[p++] = '~';
+        return p;
+    }
+    if (ev.key == '\t' && mods == KMOD_SHIFT) {
+        if (cap < 3u) return 0;
+        out[0] = 0x1bu; out[1] = '['; out[2] = 'Z';
+        return 3u;
+    }
+    if (ev.key >= 0x110000u) return 0;
+    if (mods == 0) return encode_utf8(ev.key, out, cap);
+    if (mods == KMOD_ALT) {
+        if (cap < 2u) return 0;
+        out[0] = 0x1bu;
+        size_t n = encode_utf8(ev.key, out + 1u, cap - 1u);
+        return n ? 1u + n : 0;
+    }
+    if (mods == KMOD_CTRL) {
+        if (ev.key >= 'a' && ev.key <= 'z') {
+            out[0] = (uint8_t)(ev.key - 'a' + 1u);
+            return 1u;
+        }
+        if (ev.key >= '@' && ev.key <= '_') {
+            out[0] = (uint8_t)(ev.key - '@');
+            return 1u;
+        }
+    }
+    /* CSI-u fallback for remaining modified keys (e.g. Super+c). */
+    if (cap < 6u) return 0;
+    out[0] = 0x1bu; out[1] = '[';
+    size_t p = 2u + encode_uint(ev.key, out + 2u, cap - 2u);
+    if (p == 2u || p + 2u >= cap) return 0;
+    out[p++] = ';';
+    size_t m = encode_uint(1u + mods, out + p, cap - p - 1u);
+    if (!m || p + m >= cap) return 0;
+    p += m;
+    out[p++] = 'u';
+    return p;
+}
+
 /* --- keyselftest -------------------------------------------------------- */
 
 typedef struct {
@@ -276,6 +403,17 @@ static bool push_one(const char *s, unsigned n, uint32_t key, unsigned mods) {
 
 #define PUSH(s, key, mods) push_one((s), sizeof(s) - 1u, (key), (mods))
 
+static bool enc_roundtrip(uint32_t key, uint8_t mods, const char *exp, unsigned exp_len) {
+    uint8_t buf[24];
+    size_t n = keyseq_encode((key_event_t){ key, mods }, buf, sizeof(buf));
+    if (n != exp_len) return false;
+    for (size_t i = 0; i < n; i++)
+        if (buf[i] != (uint8_t)exp[i]) return false;
+    return st_one((const char *)buf, (unsigned)n, key, mods);
+}
+
+#define ENC(key, mods, exp) enc_roundtrip((key), (mods), (exp), sizeof(exp) - 1u)
+
 int keyseq_selftest(void) {
     int fails = 0;
     struct { const char *name; bool ok; } c[] = {
@@ -309,6 +447,11 @@ int keyseq_selftest(void) {
                                             PUSH("\x1b[5~", KEY_PGUP, 0) && PUSH("\x1b[1;2D", KEY_LEFT, KMOD_SHIFT) &&
                                             PUSH("\x1b[99;9u", 'c', KMOD_SUPER) && PUSH("\x1bw", 'w', KMOD_ALT) &&
                                             PUSH("\x1b[?25h", KEY_UNKNOWN, 0) },
+        { "reverse encode round-trip",      ENC('a', 0, "a") && ENC(0x20ac, 0, "\xe2\x82\xac") &&
+                                            ENC(KEY_UP, 0, "\x1b[A") && ENC(KEY_LEFT, KMOD_SHIFT, "\x1b[1;2D") &&
+                                            ENC(KEY_PGUP, 0, "\x1b[5~") && ENC(KEY_DELETE, KMOD_SHIFT, "\x1b[3;2~") &&
+                                            ENC('\t', KMOD_SHIFT, "\x1b[Z") && ENC('w', KMOD_ALT, "\x1bw") &&
+                                            ENC('c', KMOD_SUPER, "\x1b[99;9u") },
     };
     cprintf("keyseq selftest:\n");
     for (unsigned i = 0; i < sizeof(c) / sizeof(c[0]); i++) {

@@ -137,6 +137,26 @@ bool p256_pubkey_valid(const uint8_t pub[P256_PUB_LEN]);
 int p256_ecdh(uint8_t shared[32], const uint8_t priv[P256_PRIV_LEN],
               const uint8_t peer_pub[P256_PUB_LEN]);
 
+/* --- Ed25519 (RFC 8032, SHA-512) & SHA-512 --------------------------------- */
+
+#define SHA512_LEN         64u
+#define ED25519_SEED_LEN   32u
+#define ED25519_SECRET_LEN 64u
+#define ED25519_PUB_LEN    32u
+#define ED25519_SIG_LEN    64u
+
+void sha512(const void *data, uint32_t len, uint8_t out[SHA512_LEN]);
+/* Derives `secret` (seed || pub) and `pub` from a 32-byte `seed` without mutating `seed`. */
+void ed25519_keypair_from_seed(uint8_t secret[ED25519_SECRET_LEN],
+                               uint8_t pub[ED25519_PUB_LEN],
+                               const uint8_t seed[ED25519_SEED_LEN]);
+void ed25519_sign(uint8_t sig[ED25519_SIG_LEN],
+                  const uint8_t secret[ED25519_SECRET_LEN],
+                  const void *msg, uint32_t len);
+int ed25519_verify(const uint8_t sig[ED25519_SIG_LEN],
+                   const uint8_t pub[ED25519_PUB_LEN],
+                   const void *msg, uint32_t len);
+
 /* --- helpers ----------------------------------------------------------------- */
 
 /* Constant-time equality, as sha256_verify(). True when equal. */

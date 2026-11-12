@@ -8,6 +8,7 @@
 #include "kernel/random.h"
 
 #include "third_party/crypto/monocypher/monocypher.h"
+#include "third_party/crypto/monocypher/monocypher-ed25519.h"
 #include "third_party/crypto/p256-m/p256-m.h"
 
 #include <string.h>
@@ -290,4 +291,33 @@ bool p256_pubkey_valid(const uint8_t pub[P256_PUB_LEN]) {
 int p256_ecdh(uint8_t shared[32], const uint8_t priv[P256_PRIV_LEN],
               const uint8_t peer_pub[P256_PUB_LEN]) {
     return map_p256(p256_ecdh_shared_secret(shared, priv, peer_pub));
+}
+
+/* --- Ed25519 (RFC 8032, SHA-512) & SHA-512 ----------------------------------- */
+
+void sha512(const void *data, uint32_t len, uint8_t out[SHA512_LEN]) {
+    crypto_sha512(out, (const uint8_t *)data, len);
+}
+
+void ed25519_keypair_from_seed(uint8_t secret[ED25519_SECRET_LEN],
+                               uint8_t pub[ED25519_PUB_LEN],
+                               const uint8_t seed[ED25519_SEED_LEN]) {
+    uint8_t tmp[ED25519_SEED_LEN];
+    memcpy(tmp, seed, sizeof(tmp));
+    crypto_ed25519_key_pair(secret, pub, tmp);
+    crypto_wipe(tmp, sizeof(tmp));
+}
+
+void ed25519_sign(uint8_t sig[ED25519_SIG_LEN],
+                  const uint8_t secret[ED25519_SECRET_LEN],
+                  const void *msg, uint32_t len) {
+    crypto_ed25519_sign(sig, secret, (const uint8_t *)msg, len);
+}
+
+int ed25519_verify(const uint8_t sig[ED25519_SIG_LEN],
+                   const uint8_t pub[ED25519_PUB_LEN],
+                   const void *msg, uint32_t len) {
+    return crypto_ed25519_check(sig, pub, (const uint8_t *)msg, len) == 0
+        ? CRYPTO_OK
+        : CRYPTO_ERR_VERIFY;
 }

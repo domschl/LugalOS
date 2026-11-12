@@ -122,16 +122,22 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->text.xbyte = text->xbyte;
     vt->text.whole_rows = text->whole_rows;
     vt->shadow = shadow;
+    vt->alt_shadow = NULL;
     vt->shadow_cols = text->cols;           /* fixed from here on */
     vt->shadow_rows = text->rows;
     vt->col_offset = 0;
     vt->logical_cols = text->cols;
     vt->hidden = false;
+    vt->alt_active = false;
     vt->col = vt->row = 0;
     vt->top = 0;
     vt->bot = (uint16_t)(text->rows - 1u);
     vt->pending_wrap = vt->inverse = vt->cursor_drawn = vt->private_mode = false;
     vt->bg_dark = false;
+    vt->saved_col = vt->saved_row = 0;
+    vt->saved_inverse = vt->saved_bg_dark = vt->saved_valid = false;
+    vt->alt_saved_col = vt->alt_saved_row = 0;
+    vt->alt_saved_inverse = vt->alt_saved_bg_dark = false;
     vt->state = vt->nparams = vt->utf8_need = 0;
     vt->utf8_cp = vt->unknown = 0;
     for (unsigned i = 0; i < 8u; i++) vt->params[i] = 0;
@@ -140,11 +146,26 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->title[0] = '\0';
     vt->title_seq = 0;
     vt->cursor_on = true;
+    vt->dsr_pending = 0;
+    vt->dsr_row1 = 0;
+    vt->dsr_col1 = 0;
     rows_clear(vt, 0, vt->text.rows);
     cursor_show(vt);
 }
 
-LCDTERM_UTEXT void vtterm_repaint(vtterm_t *vt) {
+LCDTERM_UTEXT void vtterm_set_alt_shadow(vtterm_t *vt, uint16_t *alt_shadow) {
+    vt->alt_shadow = alt_shadow;
+}
+
+LCDTERM_UTEXT bool vtterm_take_dsr(vtterm_t *vt, unsigned *row1, unsigned *col1) {
+    if (!vt->dsr_pending) return false;
+    vt->dsr_pending = 0;
+    if (row1) *row1 = vt->dsr_row1;
+    if (col1) *col1 = vt->dsr_col1;
+    return true;
+}
+
+LCDTERM_UTEXT static void repaint_cells(vtterm_t *vt) {
     if (!vt->shadow || vt->hidden) return;
     vt->cursor_drawn = false;              /* its pixels are about to be redrawn */
     unsigned cols = vt->text.cols;
@@ -160,6 +181,11 @@ LCDTERM_UTEXT void vtterm_repaint(vtterm_t *vt) {
             }
         }
     }
+}
+
+LCDTERM_UTEXT void vtterm_repaint(vtterm_t *vt) {
+    if (!vt->shadow || vt->hidden) return;
+    repaint_cells(vt);
     cursor_show(vt);
 }
 
@@ -326,12 +352,142 @@ LCDTERM_UTEXT static void sgr(vtterm_t *vt) {
     }
 }
 
+LCDTERM_UTEXT static void save_cursor(vtterm_t *vt) {
+    vt->saved_col = vt->col;
+    vt->saved_row = vt->row;
+    vt->saved_inverse = vt->inverse;
+    vt->saved_bg_dark = vt->bg_dark;
+    vt->saved_valid = true;
+}
+
+LCDTERM_UTEXT static void restore_cursor(vtterm_t *vt) {
+    if (!vt->saved_valid) return;
+    unsigned cols = vt->logical_cols ? vt->logical_cols : vt->text.cols;
+    vt->col = (uint16_t)clampu(vt->saved_col, cols - 1u);
+    vt->row = (uint16_t)clampu(vt->saved_row, vt->text.rows - 1u);
+    vt->inverse = vt->saved_inverse;
+    vt->bg_dark = vt->saved_bg_dark;
+    vt->pending_wrap = false;
+}
+
+LCDTERM_UTEXT static void line_draw_from_shadow(vtterm_t *vt, unsigned row, unsigned col0, unsigned col1) {
+    if (vt->hidden || !vt->shadow) return;
+    for (unsigned c = col0; c < col1; c++) {
+        if (c >= (unsigned)vt->col_offset && (c - (unsigned)vt->col_offset) < (unsigned)vt->text.cols &&
+            c < vt->shadow_cols) {
+            uint16_t v = vt->shadow[row * vt->shadow_cols + c];
+            fbtext_putcode(&vt->text, c - (unsigned)vt->col_offset, row,
+                           (uint8_t)v, (v & VT_CELL_INVERSE) != 0);
+        }
+    }
+}
+
+LCDTERM_UTEXT static void line_insert_chars(vtterm_t *vt, unsigned n) {
+    unsigned cols = vt->logical_cols ? vt->logical_cols : vt->text.cols;
+    if (vt->col >= cols) return;
+    if (n > cols - vt->col) n = cols - vt->col;
+    if (vt->shadow && vt->row < vt->shadow_rows) {
+        uint16_t *r = &vt->shadow[vt->row * vt->shadow_cols];
+        unsigned lim = cols < vt->shadow_cols ? cols : vt->shadow_cols;
+        for (unsigned c = lim; c > vt->col + n; c--) {
+            r[c - 1u] = r[c - 1u - n];
+        }
+        for (unsigned c = vt->col; c < vt->col + n && c < lim; c++) {
+            r[c] = ' ';
+        }
+        line_draw_from_shadow(vt, vt->row, vt->col, cols);
+    } else {
+        span_clear(vt, vt->row, vt->col, vt->col + n);
+    }
+}
+
+LCDTERM_UTEXT static void line_delete_chars(vtterm_t *vt, unsigned n) {
+    unsigned cols = vt->logical_cols ? vt->logical_cols : vt->text.cols;
+    if (vt->col >= cols) return;
+    if (n > cols - vt->col) n = cols - vt->col;
+    if (vt->shadow && vt->row < vt->shadow_rows) {
+        uint16_t *r = &vt->shadow[vt->row * vt->shadow_cols];
+        unsigned lim = cols < vt->shadow_cols ? cols : vt->shadow_cols;
+        for (unsigned c = vt->col; c + n < lim; c++) {
+            r[c] = r[c + n];
+        }
+        for (unsigned c = (lim > n ? lim - n : 0); c < lim; c++) {
+            r[c] = ' ';
+        }
+        line_draw_from_shadow(vt, vt->row, vt->col, cols);
+    } else {
+        span_clear(vt, vt->row, vt->col, cols);
+    }
+}
+
+LCDTERM_UTEXT static void alt_screen_enter(vtterm_t *vt, bool save_cur) {
+    if (save_cur) {
+        vt->alt_saved_col = vt->col;
+        vt->alt_saved_row = vt->row;
+        vt->alt_saved_inverse = vt->inverse;
+        vt->alt_saved_bg_dark = vt->bg_dark;
+    }
+    if (!vt->alt_active) {
+        if (vt->alt_shadow) {
+            uint16_t *tmp = vt->shadow;
+            vt->shadow = vt->alt_shadow;
+            vt->alt_shadow = tmp;
+        }
+        vt->alt_active = true;
+    }
+    vt->top = 0;
+    vt->bot = (uint16_t)(vt->text.rows - 1u);
+    vt->col = vt->row = 0;
+    vt->pending_wrap = false;
+    rows_clear(vt, 0, vt->text.rows);
+}
+
+LCDTERM_UTEXT static void alt_screen_leave(vtterm_t *vt, bool restore_cur) {
+    if (vt->alt_active) {
+        if (vt->alt_shadow) {
+            uint16_t *tmp = vt->shadow;
+            vt->shadow = vt->alt_shadow;
+            vt->alt_shadow = tmp;
+            repaint_cells(vt);
+        } else {
+            rows_clear(vt, 0, vt->text.rows);
+        }
+        vt->alt_active = false;
+    }
+    vt->top = 0;
+    vt->bot = (uint16_t)(vt->text.rows - 1u);
+    if (restore_cur) {
+        unsigned cols = vt->logical_cols ? vt->logical_cols : vt->text.cols;
+        vt->col = (uint16_t)clampu(vt->alt_saved_col, cols - 1u);
+        vt->row = (uint16_t)clampu(vt->alt_saved_row, vt->text.rows - 1u);
+        vt->inverse = vt->alt_saved_inverse;
+        vt->bg_dark = vt->alt_saved_bg_dark;
+    }
+    vt->pending_wrap = false;
+}
+
 LCDTERM_UTEXT static void csi_final(vtterm_t *vt, char f) {
     unsigned cols = vt->logical_cols ? vt->logical_cols : vt->text.cols;
     unsigned rows = vt->text.rows;
     if (vt->private_mode) {
-        if ((f == 'h' || f == 'l') && vt->nparams >= 1 && vt->params[0] == 25) vt->cursor_on = (f == 'h');
-        else vt->unknown++;
+        if (f == 'h' || f == 'l') {
+            bool set = (f == 'h');
+            for (unsigned i = 0; i < (vt->nparams ? vt->nparams : 1u); i++) {
+                unsigned p = vt->nparams ? vt->params[i] : 0;
+                if (p == 25u) vt->cursor_on = set;
+                else if (p == 1049u) {
+                    if (set) alt_screen_enter(vt, true);
+                    else alt_screen_leave(vt, true);
+                } else if (p == 1047u || p == 47u) {
+                    if (set) alt_screen_enter(vt, false);
+                    else alt_screen_leave(vt, false);
+                } else {
+                    vt->unknown++;
+                }
+            }
+        } else {
+            vt->unknown++;
+        }
         return;
     }
     switch (f) {
@@ -339,6 +495,8 @@ LCDTERM_UTEXT static void csi_final(vtterm_t *vt, char f) {
     case 'B': vt->row = (uint16_t)clampu(vt->row + param(vt, 0, 1), rows - 1u); break;
     case 'C': vt->col = (uint16_t)clampu(vt->col + param(vt, 0, 1), cols - 1u); break;
     case 'D': vt->col = (uint16_t)(vt->col >= param(vt, 0, 1) ? vt->col - param(vt, 0, 1) : 0); break;
+    case 'G': vt->col = (uint16_t)clampu(param(vt, 0, 1) - 1u, cols - 1u); break;
+    case 'd': vt->row = (uint16_t)clampu(param(vt, 0, 1) - 1u, rows - 1u); break;
     case 'H':
     case 'f':
         vt->row = (uint16_t)clampu(param(vt, 0, 1) - 1u, rows - 1u);
@@ -364,6 +522,15 @@ LCDTERM_UTEXT static void csi_final(vtterm_t *vt, char f) {
         }
         break;
     }
+    case '@': line_insert_chars(vt, param(vt, 0, 1)); break;
+    case 'P': line_delete_chars(vt, param(vt, 0, 1)); break;
+    case 'X': {
+        unsigned n = param(vt, 0, 1);
+        unsigned end = vt->col + n;
+        if (end > cols) end = cols;
+        if (vt->col < end) span_clear(vt, vt->row, vt->col, end);
+        break;
+    }
     case 'r': {                            /* 37.5b: DECSTBM, then home */
         unsigned t = param(vt, 0, 1) - 1u, b = param(vt, 1, rows) - 1u;
         if (b >= rows) b = rows - 1u;
@@ -383,6 +550,17 @@ LCDTERM_UTEXT static void csi_final(vtterm_t *vt, char f) {
     case 'T':
         region_scroll(vt, vt->top, vt->bot, param(vt, 0, 1), f == 'S');
         break;
+    case 's': save_cursor(vt); return;
+    case 'u': restore_cursor(vt); return;
+    case 'n':
+        if (vt->nparams >= 1 && vt->params[0] == 6u) {
+            vt->dsr_pending = 1;
+            vt->dsr_row1 = (uint16_t)(vt->row + 1u);
+            vt->dsr_col1 = (uint16_t)(vt->col + 1u);
+            return;
+        }
+        vt->unknown++;
+        return;
     case 'm': sgr(vt); return;             /* SGR leaves a pending wrap alone */
     default:  vt->unknown++; return;
     }
@@ -446,6 +624,17 @@ LCDTERM_UTEXT static void esc_byte(vtterm_t *vt, unsigned char c) {
         vt->state = ST_OSC;
         vt->osc_len = 0;
         vt->osc_esc = false;
+    } else if (c == '7') {
+        save_cursor(vt);
+        vt->state = ST_GROUND;
+    } else if (c == '8') {
+        restore_cursor(vt);
+        vt->state = ST_GROUND;
+    } else if (c == 'M') {
+        if (vt->row == vt->top) region_scroll(vt, vt->top, vt->bot, 1u, false);
+        else if (vt->row > 0) vt->row--;
+        vt->pending_wrap = false;
+        vt->state = ST_GROUND;
     } else {
         vt->state = ST_GROUND;             /* ESC x: two bytes, no effect */
         vt->unknown++;
@@ -730,9 +919,40 @@ int vtterm_selftest(void) {
              cell_is(&vt, 0, 0, 0x2654, false) && cell_is(&vt, 1, 0, 0x265a, true) &&
              cell_is(&vt, 2, 0, 0x2659, true) && cell_is(&vt, 3, 0, 0x265f, false));
 
-    st_fresh(&cx, &vt); FEED(&vt, "\033[5n\033=\033[?1049hX");
+    st_fresh(&cx, &vt); FEED(&vt, "\033[5n\033=\033[?9999hX");
     st_check(&cx, "unknown sequences are swallowed and counted, never printed",
              row_is(&vt, 0, "X") && vt.unknown == 3);
+
+    st_fresh(&cx, &vt);
+    FEED(&vt, "ABCDE\033[3G1\033[2dZ\033[1;2H\033[2@xy\033[4G\033[2P\033[1;1H\033[2X");
+    st_check(&cx, "CHA (G), VPA (d), ICH (@), DCH (P), ECH (X)",
+             cell_is(&vt, 0, 0, ' ', false) && cell_is(&vt, 1, 0, ' ', false) &&
+             cell_is(&vt, 2, 0, 'y', false) && cell_is(&vt, 3, 0, 'D', false) &&
+             cell_is(&vt, 4, 0, 'E', false) && cell_is(&vt, 3, 1, 'Z', false));
+
+    st_fresh(&cx, &vt);
+    FEED(&vt, "top\033[2;1Hmid\033[1;1H\033MNEW");
+    st_check(&cx, "RI (ESC M) at top row scrolls down and opens a blank row",
+             row_is(&vt, 0, "NEW") && row_is(&vt, 1, "top") && row_is(&vt, 2, "mid"));
+
+    {
+        unsigned r1 = 0, c1 = 0;
+        st_fresh(&cx, &vt);
+        FEED(&vt, "\033[2;4H\0337\033[1;1H\0338A\033[s\033[4;8H\033[uB\033[6n");
+        bool got_dsr = vtterm_take_dsr(&vt, &r1, &c1);
+        st_check(&cx, "ESC 7/8, CSI s/u save/restore cursor, CSI 6 n DSR",
+                 cell_is(&vt, 3, 1, 'A', false) && cell_is(&vt, 4, 1, 'B', false) &&
+                 got_dsr && r1 == 2 && c1 == 6 && !vtterm_take_dsr(&vt, NULL, NULL));
+    }
+
+    {
+        uint16_t alt_sh[ST_COLS * ST_ROWS];
+        st_fresh(&cx, &vt);
+        vtterm_set_alt_shadow(&vt, alt_sh);
+        FEED(&vt, "MAIN\033[2;3H\033[?1049hALT\033[?1049l!");
+        st_check(&cx, "alt screen ?1049h/?1049l preserves main buffer and cursor",
+                 !vt.alt_active && row_is(&vt, 0, "MAIN") && cell_is(&vt, 2, 1, '!', false));
+    }
 
     st_fresh(&cx, &vt); FEED(&vt, "\xe2\x94\x80\xe2\x94\x82\xe2\x98\x83|\xff|");
     st_check(&cx, "UTF-8: box drawing; unknown code point and bad byte as the replacement",

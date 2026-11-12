@@ -118,7 +118,7 @@
     "kernel/timezone.c": 101,
     "kernel/tls_cert.c": 29,
     "kernel/umode_probe.c": 720,
-    "kernel/vterm.c": 3441,
+    "kernel/vterm.c": 3665,
     "kernel/zonetest.c": 5,
     "net/arp.c": 196,
     "net/dhcp.c": 57,
@@ -190,10 +190,10 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 13366,
+    "shell": 13590,
     "storage": 7456,
     "vfs": 3727
   },
   "ram_code": 1806,
-  "total": 221276
+  "total": 221500
 }

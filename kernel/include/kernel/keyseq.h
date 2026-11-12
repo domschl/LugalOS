@@ -2,6 +2,7 @@
 #define LUGALOS_KERNEL_KEYSEQ_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Bytes from a terminal to keys.
@@ -77,6 +78,10 @@ typedef struct {
 
 bool keyseq_push(keyseq_push_t *ps, int byte, key_event_t *out);
 bool keyseq_push_flush(keyseq_push_t *ps, key_event_t *out);
+
+/* Encodes a key_event_t back into ANSI/VT bytes for a remote PTY.
+ * Returns the byte count written to `out` (0 on KEY_UNKNOWN or small `cap`). */
+size_t keyseq_encode(key_event_t ev, uint8_t *out, size_t cap);
 
 /* `keyselftest`: every form above from byte strings. Prints
  * KEYSEQ_SELFTEST_OK/_FAIL; returns the failures. */

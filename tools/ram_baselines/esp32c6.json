@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 299008,
-  "heap_pages": 73,
+  "heap_bytes": 294912,
+  "heap_pages": 72,
   "per_file": {
     "(no line info: .data)": 27,
     "(no line info: .radio_bss)": 13212,
@@ -108,7 +108,7 @@
     "kernel/timezone.c": 101,
     "kernel/tls_cert.c": 29,
     "kernel/umode_probe.c": 828,
-    "kernel/vterm.c": 1729,
+    "kernel/vterm.c": 1841,
     "kernel/zonetest.c": 4,
     "net/arp.c": 196,
     "net/dhcp.c": 57,
@@ -146,11 +146,11 @@
     "radio": 26177,
     "selftest": 2449,
     "sensors": 8688,
-    "shell": 7262,
+    "shell": 7374,
     "storage": 13,
     "usb": 6481,
     "vfs": 3215
   },
   "ram_code": 16638,
-  "total": 163839
+  "total": 163951
 }

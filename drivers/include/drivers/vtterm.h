@@ -53,12 +53,15 @@
 #define VT_OSC_MAX      72u
 #define VT_DARK_LUMA    160u       /* 0..255: a background below this is dark */
 
+
 typedef struct {
     fbtext_t  text;
     uint16_t *shadow;           /* shadow_cols x rows cells, or NULL for none */
+    uint16_t *alt_shadow;       /* optional alternate screen buffer (?1049h/l) */
     uint16_t  shadow_cols;      /* the shadow's row stride in cells, and the widest the window may be */
     uint16_t  shadow_rows;      /* the shadow's rows: the tallest the window may be */
     bool      hidden;           /* 37.3b: draw into the shadow only */
+    bool      alt_active;       /* currently showing the alternate screen buffer */
     uint16_t  col, row;
     uint16_t  top, bot;         /* 37.5b: the scroll region, rows top..bot */
     bool      pending_wrap;
@@ -66,6 +69,10 @@ typedef struct {
     bool      bg_dark;          /* 37.4: the SGR background is dark: reverse video */
     bool      cursor_on;        /* ?25h / ?25l */
     bool      cursor_drawn;     /* the XOR underline is currently on screen */
+    uint16_t  saved_col, saved_row;
+    bool      saved_inverse, saved_bg_dark, saved_valid;
+    uint16_t  alt_saved_col, alt_saved_row;
+    bool      alt_saved_inverse, alt_saved_bg_dark;
     uint8_t   state;            /* parser state, vtterm.c */
     uint8_t   nparams;
     bool      private_mode;     /* CSI ? ... */
@@ -80,11 +87,21 @@ typedef struct {
     uint32_t  title_seq;        /* bumped whenever `title` changes */
     uint16_t  col_offset;       /* horizontal scroll offset into shadow */
     uint16_t  logical_cols;     /* text column wrapping width */
+    uint8_t   dsr_pending;      /* 1 when CSI 6 n requested cursor position */
+    uint16_t  dsr_row1;         /* 1-based row for pending DSR */
+    uint16_t  dsr_col1;         /* 1-based column for pending DSR */
 } vtterm_t;
 
 /* Takes over `text`'s grid: clears it and homes the cursor. `shadow` holds
  * text->cols * text->rows cells, or is NULL. */
 void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *shadow);
+
+/* Attaches an optional alternate-screen shadow buffer (same capacity as shadow)
+ * for ?1049h/?1049l. */
+void vtterm_set_alt_shadow(vtterm_t *vt, uint16_t *alt_shadow);
+
+/* Consumes a pending CSI 6 n (Device Status Report) coordinate pair if set. */
+bool vtterm_take_dsr(vtterm_t *vt, unsigned *row1, unsigned *col1);
 
 /* Redraws every cell from the shadow (a no-op without one), and the cursor. */
 void vtterm_repaint(vtterm_t *vt);

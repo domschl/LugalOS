@@ -232,6 +232,8 @@ set(_optional_keys
     # the certificate the owner's CA issued, as /dev/tls, /dev/tlscsr and /dev/tlscert (kernel/tls_cert.c).
     CONFIG_TLS_SERVER
     CONFIG_TLS_CLIENT
+    CONFIG_SSH_CLIENT
+    CONFIG_GIT_CLIENT
     # Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL

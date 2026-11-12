@@ -63,6 +63,7 @@ typedef struct {
     /* A client's (tls_client_init()). */
     bool     client;
     bool     mfl_ok;                           /* the server took max_fragment_length */
+    bool     allow_unverified;                 /* explicit opt-in when ca_pub is NULL */
     const uint8_t *ca_pub;                     /* 64 bytes: the CA the server's certificate must come from */
     const char *host;                          /* the name or dotted address the certificate must carry */
     uint8_t  eph[32];                          /* our X25519 secret, until the ServerHello */
@@ -79,6 +80,7 @@ void tls_server_init(tls_t *t, const uint8_t *cert, uint32_t cert_len, const uin
  * not take max_fragment_length is refused unless it is TLS_RECORD_MAX. False if entropy is missing. */
 bool tls_client_init(tls_t *t, const char *host, const uint8_t ca_pub[64],
                      tls_recv_fn recv, tls_send_fn send, void *io, uint8_t *rx, uint32_t rx_cap, uint8_t *tx);
+void tls_client_set_insecure(tls_t *t, bool allow);
 
 /* Runs the handshake as bytes arrive, then returns application data: bytes copied into `buf`, 0 when
  * none is ready yet, TLS_EOF or TLS_FAIL. */

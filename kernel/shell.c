@@ -134,6 +134,8 @@
 #include "net/spartan.h"
 #include "net/dns.h"
 #include "net/http.h"
+#include "net/ssh.h"
+#include "net/git.h"
 #include "net/llm.h"
 #include "kernel/ea.h"
 #include "net/ntp.h"
@@ -8252,6 +8254,28 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "mqtt ", 5) == 0) {
         cmd_mqtt(&cmd_line[5]);
         return;
+#if defined(CONFIG_SSH_CLIENT)
+    } else if (strcmp(cmd_line, "ssh") == 0) {
+        cmd_ssh("");
+        return;
+    } else if (strncmp(cmd_line, "ssh ", 4) == 0) {
+        cmd_ssh(&cmd_line[4]);
+        return;
+    } else if (strcmp(cmd_line, "ssh-keygen") == 0) {
+        cmd_ssh_keygen("");
+        return;
+    } else if (strncmp(cmd_line, "ssh-keygen ", 11) == 0) {
+        cmd_ssh_keygen(&cmd_line[11]);
+        return;
+#endif
+#if defined(CONFIG_GIT_CLIENT)
+    } else if (strcmp(cmd_line, "git") == 0) {
+        cmd_git("");
+        return;
+    } else if (strncmp(cmd_line, "git ", 4) == 0) {
+        cmd_git(&cmd_line[4]);
+        return;
+#endif
     } else if (strcmp(cmd_line, "ntp") == 0) {
         cmd_ntp(NULL);
         return;

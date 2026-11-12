@@ -6,19 +6,39 @@
 #include "kernel/time.h"
 #include "kernel/console.h"
 #include "libc/include/string.h"
+#if defined(CONFIG_TLS_CLIENT)
+#include "net/tls.h"
+#include "kernel/crypto.h"
+#include "kernel/identity.h"
+#include "kernel/palloc.h"
+#endif
 
-bool http_parse_url(const char *url, char *host, size_t host_sz,
-                    uint16_t *port, char *path, size_t path_sz) {
+static bool has_ci_prefix(const char *s, const char *prefix) {
+    for (size_t i = 0; prefix[i]; i++) {
+        char c1 = s[i];
+        if (c1 == '\0') return false;
+        if (c1 >= 'A' && c1 <= 'Z') c1 = (char)(c1 + 32);
+        if (c1 != prefix[i]) return false;
+    }
+    return true;
+}
+
+bool http_parse_url_ex(const char *url, bool *is_https, char *host, size_t host_sz,
+                       uint16_t *port, char *path, size_t path_sz) {
     if (!url || !host || host_sz == 0 || !port || !path || path_sz == 0) return false;
 
-    const char *prefix = "http://";
-    size_t plen = strlen(prefix);
-    for (size_t i = 0; i < plen; i++) {
-        char c1 = url[i];
-        char c2 = prefix[i];
-        if (c1 >= 'A' && c1 <= 'Z') c1 = (char)(c1 + 32);
-        if (c1 != c2) return false;
+    bool https = false;
+    size_t plen = 0;
+    if (has_ci_prefix(url, "https://")) {
+        https = true;
+        plen = 8;
+    } else if (has_ci_prefix(url, "http://")) {
+        https = false;
+        plen = 7;
+    } else {
+        return false;
     }
+    if (is_https) *is_https = https;
 
     const char *p = url + plen;
     if (*p == '\0') return false;
@@ -55,7 +75,7 @@ bool http_parse_url(const char *url, char *host, size_t host_sz,
         if (val <= 0 || val > 65535) return false;
         *port = (uint16_t)val;
     } else {
-        *port = HTTP_DEFAULT_PORT;
+        *port = https ? HTTPS_DEFAULT_PORT : HTTP_DEFAULT_PORT;
     }
 
     if (slash) {
@@ -69,6 +89,83 @@ bool http_parse_url(const char *url, char *host, size_t host_sz,
     }
 
     return true;
+}
+
+bool http_parse_url(const char *url, char *host, size_t host_sz,
+                    uint16_t *port, char *path, size_t path_sz) {
+    return http_parse_url_ex(url, NULL, host, host_sz, port, path, path_sz);
+}
+
+#if defined(CONFIG_TLS_CLIENT)
+typedef struct {
+    tls_t   tls;
+    uint8_t rx[TLS_CLIENT_RX_MAX];
+    uint8_t tx[TLS_TX_CAP];
+    uint8_t ca[NODE_TLS_CA_LEN];
+} http_tls_conn_t;
+
+#define HTTP_TLS_PAGES ((sizeof(http_tls_conn_t) + 4095u) / 4096u)
+
+static int http_tls_recv(void *ctx, uint8_t *buf, uint32_t len) {
+    tcp_stream_t *s = (tcp_stream_t *)ctx;
+    int n = tcp_stream_read(s, buf, len);
+    if (n > 0) return n;
+    if (n < 0 || tcp_stream_peer_closed(s)) return -1;
+    return 0;
+}
+
+static int http_tls_send(void *ctx, const uint8_t *buf, uint32_t len) {
+    return tcp_stream_write((tcp_stream_t *)ctx, buf, len);
+}
+#endif
+
+typedef struct {
+    tcp_stream_t stream;
+    bool         tls_on;
+#if defined(CONFIG_TLS_CLIENT)
+    http_tls_conn_t *tls_mem;
+#endif
+} http_conn_t;
+
+static int conn_write(http_conn_t *c, const uint8_t *buf, uint32_t len) {
+#if defined(CONFIG_TLS_CLIENT)
+    if (c->tls_on) {
+        int n = tls_write(&c->tls_mem->tls, buf, len);
+        return n < 0 ? -1 : n;
+    }
+#endif
+    return tcp_stream_write(&c->stream, buf, len);
+}
+
+static int conn_read(http_conn_t *c, uint8_t *buf, uint32_t len) {
+#if defined(CONFIG_TLS_CLIENT)
+    if (c->tls_on) {
+        tls_flush(&c->tls_mem->tls);
+        int n = tls_read(&c->tls_mem->tls, buf, len);
+        return n < 0 ? -1 : n;
+    }
+#endif
+    return tcp_stream_read(&c->stream, buf, len);
+}
+
+static bool conn_peer_closed(http_conn_t *c) {
+    return tcp_stream_peer_closed(&c->stream);
+}
+
+static void conn_close(http_conn_t *c) {
+#if defined(CONFIG_TLS_CLIENT)
+    if (c->tls_on && c->tls_mem) {
+        tls_close(&c->tls_mem->tls);
+        tls_wipe(&c->tls_mem->tls);
+        c->tls_on = false;
+    }
+    if (c->tls_mem) {
+        crypto_wipe_bytes(c->tls_mem, HTTP_TLS_PAGES * 4096u);
+        palloc_free(c->tls_mem, HTTP_TLS_PAGES);
+        c->tls_mem = NULL;
+    }
+#endif
+    tcp_stream_close(&c->stream);
 }
 
 static int parse_hex_digit(char c) {
@@ -88,11 +185,19 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
     char host[64];
     char path[128];
     uint16_t port = HTTP_DEFAULT_PORT;
+    bool is_https = false;
 
-    if (!http_parse_url(req->url, host, sizeof(host), &port, path, sizeof(path))) {
+    if (!http_parse_url_ex(req->url, &is_https, host, sizeof(host), &port, path, sizeof(path))) {
         if (err_out && err_sz > 0) strncpy(err_out, "Failed to parse HTTP URL", err_sz - 1);
         return -2;
     }
+
+#if !defined(CONFIG_TLS_CLIENT)
+    if (is_https) {
+        if (err_out && err_sz > 0) strncpy(err_out, "HTTPS not enabled on this target", err_sz - 1);
+        return -11;
+    }
+#endif
 
     uint8_t ip[IPV4_LEN];
     if (!dns_resolve(host, ip)) {
@@ -102,8 +207,9 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
         return -3;
     }
 
-    tcp_stream_t stream;
-    if (tcp_stream_open(&stream, ip, port) != 0) {
+    http_conn_t conn;
+    memset(&conn, 0, sizeof(conn));
+    if (tcp_stream_open(&conn.stream, ip, port) != 0) {
         if (err_out && err_sz > 0) strncpy(err_out, "Failed to open TCP stream", err_sz - 1);
         return -4;
     }
@@ -111,37 +217,99 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
     uint32_t timeout = req->timeout_ms ? req->timeout_ms : 20000;
     uint64_t deadline = time_get_ms() + (timeout < 10000 ? 10000 : timeout);
     int ready = 0;
-    while ((ready = tcp_stream_ready(&stream)) == 0) {
+    while ((ready = tcp_stream_ready(&conn.stream)) == 0) {
         if (console_interrupt_requested()) {
-            tcp_stream_close(&stream);
+            conn_close(&conn);
             if (err_out && err_sz > 0) strncpy(err_out, "Connection canceled by user", err_sz - 1);
             return -5;
         }
         if (time_get_ms() >= deadline) {
-            tcp_stream_close(&stream);
+            conn_close(&conn);
             if (err_out && err_sz > 0) strncpy(err_out, "TCP connection timed out", err_sz - 1);
             return -6;
         }
         sched_yield();
     }
     if (ready < 0) {
-        tcp_stream_close(&stream);
+        conn_close(&conn);
         if (err_out && err_sz > 0) strncpy(err_out, "Connection refused or reset", err_sz - 1);
         return -7;
     }
+
+#if defined(CONFIG_TLS_CLIENT)
+    if (is_https) {
+        conn.tls_mem = (http_tls_conn_t *)palloc_pages_bulk(HTTP_TLS_PAGES);
+        if (!conn.tls_mem) {
+            conn_close(&conn);
+            if (err_out && err_sz > 0) strncpy(err_out, "Out of memory for TLS session", err_sz - 1);
+            return -11;
+        }
+        const uint8_t *ca_ptr = NULL;
+        if (req->tls_ca_pub) {
+            memcpy(conn.tls_mem->ca, req->tls_ca_pub, NODE_TLS_CA_LEN);
+            ca_ptr = conn.tls_mem->ca;
+        } else if (node_tls_ca(conn.tls_mem->ca)) {
+            ca_ptr = conn.tls_mem->ca;
+        } else if (!req->tls_insecure) {
+            conn_close(&conn);
+            if (err_out && err_sz > 0) strncpy(err_out, "No TLS CA installed (/dev/tlsca)", err_sz - 1);
+            return -11;
+        }
+        if (!tls_client_init(&conn.tls_mem->tls, host, ca_ptr, http_tls_recv, http_tls_send,
+                             &conn.stream, conn.tls_mem->rx, sizeof(conn.tls_mem->rx),
+                             conn.tls_mem->tx)) {
+            conn_close(&conn);
+            if (err_out && err_sz > 0) strncpy(err_out, "TLS init failed", err_sz - 1);
+            return -11;
+        }
+        if (!ca_ptr && req->tls_insecure) tls_client_set_insecure(&conn.tls_mem->tls, true);
+        conn.tls_on = true;
+        while (!tls_established(&conn.tls_mem->tls)) {
+            uint8_t none[1];
+            if (tls_read(&conn.tls_mem->tls, none, 0) < 0) {
+                if (err_out && err_sz > 0) {
+                    ksnprintf(err_out, err_sz, "TLS handshake failed (alert %u)",
+                              conn.tls_mem->tls.alert);
+                }
+                conn_close(&conn);
+                return -11;
+            }
+            if (console_interrupt_requested()) {
+                conn_close(&conn);
+                if (err_out && err_sz > 0) strncpy(err_out, "Connection canceled by user", err_sz - 1);
+                return -5;
+            }
+            if (time_get_ms() >= deadline) {
+                conn_close(&conn);
+                if (err_out && err_sz > 0) strncpy(err_out, "TLS handshake timed out", err_sz - 1);
+                return -6;
+            }
+            sched_yield();
+        }
+    }
+#endif
 
     /* Format HTTP/1.1 request header */
     const char *method = req->method;
     if (!method) method = (req->body && req->body_len > 0) ? "POST" : "GET";
 
     char hdr_buf[512];
-    int hlen = ksnprintf(hdr_buf, sizeof(hdr_buf),
-                         "%s %s HTTP/1.1\r\n"
-                         "Host: %s:%u\r\n"
-                         "User-Agent: LugalOS/0.20\r\n"
-                         "Accept: text/event-stream, application/json, */*\r\n"
-                         "Connection: close\r\n",
-                         method, path, host, (unsigned)port);
+    uint16_t def_port = is_https ? HTTPS_DEFAULT_PORT : HTTP_DEFAULT_PORT;
+    int hlen = (port == def_port)
+        ? ksnprintf(hdr_buf, sizeof(hdr_buf),
+                    "%s %s HTTP/1.1\r\n"
+                    "Host: %s\r\n"
+                    "User-Agent: LugalOS/0.20\r\n"
+                    "Accept: text/event-stream, application/json, */*\r\n"
+                    "Connection: close\r\n",
+                    method, path, host)
+        : ksnprintf(hdr_buf, sizeof(hdr_buf),
+                    "%s %s HTTP/1.1\r\n"
+                    "Host: %s:%u\r\n"
+                    "User-Agent: LugalOS/0.20\r\n"
+                    "Accept: text/event-stream, application/json, */*\r\n"
+                    "Connection: close\r\n",
+                    method, path, host, (unsigned)port);
 
     if (req->content_type && hlen > 0 && (size_t)hlen < sizeof(hdr_buf) - 64) {
         hlen += ksnprintf(hdr_buf + hlen, sizeof(hdr_buf) - (size_t)hlen,
@@ -163,11 +331,11 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
     size_t sent = 0;
     deadline = time_get_ms() + 5000;
     while (sent < (size_t)hlen) {
-        int n = tcp_stream_write(&stream, (const uint8_t *)hdr_buf + sent, (uint32_t)((size_t)hlen - sent));
-        if (n < 0) { tcp_stream_close(&stream); return -8; }
+        int n = conn_write(&conn, (const uint8_t *)hdr_buf + sent, (uint32_t)((size_t)hlen - sent));
+        if (n < 0) { conn_close(&conn); return -8; }
         if (n > 0) { sent += (size_t)n; continue; }
         if (time_get_ms() >= deadline || console_interrupt_requested()) {
-            tcp_stream_close(&stream);
+            conn_close(&conn);
             return -9;
         }
         sched_yield();
@@ -178,11 +346,11 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
         sent = 0;
         deadline = time_get_ms() + 10000;
         while (sent < (size_t)req->body_len) {
-            int n = tcp_stream_write(&stream, (const uint8_t *)req->body + sent, (uint32_t)((size_t)req->body_len - sent));
-            if (n < 0) { tcp_stream_close(&stream); return -8; }
+            int n = conn_write(&conn, (const uint8_t *)req->body + sent, (uint32_t)((size_t)req->body_len - sent));
+            if (n < 0) { conn_close(&conn); return -8; }
             if (n > 0) { sent += (size_t)n; continue; }
             if (time_get_ms() >= deadline || console_interrupt_requested()) {
-                tcp_stream_close(&stream);
+                conn_close(&conn);
                 return -9;
             }
             sched_yield();
@@ -199,16 +367,16 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
 
     while (in_headers && time_get_ms() < deadline) {
         if (console_interrupt_requested()) {
-            tcp_stream_close(&stream);
+            conn_close(&conn);
             if (err_out && err_sz > 0) strncpy(err_out, "Interrupted by user", err_sz - 1);
             return -5;
         }
 
         uint8_t ch;
-        int n = tcp_stream_read(&stream, &ch, 1);
+        int n = conn_read(&conn, &ch, 1);
         if (n < 0) break;
         if (n == 0) {
-            if (tcp_stream_peer_closed(&stream)) break;
+            if (conn_peer_closed(&conn)) break;
             sched_yield();
             continue;
         }
@@ -251,7 +419,7 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
     }
 
     if (in_headers || status_code == 0) {
-        tcp_stream_close(&stream);
+        conn_close(&conn);
         if (err_out && err_sz > 0) strncpy(err_out, "Incomplete or missing HTTP response header", err_sz - 1);
         return -10;
     }
@@ -265,7 +433,7 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
         while (time_get_ms() < deadline) {
             if (console_interrupt_requested()) break;
 
-            int n = tcp_stream_read(&stream, buf, sizeof(buf));
+            int n = conn_read(&conn, buf, sizeof(buf));
             if (n < 0) break;
             if (n > 0) {
                 deadline = time_get_ms() + timeout; /* Reset timeout on progress */
@@ -275,7 +443,7 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
                 }
                 continue;
             }
-            if (tcp_stream_peer_closed(&stream)) break;
+            if (conn_peer_closed(&conn)) break;
             sched_yield();
         }
     } else {
@@ -290,9 +458,9 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
             bool got_line = false;
             while (time_get_ms() < deadline && !console_interrupt_requested()) {
                 uint8_t c;
-                int n = tcp_stream_read(&stream, &c, 1);
+                int n = conn_read(&conn, &c, 1);
                 if (n <= 0) {
-                    if (n < 0 || tcp_stream_peer_closed(&stream)) break;
+                    if (n < 0 || conn_peer_closed(&conn)) break;
                     sched_yield();
                     continue;
                 }
@@ -321,9 +489,9 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
             while (chunk_rem > 0 && time_get_ms() < deadline) {
                 if (console_interrupt_requested()) break;
                 uint32_t want = chunk_rem < sizeof(buf) ? chunk_rem : (uint32_t)sizeof(buf);
-                int n = tcp_stream_read(&stream, buf, want);
+                int n = conn_read(&conn, buf, want);
                 if (n <= 0) {
-                    if (n < 0 || tcp_stream_peer_closed(&stream)) break;
+                    if (n < 0 || conn_peer_closed(&conn)) break;
                     sched_yield();
                     continue;
                 }
@@ -339,13 +507,13 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
             int crlf_count = 0;
             while (crlf_count < 2 && time_get_ms() < deadline) {
                 uint8_t c;
-                int n = tcp_stream_read(&stream, &c, 1);
+                int n = conn_read(&conn, &c, 1);
                 if (n > 0) crlf_count++;
                 else sched_yield();
             }
         }
     }
 
-    tcp_stream_close(&stream);
+    conn_close(&conn);
     return status_code;
 }

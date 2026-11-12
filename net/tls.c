@@ -665,6 +665,10 @@ bool tls_client_init(tls_t *t, const char *host, const uint8_t ca_pub[64],
     return true;
 }
 
+void tls_client_set_insecure(tls_t *t, bool allow) {
+    if (t) t->allow_unverified = allow;
+}
+
 /* §4.1.3. Derives the handshake secrets and keys, and keeps the master secret for after the server's
  * Finished. */
 static int server_hello_in(tls_t *t, const uint8_t *m, uint32_t n) {
@@ -746,7 +750,14 @@ static int certificate_in(tls_t *t, const uint8_t *m, uint32_t n) {
     uint32_t cl = (uint32_t)list.p[0] << 16 | (uint32_t)list.p[1] << 8 | list.p[2];
     if (cl == 0 || cl > list.n - 3) return fail(t, AL_DECODE);
     tls_cert_info_t ci;
-    int rc = tls_cert_check(list.p + 3, cl, t->ca_pub, t->host, &ci);
+    int rc;
+    if (t->ca_pub) {
+        rc = tls_cert_check(list.p + 3, cl, t->ca_pub, t->host, &ci);
+    } else if (t->allow_unverified) {
+        rc = tls_cert_parse(list.p + 3, cl, &ci);
+    } else {
+        rc = TLS_ERR_CERT;
+    }
     if (rc != TLS_OK) return fail(t, AL_BAD_CERT);
     memcpy(t->peer_pub, ci.pub, 64);
     sha256_update(&t->transcript, m, n);

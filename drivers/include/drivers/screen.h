@@ -221,9 +221,15 @@ typedef struct {
 #define SCREEN_FS_HINT_MS   2500u
 #define SCREEN_FS_REVEAL_MS 4000u
 #define SCREEN_FS_BAND    (SCREEN_TILE_Y + SCREEN_TITLEBAR_H)
+#if (defined(CONFIG_PSRAM_BYTES) && (CONFIG_PSRAM_BYTES) > 0) || (defined(__riscv_xlen) && __riscv_xlen == 64)
+#define SCREEN_ALT_SHADOW 1u
+#else
+#define SCREEN_ALT_SHADOW 0u
+#endif
+
 #define SCREEN_BYTES_ROT(w, h, rotates) \
-    (sizeof(screen_t) + SCREEN_MAX_TERMS * SCREEN_SHADOW_COLS(w, h, rotates) * \
-     SCREEN_SHADOW_ROWS(w, h, rotates) * sizeof(uint16_t))
+    (sizeof(screen_t) + (1u + SCREEN_ALT_SHADOW) * SCREEN_MAX_TERMS * \
+     SCREEN_SHADOW_COLS(w, h, rotates) * SCREEN_SHADOW_ROWS(w, h, rotates) * sizeof(uint16_t))
 
 /* Takes over the whole buffer and draws everything: the TEXT layout, the
  * terminal empty, the tile titled `LugalOS` until something says otherwise.

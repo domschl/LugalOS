@@ -389,9 +389,136 @@ const char *random_source(void) {
 
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
 
-bool random_is_hardware(void) { return false; }
-const char *random_source(void) { return "timer+counter (NOT random)"; }
-void random_init(void) {}
+#define VF2_SYS_CRG_BASE      0x13020000UL
+#define VF2_STG_CRG_BASE      0x10230000UL
+#define VF2_TRNG_BASE         0x1600C000UL
+
+#define VF2_TRNG_REG(off)     (*(volatile uint32_t *)(VF2_TRNG_BASE + (off)))
+#define VF2_CRG_REG(base,off) (*(volatile uint32_t *)((base) + (off)))
+
+#define TRNG_CTRL             0x00u
+#define TRNG_STAT             0x04u
+#define TRNG_MODE             0x08u
+#define TRNG_SMODE            0x0Cu
+#define TRNG_IE               0x10u
+#define TRNG_ISTAT            0x14u
+#define TRNG_RAND0            0x20u
+#define TRNG_AUTO_RQSTS       0x60u
+#define TRNG_AUTO_AGE         0x64u
+
+#define TRNG_CMD_NOP          0u
+#define TRNG_CMD_GEN          1u
+#define TRNG_CMD_RESEED       2u
+
+#define TRNG_STAT_SEEDED      (1u << 9)
+#define TRNG_STAT_GEN         (1u << 30)
+#define TRNG_STAT_SEEDING     (1u << 31)
+#define TRNG_MODE_R256        (1u << 3)
+#define TRNG_ISTAT_LFSR_LOCK  (1u << 4)
+
+/* guarded by: g_vf2_trng_lock */
+static ylock_t g_vf2_trng_lock;
+/* accepted: set once in random_init(), cleared if TRNG times out. */
+static volatile bool g_vf2_trng_ok;
+/* guarded by: g_vf2_trng_lock */
+static uint32_t g_vf2_buf[8];
+/* guarded by: g_vf2_trng_lock */
+static unsigned g_vf2_buf_idx = 8u;
+
+static bool vf2_trng_wait_idle(uint64_t timeout_us) {
+    return time_poll_until_us(
+        (VF2_TRNG_REG(TRNG_STAT) & (TRNG_STAT_GEN | TRNG_STAT_SEEDING)) == 0u,
+        time_get_us() + timeout_us);
+}
+
+static bool vf2_trng_cmd_locked(uint32_t cmd) {
+    if (!vf2_trng_wait_idle(100000u)) return false;
+    VF2_TRNG_REG(TRNG_ISTAT) = VF2_TRNG_REG(TRNG_ISTAT);
+    VF2_TRNG_REG(TRNG_CTRL) = cmd;
+    return vf2_trng_wait_idle(100000u);
+}
+
+static bool vf2_trng_read_256(uint32_t out[8]) {
+    if (!g_vf2_trng_ok) return false;
+    ylock_acquire(&g_vf2_trng_lock);
+    if (VF2_TRNG_REG(TRNG_ISTAT) & TRNG_ISTAT_LFSR_LOCK) {
+        (void)vf2_trng_cmd_locked(TRNG_CMD_RESEED);
+    }
+    bool ok = vf2_trng_cmd_locked(TRNG_CMD_GEN);
+    if (ok) {
+        for (unsigned i = 0; i < 8u; i++) {
+            out[i] = VF2_TRNG_REG(TRNG_RAND0 + i * 4u);
+        }
+    } else {
+        g_vf2_trng_ok = false;
+    }
+    ylock_release(&g_vf2_trng_lock);
+    return ok;
+}
+
+static uint32_t rng_word(void) {
+    ylock_acquire(&g_vf2_trng_lock);
+    if (g_vf2_buf_idx >= 8u) {
+        if (g_vf2_trng_ok) {
+            if (VF2_TRNG_REG(TRNG_ISTAT) & TRNG_ISTAT_LFSR_LOCK) {
+                (void)vf2_trng_cmd_locked(TRNG_CMD_RESEED);
+            }
+            if (vf2_trng_cmd_locked(TRNG_CMD_GEN)) {
+                for (unsigned i = 0; i < 8u; i++) {
+                    g_vf2_buf[i] = VF2_TRNG_REG(TRNG_RAND0 + i * 4u);
+                }
+                g_vf2_buf_idx = 0;
+            } else {
+                g_vf2_trng_ok = false;
+            }
+        }
+    }
+    uint32_t w = (g_vf2_buf_idx < 8u) ? g_vf2_buf[g_vf2_buf_idx++] : (uint32_t)time_get_us();
+    ylock_release(&g_vf2_trng_lock);
+    return w;
+}
+
+void random_init(void) {
+    ylock_init(&g_vf2_trng_lock);
+    /* Enable STG AXI bus clock (SYS_CRG + 0x180) and SEC_TOP clocks (STG_CRG + 0x3C/0x40). */
+    VF2_CRG_REG(VF2_SYS_CRG_BASE, 0x180u) |= (1u << 31);
+    VF2_CRG_REG(VF2_STG_CRG_BASE, 0x3Cu)  |= (1u << 31);
+    VF2_CRG_REG(VF2_STG_CRG_BASE, 0x40u)  |= (1u << 31);
+    /* Deassert RSTN_U0_SEC_TOP_HRESETN (STG reset index 3). */
+    VF2_CRG_REG(VF2_STG_CRG_BASE, 0x74u) &= ~(1u << 3);
+    if (!time_poll_until_us(
+            (VF2_CRG_REG(VF2_STG_CRG_BASE, 0x78u) & (1u << 3)) != 0u,
+            time_get_us() + 50000u)) {
+        printk("[Random] JH7110 SEC_TOP reset timeout\n");
+        return;
+    }
+
+    VF2_TRNG_REG(TRNG_AUTO_AGE) = 0u;
+    VF2_TRNG_REG(TRNG_AUTO_RQSTS) = 0u;
+    VF2_TRNG_REG(TRNG_IE) = 0u;
+    VF2_TRNG_REG(TRNG_ISTAT) = VF2_TRNG_REG(TRNG_ISTAT);
+    VF2_TRNG_REG(TRNG_MODE) |= TRNG_MODE_R256;
+
+    if (!vf2_trng_cmd_locked(TRNG_CMD_NOP) || !vf2_trng_cmd_locked(TRNG_CMD_RESEED)) {
+        printk("[Random] JH7110 TRNG reseed timeout\n");
+        return;
+    }
+    uint32_t probe[8] = {0};
+    if (!vf2_trng_cmd_locked(TRNG_CMD_GEN)) {
+        printk("[Random] JH7110 TRNG generate timeout\n");
+        return;
+    }
+    for (unsigned i = 0; i < 8u; i++) probe[i] = VF2_TRNG_REG(TRNG_RAND0 + i * 4u);
+    g_vf2_trng_ok = (probe[0] != probe[1] || probe[2] != probe[3]);
+    memset(probe, 0, sizeof(probe));
+    printk("[Random] %s\n", random_source());
+}
+
+bool random_is_hardware(void) { return g_vf2_trng_ok; }
+const char *random_source(void) {
+    return g_vf2_trng_ok ? "JH7110 hardware TRNG, SHA-256 whitened"
+                         : "JH7110 TRNG unavailable (NOT random)";
+}
 
 #else  /* the QEMU targets: QEMU's virtio-rng when the machine has one, else nothing, and it must show */
 
@@ -472,7 +599,13 @@ void random_bytes(void *out, uint32_t len) {
         sha256_update(&ctx, pool, sizeof(pool));
         memset(pool, 0, sizeof(pool));
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
-        /* Timer and counter already hashed above. */
+        if (g_vf2_trng_ok) {
+            uint32_t pool[16];                   /* 512 raw bits from two 256-bit TRNG runs */
+            if (vf2_trng_read_256(pool) && vf2_trng_read_256(pool + 8)) {
+                sha256_update(&ctx, pool, sizeof(pool));
+            }
+            memset(pool, 0, sizeof(pool));
+        }
 #else
         if (virtio_rng_present() && !g_vrng_failed) {
             uint8_t pool[64];
@@ -661,7 +794,7 @@ int random_selftest(unsigned bits) {
     return ok ? 0 : 1;
 }
 
-#elif defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_ESP32P4)
+#elif defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_VISIONFIVE2)
 
 /* The RNG register hands out whole words. The same three figures as the
  * RP2350's measurement, over the words' bits, plus repeated words: a stalled

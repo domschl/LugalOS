@@ -22,18 +22,23 @@ BASE    := -std=gnu11 -g -fno-omit-frame-pointer $(INC) $(WARN) -DLUGALOS_HOST_T
 ASAN    := -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 PLAIN   := -O1
 
-HARNESSES := gesture_host fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host llm_host markdown_host latex_math_host crypto_host websocket_host p9_protect_host dhcpd_host mdnsd_host status_led_host der_host tls_host
+HARNESSES := gesture_host fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host llm_host markdown_host latex_math_host crypto_host websocket_host p9_protect_host dhcpd_host mdnsd_host status_led_host der_host tls_host zlib_host ssh_host git_host
 
+git_host_SRC     := git_host.c $(ROOT)/net/git.c $(ROOT)/net/git_pack.c $(ROOT)/kernel/zlib.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
+                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
+ssh_host_SRC     := ssh_host.c $(ROOT)/net/ssh.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
+                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
+zlib_host_SRC    := zlib_host.c $(ROOT)/kernel/zlib.c
 latex_math_host_SRC := latex_math_host.c $(ROOT)/fs/latex_math.c $(ROOT)/drivers/font_math.c $(ROOT)/drivers/latex_layout.c $(ROOT)/drivers/font_serif.c $(ROOT)/drivers/font_noto_serif.c $(ROOT)/drivers/canvas1.c $(ROOT)/drivers/font8x16.c $(ROOT)/drivers/fbtext.c
 
 crypto_host_SRC  := crypto_host.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/crypto_selftest.c $(ROOT)/kernel/sha256.c \
-                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
+                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 websocket_host_SRC := websocket_host.c $(ROOT)/net/websocket.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
-                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
+                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 der_host_SRC     := der_host.c $(ROOT)/kernel/der.c $(ROOT)/kernel/x509.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
-                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
+                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 tls_host_SRC     := tls_host.c $(ROOT)/net/tls.c $(ROOT)/kernel/der.c $(ROOT)/kernel/x509.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
-                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
+                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 dhcpd_host_SRC   := dhcpd_host.c $(ROOT)/net/dhcpd.c
 mdnsd_host_SRC   := mdnsd_host.c $(ROOT)/net/mdnsd.c
 status_led_host_SRC := status_led_host.c $(ROOT)/kernel/status_led_pattern.c
@@ -49,7 +54,7 @@ p9_host_SRC      := p9_host.c $(ROOT)/fs/9p.c $(ROOT)/fs/p9_protect.c $(ROOT)/ke
 nvs_host_SRC     := nvs_host.c $(ROOT)/drivers/radio/nvs_ram.c
 ws2812_host_SRC  := ws2812_host.c $(ROOT)/drivers/ws2812.c
 ota_host_SRC     := ota_host.c $(ROOT)/kernel/ota_image.c $(ROOT)/kernel/ota_sig.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
-                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
+                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 llp_host_SRC     := llp_host.c $(ROOT)/kernel/llp.c $(ROOT)/kernel/crc32.c $(ROOT)/drivers/slip.c
 uprintf_host_SRC := uprintf_host.c $(ROOT)/drivers/radio/uprintf.c
 uheap_host_SRC   := uheap_host.c $(ROOT)/kernel/uheap.c

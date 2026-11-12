@@ -43,3 +43,5 @@ set(CONFIG_NET_PREFER_WIRED 1)
 
 # The TLS client (66.3b): MQTT to a broker over TLS, its certificate from the owner's CA (/dev/tlsca).
 set(CONFIG_TLS_CLIENT 1)
+set(CONFIG_SSH_CLIENT 1)
+set(CONFIG_GIT_CLIENT 1)
