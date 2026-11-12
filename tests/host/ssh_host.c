@@ -9,7 +9,9 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -460,11 +462,32 @@ int main(void) {
     assert(ssh_open_io(&s, &cfg, sock_recv, sock_send, &fds[0]) == SSH_OK);
     assert(ssh_open_exec(s, "uname") == SSH_OK);
     bool is_err = false;
-    assert(ssh_channel_read(s, (uint8_t *)out, sizeof(out), &is_err) == SSH_ERR_CRYPTO);
+    int trc = 0;
+    while ((trc = ssh_channel_read(s, (uint8_t *)out, sizeof(out), &is_err)) == 0) {
+        struct timespec ts = { 0, 1000000 };
+        nanosleep(&ts, NULL);
+    }
+    assert(trc == SSH_ERR_CRYPTO);
     ssh_close(s);
     close(fds[0]);
     pthread_join(th, NULL);
 
     printf("ssh_host: all tests passed\n");
+
+    if (getenv("SSH_LOCAL_TEST")) {
+        int sfd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons(22) };
+        sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        assert(connect(sfd, (struct sockaddr *)&sa, sizeof(sa)) == 0);
+        ssh_cfg_t lcfg = {
+            .host = "127.0.0.1", .port = 22, .user = "dsc",
+            .password = "invalid", .timeout_ms = 5000, .hostkey_cb = accept_hk,
+        };
+        ssh_session_t *ls = NULL;
+        int lrc = ssh_open_io(&ls, &lcfg, sock_recv, sock_send, &sfd);
+        printf("local sshd rc=%d\n", lrc);
+        if (ls) ssh_close(ls);
+        close(sfd);
+    }
     return 0;
 }

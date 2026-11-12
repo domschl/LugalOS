@@ -352,7 +352,9 @@ static void chacha_seq_nonce(uint32_t seq, uint8_t nonce[12]) {
 
 static int ssh_send_pkt(ssh_session_t *s, const uint8_t *payload, uint32_t plen) {
     if (plen + 32u > sizeof(s->tx)) return SSH_ERR_INVAL;
-    uint32_t pad = 8u - ((1u + plen) & 7u);
+    /* RFC 4253: unencrypted packets align (4 + pkt_len) to 8; chacha20-poly1305 aligns pkt_len to 8. */
+    uint32_t hdr_off = s->enc_c2s ? 0u : 4u;
+    uint32_t pad = 8u - ((hdr_off + 1u + plen) & 7u);
     if (pad < 4u) pad += 8u;
     uint32_t pkt_len = 1u + plen + pad;
 
