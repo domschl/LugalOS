@@ -48,6 +48,9 @@ Welcome to the **LugalOS User Manual**. This guide covers interactive usage, dai
 12. **[Ceres Alpha: Subterranean Arcade Scroller](ceres.md)**
     * Fast-paced 2D arcade horizontal scroller on ESP32-P4 displays (M5Stack Tab5 and LCD-7B).
     * Procedural caverns, search & rescue operations, 6-sector campaign, laser barriers, reactor meltdown, chiptune audio, and high-score persistence.
+13. **[SSH-2 & Git Clients](ssh_and_git.md)**
+    * Generating Ed25519 keys (`ssh-keygen`), TOFU `known_hosts`, interactive `xterm-256color` SSH sessions and remote `exec`.
+    * Local and remote Git workflows (`init`, `clone`, `add`, `commit`, `status`, `diff`, `log`, `checkout`, `fetch`, `pull`, `push`) over HTTP(S) and SSH.
 
 ---
 

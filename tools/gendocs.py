@@ -275,6 +275,7 @@ DOC_MAPPINGS: dict[str, str] = {
     "doc/user/zmachine.md": "tools/sd_root/help/zmachine.gmi",
     "doc/user/reader.md": "tools/sd_root/help/reader.gmi",
     "doc/user/spartan.md": "tools/sd_root/help/spartan.gmi",
+    "doc/user/ssh_and_git.md": "tools/sd_root/help/ssh_and_git.gmi",
 
     # Administrator Manual Chapters
     "doc/admin/presets.md": "tools/sd_root/help/presets.gmi",

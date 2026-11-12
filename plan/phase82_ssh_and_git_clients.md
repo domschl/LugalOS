@@ -1,6 +1,6 @@
 # Phase 82 — Native SSH-2 Client, Terminal Emulation Completeness & Git Client
 
-**Status**: PLANNED  
+**Status**: COMPLETE  
 **Target Hardware**:
 - **Primary**: **StarFive VisionFive 2 v1.3B** (`visionfive2` preset: 8 GiB LPDDR4, Gigabit Ethernet, 250 GB NVMe `/nvme0` with FAT32 LFN).
 - **PSRAM Terminal Targets (`CONFIG_PSRAM_BYTES`)**:
@@ -101,3 +101,13 @@ Focused, practical Git workflow built directly on FAT32 LFN (`/nvme0/`):
 * `ssh user@host "uname -a"` executes non-interactively and returns remote exit status.
 * `git clone https://... /nvme0/src/repo` clones a real multi-commit repository with packfile deltas onto NVMe, followed by `git status`, `git add`, `git commit`, `git log`, and `git push` (over HTTPS or SSH).
 * `python3 tools/precommit.py` passes all 18 presets, racescan, gendocs, and RAM baselines.
+
+---
+
+## 3. Implementation & Verification Summary
+
+- **82.1 Complete**: `drivers/vtterm.c` (`?1049h/l`, `?1047h/l`, `?47h/l`, `CHA`, `VPA`, `ICH`, `DCH`, `ECH`, `RI`, `DECSC`/`DECRC`, `DSR` via `vtterm_take_dsr()`), `drivers/screen.c` (`SCREEN_ALT_SHADOW`), and `kernel/keyseq.c` (`keyseq_encode()` + round-trip selftest).
+- **82.2 Complete**: `third_party/crypto/monocypher/monocypher-ed25519.{c,h}` (`SHA-512` + RFC 8032 `Ed25519`), `net/http.c` (`https://` over `net/tls.c`), `kernel/zlib.{c,h}` (freestanding RFC 1950/1951 inflate/deflate + Adler-32/CRC-32), plus JH7110 hardware TRNG support in `kernel/random.c` for VisionFive 2.
+- **82.3 Complete**: `net/ssh.c` + `net/ssh_cli.c` (`curve25519-sha256`, `chacha20-poly1305@openssh.com`, `ssh-ed25519` / `ecdsa-sha2-nistp256`, `known_hosts` TOFU, `ssh-keygen`, interactive PTY and `exec`).
+- **82.4 Complete**: `net/git.c` + `net/git_pack.c` + `net/git_cli.c` (`init`, `clone`, `status`, `diff`, `add`, `commit`, `log`, `checkout`, `fetch`, `pull`, `push` over Smart HTTP/HTTPS and SSH).
+- **82.5 Complete**: Host ASan/UBSan (`zlib_host`, `ssh_host`, `git_host`), QEMU (`quick.py screen`, `keyselftest`, `cryptotest`), live VisionFive 2 (`randtest`, `cryptotest`, `ssh-keygen`, `vtselftest`, `git init`), `doc/user/shell.md` + `doc/user/ssh_and_git.md` (`gendocs.py --all --check`), and `python3 tools/precommit.py` (all 18 presets, racescan, RAM baselines) passed.
