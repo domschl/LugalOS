@@ -370,6 +370,7 @@ typedef struct {
     uint8_t        stride;      /* bytes a coverage row: ceil(h / 2) */
     const uint8_t *widths;      /* advances, glyphs 0x20..0x7E */
     const uint8_t *aa;          /* 4-bit coverage, glyph by glyph, h rows each */
+    bool           use_ttf;     /* true: render via ttf_cache at cell height h */
 } ugui_face_t;
 
 /* The face for size on this build's panels; NULL is the medium one. */

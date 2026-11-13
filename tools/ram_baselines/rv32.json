@@ -5,9 +5,8 @@
   "heap_bytes": 125403136,
   "heap_pages": 30616,
   "per_file": {
-    "(no line info: .rodata)": 9467,
+    "(no line info: .rodata)": 9475,
     "(no line info: .sdata)": 9,
-    "/build/riscv64-elf-gcc/src/gcc-16.2.0/libgcc/libgcc2.c": 256,
     "arch/riscv/common/elf.c": 1484,
     "arch/riscv/common/mem_domain.c": 116,
     "arch/riscv/common/trap.c": 8,
@@ -56,7 +55,7 @@
     "drivers/tsl2591.c": 100,
     "drivers/uart_16550.c": 1931,
     "drivers/uart_net.c": 14740,
-    "drivers/ugui.c": 40,
+    "drivers/ugui.c": 48,
     "drivers/usb_crc.c": 16,
     "drivers/usbkbd.c": 886,
     "drivers/view.c": 732,
@@ -152,6 +151,7 @@
     "third_party/crypto/monocypher/monocypher-ed25519.c": 640,
     "third_party/crypto/monocypher/monocypher.c": 3324,
     "third_party/crypto/p256-m/p256-m.c": 232,
+    "tools/host_tools/riscv64-elf-toolchain/src/build-gcc/riscv64-unknown-elf/rv32imac/ilp32/libgcc/../../../../../gcc-16.2.0/libgcc/libgcc2.c": 256,
     "user/chess/include/zobrist_tables.h": 6784,
     "user/chess/src/bitboard.c": 2208,
     "user/chess/src/chess_pieces_data.h": 9216,
@@ -177,9 +177,8 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 9467,
+    "(no line info: .rodata)": 9475,
     "(no line info: .sdata)": 9,
-    "/build/riscv64-elf-gcc/src/gcc-16.2.0/libgcc/libgcc2.c": 256,
     "9p": 64107,
     "agent": 3497,
     "app:cc": 462,
@@ -189,7 +188,7 @@
     "chess": 46354,
     "clock-app": 484,
     "crypto": 4806,
-    "display": 179594,
+    "display": 179602,
     "drivers": 125303,
     "fs": 457,
     "httpd": 172,
@@ -205,9 +204,10 @@
     "sensors": 19483,
     "shell": 13537,
     "storage": 20688,
+    "tools": 256,
     "usb": 902,
     "vfs": 3894
   },
-  "ram_code": 1473780,
-  "total": 6722018
+  "ram_code": 1474350,
+  "total": 6722604
 }

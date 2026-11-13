@@ -71,6 +71,7 @@
     "drivers/tmp117.c": 76,
     "drivers/tsl2561.c": 84,
     "drivers/tsl2591.c": 84,
+    "drivers/ttf_cache.c": 128,
     "drivers/uart_esp32p4.c": 899,
     "drivers/uart_net.c": 14740,
     "drivers/ui_sound.c": 41,
@@ -176,7 +177,7 @@
     "clock-app": 136,
     "crypto": 38,
     "display": 206,
-    "drivers": 1297,
+    "drivers": 1425,
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
@@ -195,5 +196,5 @@
     "vfs": 3727
   },
   "ram_code": 1806,
-  "total": 221500
+  "total": 221628
 }

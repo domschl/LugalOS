@@ -22,7 +22,9 @@ BASE    := -std=gnu11 -g -fno-omit-frame-pointer $(INC) $(WARN) -DLUGALOS_HOST_T
 ASAN    := -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 PLAIN   := -O1
 
-HARNESSES := gesture_host fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host llm_host markdown_host latex_math_host crypto_host websocket_host p9_protect_host dhcpd_host mdnsd_host status_led_host der_host tls_host zlib_host ssh_host git_host
+HARNESSES := gesture_host fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host llm_host markdown_host latex_math_host crypto_host websocket_host p9_protect_host dhcpd_host mdnsd_host status_led_host der_host tls_host zlib_host ssh_host git_host ttf_host
+
+ttf_host_SRC     := ttf_host.c $(ROOT)/drivers/ttf.c
 
 git_host_SRC     := git_host.c $(ROOT)/net/git.c $(ROOT)/net/git_pack.c $(ROOT)/kernel/zlib.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
                     $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c

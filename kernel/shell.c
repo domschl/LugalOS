@@ -78,6 +78,7 @@
 #include "drivers/ribbon.h"
 #include "drivers/ugui.h"
 #include "drivers/reader_view.h"
+#include "drivers/ttf_cache.h"
 #include "drivers/launcher_view.h"
 #include "drivers/view.h"
 #include "kernel/event.h"
@@ -1631,7 +1632,44 @@ static void reader_cmd_open(void *arg) {
     rc->rid = reader_open_window(rc->path, &rc->reused);
 }
 
+#if defined(CONFIG_PSRAM_BYTES) || defined(CONFIG_BOARD_VISIONFIVE2)
+typedef struct {
+    const char *path;
+    bool        ok;
+    uint32_t    hits, misses, entries, used, cap;
+} reader_ttf_cmd_t;
+
+static void reader_ttf_on_views(void *arg) {
+    reader_ttf_cmd_t *tc = (reader_ttf_cmd_t *)arg;
+    if (tc->path && *tc->path) {
+        tc->ok = ttf_cache_load(tc->path);
+        if (tc->ok) console_sync_readers();
+    } else {
+        (void)ttf_cache_ensure_default();
+        tc->ok = ttf_cache_available();
+    }
+    ttf_cache_stats(&tc->hits, &tc->misses, &tc->entries, &tc->used, &tc->cap);
+}
+#endif
+
 static void cmd_reader(const char *arg) {
+#if defined(CONFIG_PSRAM_BYTES) || defined(CONFIG_BOARD_VISIONFIVE2)
+    if (arg && (strcmp(arg, "ttf") == 0 || strncmp(arg, "ttf ", 4) == 0)) {
+        const char *p = (arg[3] == ' ') ? arg + 4 : NULL;
+        while (p && *p == ' ') p++;
+        reader_ttf_cmd_t tc = { .path = p };
+        view_call(reader_ttf_on_views, &tc);
+        if (p && *p) {
+            cprintf("ttf: %s '%s'\n", tc.ok ? "loaded" : "failed to load", p);
+        } else {
+            cprintf("ttf: %s\n", tc.ok ? "active" : "inactive (using bitmap fallback)");
+        }
+        cprintf("ttf: entries=%u hits=%u misses=%u arena=%u/%u bytes\n",
+                (unsigned)tc.entries, (unsigned)tc.hits, (unsigned)tc.misses,
+                (unsigned)tc.used, (unsigned)tc.cap);
+        return;
+    }
+#endif
     if (arg && strcmp(arg, "list") == 0) {
         view_sync();                                     /* what was posted to the readers, done */
         cprintf("Active Reader Windows:\n");

@@ -5,7 +5,7 @@
   "heap_bytes": 123801600,
   "heap_pages": 30225,
   "per_file": {
-    "(no line info: .rodata)": 14736,
+    "(no line info: .rodata)": 14744,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 8,
@@ -57,7 +57,7 @@
     "drivers/tsl2591.c": 140,
     "drivers/uart_16550.c": 1967,
     "drivers/uart_net.c": 14836,
-    "drivers/ugui.c": 64,
+    "drivers/ugui.c": 80,
     "drivers/usb_crc.c": 16,
     "drivers/usbkbd.c": 886,
     "drivers/view.c": 1056,
@@ -179,7 +179,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 14736,
+    "(no line info: .rodata)": 14744,
     "(no line info: .sdata)": 9,
     "9p": 65727,
     "agent": 3501,
@@ -190,7 +190,7 @@
     "chess": 46906,
     "clock-app": 616,
     "crypto": 4818,
-    "display": 180242,
+    "display": 180258,
     "drivers": 126507,
     "fs": 853,
     "httpd": 184,
@@ -209,6 +209,6 @@
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1442006,
-  "total": 8074793
+  "ram_code": 1442086,
+  "total": 8074897
 }

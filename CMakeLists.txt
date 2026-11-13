@@ -805,6 +805,8 @@ set(SOURCES
     drivers/font_math.c
     drivers/latex_layout.c
     drivers/ugui.c
+    drivers/ttf.c
+    drivers/ttf_cache.c
     drivers/reader_view.c
     drivers/launcher_view.c
     drivers/osk.c
