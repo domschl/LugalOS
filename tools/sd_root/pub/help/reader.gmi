@@ -2,7 +2,7 @@
 
 Documentation > User Manual > Ribbon Reader Window Guide
 
-The LugalOS Ribbon Reader (RIBBONWINREADER) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules formatted in Restricted Markdown (.md) or Gemtext (.gmi).
+The LugalOS Ribbon Reader (RIBBONWINREADER) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules formatted in Restricted Markdown (.md), Gemtext (.gmi), or EPUB e-books (.epub).
 
 ## Multi-Instance Reader Architecture
 
@@ -18,6 +18,7 @@ Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reade
 * Proportional Typography:
 * Standard Density Panels (rp2350-terminal, esp32p4-lcd7b): Rendered in a high-legibility 15-pixel variable-pitch serif font with balanced 1-pixel vertical stems (18 px line height).
 * HiDPI Panels (esp32p4-tab5): Rendered in an elegant 32-pixel anti-aliased proportional serif font (Noto Serif) with smooth 4-bpp alpha coverage masks (38 px line height).
+* TrueType Font Rendering (PSRAM / DRAM targets): When /sd0/fonts/NotoSerif-Regular.ttf is present on storage, ugui rasterizes TrueType glyphs (cmap format 4/12, glyf, hmtx) on-device into a PSRAM glyph cache, giving full Unicode coverage (Latin-1/extended Latin umlauts, punctuation, etc.) for .epub books and documents. Run reader ttf in lsh to inspect font status and cache hit/miss statistics.
 * Inline Emphasis & Styling:
 * Bold: bold text rendered with weighted glyph stems.
 * Italic: italic text rendered with an algorithmic shear angle.
@@ -36,14 +37,17 @@ Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reade
 
 ## Opening Documents
 
-Open local Markdown (.md) or Gemtext (.gmi) files or remote Spartan capsules directly from the shell:
+Open local Markdown (.md), Gemtext (.gmi), or EPUB (.epub) files or remote Spartan capsules directly from the shell:
 
 ```
 lsh> reader /sd0/help/shell.md
-lsh> reader /sd0/help/markdown_showcase.md
+lsh> reader /sd0/BOOKS/alice.epub
 lsh> reader spartan://spartan.mozz.us/
 lsh> reader list
+lsh> reader ttf
 ```
+
+Opening an .epub file parses the ZIP container, OPF spine, and NCX chapter list on-device (DRM-free EPUBs) and enters Fullscreen Book Mode automatically.
 
 ## Window Controls & Macintosh Close Box
 
@@ -70,6 +74,8 @@ When the Reader window has focus, standard keyboard navigation shortcuts are act
 * Ctrl-H / ? / h: Open this Reader Help manual.
 * r: Reload and redraw the current document.
 * Super+O / Cmd+O / o: Toggle display orientation between Portrait and Landscape (Tab5).
+* f: Toggle distraction-free Fullscreen Book Mode (hides the action bar, TOC button, and scrollbar).
+* n / p: Next / previous chapter when reading an .epub book.
 * Cmd+F: Toggle Maximize / Restore window width.
 * q / Cmd-W: Close the reader window and return focus to the terminal.
 
@@ -80,6 +86,10 @@ On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B an
 * Tap Close Box: Closes the window.
 * Tap on Link: Tapping anywhere within an inline link or link block follows the target immediately.
 * Swipe Up / Down: Vertical touch dragging pans the document smoothly.
+* Fullscreen Book Mode (default for .epub, or via the Full toolbar button / f key): Only book text is shown.
+* Left Third Tap: Page up (or jump to previous chapter at the top).
+* Right Third Tap: Page down (or jump to next chapter at the bottom).
+* Middle Third Tap or Swipe Down: Exit fullscreen mode to reveal the toolbar and Contents button.
 * Minimap Tap: Tapping a window thumbnail in the top menu bar jumps directly to that window.
 
 ## Related Topics

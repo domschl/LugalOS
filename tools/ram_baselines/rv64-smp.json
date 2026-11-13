@@ -75,7 +75,7 @@
     "fs/p9_link.c": 24976,
     "fs/p9_protect.c": 14,
     "fs/vfs_server.c": 4382,
-    "kernel/apps.c": 448,
+    "kernel/apps.c": 464,
     "kernel/balloc.c": 8203,
     "kernel/board.c": 504,
     "kernel/boardinfo.c": 17,
@@ -195,7 +195,7 @@
     "fs": 853,
     "httpd": 184,
     "identity": 669,
-    "kernel": 72774,
+    "kernel": 72790,
     "lisp": 4921336,
     "llp": 4324,
     "log": 8370,
@@ -209,6 +209,6 @@
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1442086,
-  "total": 8074897
+  "ram_code": 1444630,
+  "total": 8077457
 }

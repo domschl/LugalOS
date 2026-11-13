@@ -32,6 +32,7 @@ typedef struct {
 /* Sorted by extension (strcmp). */
 static const app_assoc_t k_assoc[] = {
     { ".c",    "editor" },
+    { ".epub", "reader" },
     { ".gmi",  "reader" },
     { ".h",    "editor" },
     { ".lisp", "editor" },

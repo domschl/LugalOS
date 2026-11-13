@@ -881,6 +881,7 @@ set(SOURCES
     fs/p9_link.c
     fs/gemtext.c
     fs/markdown.c
+    fs/epub.c
     fs/latex_math.c
 
     # R1: the frame-source seam below

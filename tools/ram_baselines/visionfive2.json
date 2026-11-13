@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 125882368,
-  "heap_pages": 30733,
+  "heap_bytes": 125865984,
+  "heap_pages": 30729,
   "per_file": {
     "(no line info: .data)": 9,
     "(no line info: .rodata)": 15657,
@@ -52,7 +52,7 @@
     "drivers/radio/osi_impl.c": 3464,
     "drivers/ramdisk.c": 60,
     "drivers/ramscreen.c": 96,
-    "drivers/reader_view.c": 39553,
+    "drivers/reader_view.c": 40097,
     "drivers/ribbon.c": 4,
     "drivers/screen.c": 748,
     "drivers/sdmmc_jh7110.c": 6873,
@@ -83,7 +83,7 @@
     "fs/p9_link.c": 24976,
     "fs/p9_protect.c": 14,
     "fs/vfs_server.c": 5255,
-    "kernel/apps.c": 448,
+    "kernel/apps.c": 464,
     "kernel/balloc.c": 8203,
     "kernel/board.c": 517,
     "kernel/boardinfo.c": 17,
@@ -202,12 +202,12 @@
     "chess": 46930,
     "clock-app": 608,
     "crypto": 4866,
-    "display": 181549,
+    "display": 182093,
     "drivers": 367348,
     "fs": 853,
     "httpd": 184,
     "identity": 4367,
-    "kernel": 404168,
+    "kernel": 404184,
     "lisp": 4921336,
     "log": 8373,
     "mqtt": 4646,
@@ -220,6 +220,6 @@
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 804324,
-  "total": 7958409
+  "ram_code": 812810,
+  "total": 7967455
 }
