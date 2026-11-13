@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 125865984,
-  "heap_pages": 30729,
+  "heap_bytes": 125861888,
+  "heap_pages": 30728,
   "per_file": {
     "(no line info: .data)": 9,
     "(no line info: .rodata)": 15725,
@@ -64,7 +64,7 @@
     "drivers/tmp117.c": 248,
     "drivers/tsl2561.c": 263,
     "drivers/tsl2591.c": 140,
-    "drivers/ttf_cache.c": 444,
+    "drivers/ttf_cache.c": 5564,
     "drivers/ttf_ot.c": 24,
     "drivers/uart_16550.c": 2759,
     "drivers/uart_net.c": 14836,
@@ -204,7 +204,7 @@
     "clock-app": 608,
     "crypto": 4866,
     "display": 182093,
-    "drivers": 367644,
+    "drivers": 372764,
     "fs": 853,
     "httpd": 184,
     "identity": 4367,
@@ -221,6 +221,6 @@
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 819942,
-  "total": 7974951
+  "ram_code": 820016,
+  "total": 7980145
 }

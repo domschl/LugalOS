@@ -1469,6 +1469,13 @@ static void rdraw_mono_text(const ugui_surface_t *rd, int x, int y, const char *
 }
 
 
+static bool span_has_non_ascii(const char *s, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if ((uint8_t)s[i] >= 0x80u) return true;
+    }
+    return false;
+}
+
 /* Word wrapping and rich proportional / monospace span rendering */
 static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, int max_w,
                                 const char *text, int line_h, uint16_t extra_style,
@@ -1542,7 +1549,25 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
 
             const char *word_start = p;
             size_t word_len = 0;
+            bool ended_at_tsheg = false;
             while (span_remaining > 0 && *p && *p != ' ') {
+                /* Tibetan tsheg (U+0F0B, UTF-8 E0 BC 8B) is a visible syllable
+                 * separator where lines may break without adding extra space. */
+                if (span_remaining >= 3 &&
+                    (uint8_t)p[0] == 0xE0 && (uint8_t)p[1] == 0xBC && (uint8_t)p[2] == 0x8B) {
+                    word_len += 3;
+                    p += 3;
+                    span_remaining -= 3;
+                    /* Keep an immediately following shad (U+0F0D/U+0F0E) attached. */
+                    if (span_remaining >= 3 && (uint8_t)p[0] == 0xE0 && (uint8_t)p[1] == 0xBC &&
+                        ((uint8_t)p[2] == 0x8D || (uint8_t)p[2] == 0x8E)) {
+                        continue;
+                    }
+                    if (span_remaining > 0 && *p != ' ') {
+                        ended_at_tsheg = true;
+                    }
+                    break;
+                }
                 word_len++;
                 p++;
                 span_remaining--;
@@ -1550,7 +1575,9 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
 
             unsigned word_w = 0;
             unsigned space_w = 0;
-            if (span.style & MD_STYLE_CODE) {
+            bool is_code_mono = ((span.style & MD_STYLE_CODE) != 0) &&
+                                !(READER_FACE && span_has_non_ascii(word_start, word_len));
+            if (is_code_mono) {
 #if READER_IS_HIDPI
                 word_w = (unsigned)word_len * 16;
                 space_w = 16;
@@ -1578,7 +1605,7 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
 
             int screen_y = cur_y - scroll_y;
             if (screen_y + line_h >= 0 && screen_y < win_h) {
-                if (span.style & MD_STYLE_CODE) {
+                if (is_code_mono) {
                     /* Monospace code pill with subtle shaded background */
                     rdraw_fill(rd, cur_x - 2, screen_y + 1, cur_x + (int)word_w + 1, screen_y + line_h - 3, 236, CANVAS1_GREY);
                     rdraw_mono_text(rd, cur_x, screen_y + 1, word_start, (uint32_t)word_len, (int)word_len);
@@ -1603,7 +1630,7 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
                     lnk->url[sizeof(lnk->url) - 1] = '\0';
                 }
             }
-            cur_x += (int)word_w + (int)space_w;
+            cur_x += (int)word_w + (ended_at_tsheg ? 0 : (int)space_w);
         }
     }
 
@@ -1810,7 +1837,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
 
     uint64_t file_offset = 0;
     char read_buf[512];
-    char line_buf[MD_LINE_MAX];
+    char line_fallback[MD_LINE_MAX];
     int line_pos = 0;
     bool in_code = false;
     bool in_math = false;
@@ -1827,6 +1854,16 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
         r->link_count = links_before;
         if (fd >= 0) vfs_close(fd);
         return;
+    }
+
+    /* EPUB paragraphs can be 20+ KB single lines; allocate a 32 KB line buffer
+     * off the task stack so long paragraphs do not truncate mid-UTF-8 or span. */
+    uint32_t line_pages = 8u;
+    char *line_buf = (char *)palloc_pages_bulk(line_pages);
+    int line_cap = line_buf ? (int)(line_pages * 4096u) : (int)sizeof(line_fallback);
+    if (!line_buf) {
+        line_buf = line_fallback;
+        line_pages = 0;
     }
     if (partial) {
         int lo = 0, hi = r->cp_count - 1;
@@ -2223,7 +2260,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                     doc_y += 4;
                     break;
                 }
-            } else if (line_pos < (int)sizeof(line_buf) - 1) {
+            } else if (line_pos < line_cap - 1) {
                 line_buf[line_pos++] = ch;
             }
         }
@@ -2231,6 +2268,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
         file_offset += (uint64_t)n;
     }
 
+    if (line_pages > 0) palloc_free(line_buf, line_pages);
     if (fd >= 0) vfs_close(fd);
     if (!partial) {
         r->total_h = doc_y + 32;

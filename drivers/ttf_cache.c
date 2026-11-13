@@ -63,6 +63,10 @@ typedef struct {
     uint8_t        *arena;
     uint32_t        arena_used;
 
+    uint8_t         tmp_aa[TTF_MAX_GLYPH_W * TTF_MAX_GLYPH_H / 2];
+    uint16_t        tmp_gids[TTF_MAX_SHAPED];
+    int16_t         tmp_kern_fu[TTF_MAX_SHAPED];
+
     uint16_t        stamp;
     uint32_t        hits;
     uint32_t        misses;
@@ -347,10 +351,9 @@ const ttf_glyph_metrics_t *ttf_cache_get_gid(uint8_t font_id, int cell_h,
     }
 
     s_tc.misses++;
-    uint8_t tmp_aa[TTF_MAX_GLYPH_W * TTF_MAX_GLYPH_H / 2];
     ttf_glyph_metrics_t m;
     if (!ttf_rasterize_glyph_id(&fs->font, s_tc.scratch, cell_h, gid,
-                                &m, tmp_aa, sizeof(tmp_aa))) {
+                                &m, s_tc.tmp_aa, sizeof(s_tc.tmp_aa))) {
         ylock_release(&s_ttf_lock);
         return NULL;
     }
@@ -374,7 +377,7 @@ const ttf_glyph_metrics_t *ttf_cache_get_gid(uint8_t font_id, int cell_h,
     bucket[target].m = m;
     if (bytes > 0) {
         bucket[target].aa_off = s_tc.arena_used;
-        memcpy(s_tc.arena + s_tc.arena_used, tmp_aa, bytes);
+        memcpy(s_tc.arena + s_tc.arena_used, s_tc.tmp_aa, bytes);
         s_tc.arena_used += aligned;
         if (out_aa) *out_aa = s_tc.arena + bucket[target].aa_off;
     } else {
@@ -414,8 +417,6 @@ int ttf_cache_shape_run(const uint32_t *cps, int count, int cell_h,
     }
     if (out_font_id) *out_font_id = font_id;
 
-    uint16_t gids[TTF_MAX_SHAPED];
-    int16_t kern_fu[TTF_MAX_SHAPED];
     int lim = max_out < TTF_MAX_SHAPED ? max_out : TTF_MAX_SHAPED;
 
     ylock_acquire(&s_ttf_lock);
@@ -424,10 +425,10 @@ int ttf_cache_shape_run(const uint32_t *cps, int count, int cell_h,
         ylock_release(&s_ttf_lock);
         return 0;
     }
-    int n = ttf_ot_shape(&fs->font, &fs->ot, cps, count, gids, kern_fu, lim);
+    int n = ttf_ot_shape(&fs->font, &fs->ot, cps, count, s_tc.tmp_gids, s_tc.tmp_kern_fu, lim);
     for (int i = 0; i < n; i++) {
-        out[i].gid = gids[i];
-        out[i].kern_px = (int16_t)ttf_ot_scale_fu(&fs->font, cell_h, kern_fu[i]);
+        out[i].gid = s_tc.tmp_gids[i];
+        out[i].kern_px = (int16_t)ttf_ot_scale_fu(&fs->font, cell_h, s_tc.tmp_kern_fu[i]);
     }
     ylock_release(&s_ttf_lock);
     return n;
