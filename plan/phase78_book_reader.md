@@ -1,6 +1,6 @@
 # Phase 78 — The Book Reader: TrueType Fonts, On-Device `.epub`, Book Mode
 
-**Status: PLANNED (split from phase 71 on 2026-11-09; reworked 2026-11-13 for on-device `.ttf` + `.epub` support).**
+**Status: DONE (completed 2026-11-13; split from phase 71 on 2026-11-09; reworked 2026-11-13 for on-device `.ttf` + `.epub` + OpenType shaping).**
 **Target Hardware**:
 - **Primary**: M5Stack Tab5 (`esp32p4-tab5`, portrait for reading, 32 MB PSRAM), Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`, 32 MB PSRAM), StarFive VisionFive 2 (`visionfive2`, 8 GiB LPDDR4 + `/sd0` / `/nvme0`).
 - **Regression**: Waveshare RP2350-LCD-7 (`rp2350-terminal`): no TTF engine, no `.epub` books; the reader's existing Markdown/Gemtext documents render identically with the built-in bitmap faces.
@@ -72,37 +72,37 @@
 
 ## 2. Milestones
 
-### 78.1 — Freestanding TrueType (`.ttf`) engine & UTF-8 pipeline
+### 78.1 — Freestanding TrueType (`.ttf`) engine & UTF-8 pipeline [DONE]
 - Implement `drivers/ttf.c` (`head`, `hhea`, `maxp`, `hmtx`, `cmap` 4/12, `loca`, `glyf` + integer/fixed-point scanline AA rasterizer, zero `float`).
 - PSRAM LRU glyph cache (`palloc_pages_bulk()`) + pre-warming of `0x20..0xFF`; `vfs_pread()` fallback for large `glyf` tables.
 - Update `drivers/ugui.c` (`ugui_face_width()`, `ugui_face_text()`) and `drivers/reader_view.c` word-wrapping for UTF-8 codepoint iteration.
 - Load `NotoSerif-Regular.ttf` from `/sd0/fonts/` (or `/nvme0/fonts/`), selectable via Settings (`ui.font`, `ui.text_size`), with built-in `font_serif` fallback.
 - **Acceptance:** `NotoSerif-Regular.ttf` renders English, German umlauts, typographic punctuation (`– — ‘ ’ “ ” …`), and Greek/Cyrillic glyphs cleanly on Tab5 and 7B at multiple sizes; page-turn glyph blits hit the PSRAM cache with no per-frame rasterization; RP2350/C6 builds have zero Flash/SRAM growth.
 
-### 78.2 — Reader core for large documents
+### 78.2 — Reader core for large documents [DONE]
 - Layout index, chunked build with progress, visible-block rendering, byte-offset positions, link/TOC collection during indexing (§1.2).
 - **Width after a turn:** layout follows the window's content width on every resize (`WIN_EV_RESIZE`), including portrait/landscape rotation on Tab5.
 - **Acceptance:** A 1 MB generated Markdown file opens with the first screen in ≤ 1 s on the Tab5; scrolling anywhere meets targets; memory use is reported by `reader list`; existing reader tests (`tests/test_markdown.py`, showcase document) render identically.
 
-### 78.3 — On-device `.epub` reader & book catalog
+### 78.3 — On-device `.epub` reader & book catalog [DONE]
 - Implement `fs/epub.c`: ZIP directory/CRC-32 + `kernel/zlib.c` `zlib_inflate_raw()`, DRM check, `container.xml`/OPF/NCX/NAV parsing, streaming XHTML → reader blocks/Markdown adapter.
 - `/sd0/BOOKS` (and `/nvme0/BOOKS`) scanner + `BOOKS/CATALOG` cache for the launcher's Books root (`ugui_icon_grid()`).
 - **Test corpus:** Download a small set of DRM-free Project Gutenberg `.epub` files (e.g. English + non-ASCII/German/French/Greek) into `tests/books/` (or `LUGALOS_BOOKS_SRC`) and test with `NotoSerif-Regular.ttf`.
 - **Acceptance:** Project Gutenberg `.epub` books open directly from `/sd0/BOOKS` on Tab5, 7B, and VisionFive 2 with chapter TOC, intra-book links, and native UTF-8 typography rendered via `NotoSerif-Regular.ttf`; encrypted epubs report a clear error.
 
-### 78.4 — Book mode & distraction-free fullscreen
+### 78.4 — Book mode & distraction-free fullscreen [DONE]
 - Paging, tap zones, claimed `SWIPE_H`, chapter chaining across spine items, per-book saved position, "Continue reading" shortcut, text size/font from Settings (§1.4).
 - **Fullscreen book mode:** hides all chrome, TOC buttons, and status overlays so only book text is visible; swipe down exits fullscreen.
 - **Acceptance:** Read ten chapters on the Tab5 (portrait, fullscreen) by touch only and on the 7B by keyboard only; swipe down reliably exits fullscreen; position survives close, rotation, and reboot; page-turn latency meets targets.
 
-### 78.5 — Verification and documentation
+### 78.5 — Verification and documentation [DONE]
 - Host/unit tests for SFNT/`glyf` rasterizer and ZIP/EPUB/XHTML parser.
 - `tests/hw/test_esp32p4.py`: TTF rendering, `.epub` open/navigation/fullscreen checks, `uxbench` regression check (fail if > 20% slower than baseline).
 - `tests/hw/lcdterm_shots.py`: `.ttf` + `.epub` book page and fullscreen scenarios.
 - Docs: `doc/user/reader.md` (TTF fonts, `.epub` reading, fullscreen gestures); `python3 tools/gendocs.py --all` and `--check`.
 - RAM baselines re-recorded; `sizereport` for RP2350 shows no SRAM growth.
 
-### 78.6 — OpenType Shaping (GSUB/GPOS), Kerning, Ligatures & Complex-Script Fallback
+### 78.6 — OpenType Shaping (GSUB/GPOS), Kerning, Ligatures & Complex-Script Fallback [DONE]
 - **Glyph-ID keyed cache & rasterizer:** Key `ttf_cache` by `(font_id, glyph_id, size_px)` so shaped/ligated/stacked glyphs without direct Unicode codepoints are cached in PSRAM alongside `cmap`-mapped glyphs.
 - **GSUB shaping:** Parse `GSUB` ScriptList/FeatureList/LookupList and execute Lookup Types `1` (Single), `2` (Multiple), `4` (Ligature), and `6` (Chaining Contextual) in pure integer/fixed-point freestanding C (`ccmp`, `abvs`, `blws`, `calt`, `liga`).
 - **GPOS kerning:** Parse `GPOS` Lookup Type `2` (Pair Adjustment, formats 1 & 2) and legacy `kern` table for horizontal advance adjustments (`kern`), with integer `26.6`/px rounding.

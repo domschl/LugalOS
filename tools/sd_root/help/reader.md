@@ -20,11 +20,11 @@ Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reade
 * **Proportional Typography**:
   * **Standard Density Panels** (`rp2350-terminal`, `esp32p4-lcd7b`): Rendered in a high-legibility 15-pixel variable-pitch serif font with balanced 1-pixel vertical stems (18 px line height).
   * **HiDPI Panels** (`esp32p4-tab5`): Rendered in an elegant 32-pixel anti-aliased proportional serif font (`Noto Serif`) with smooth 4-bpp alpha coverage masks (38 px line height).
-  * **TrueType Font Rendering (PSRAM / DRAM targets)**: When `/sd0/fonts/NotoSerif-Regular.ttf` is present on storage, `ugui` rasterizes TrueType glyphs (`cmap` format 4/12, `glyf`, `hmtx`) on-device into a PSRAM glyph cache, with OpenType `GSUB` ligature/stacking shaping and `GPOS`/`kern` kerning. If `/sd0/fonts/Jomolhari-Regular.ttf` is present, Tibetan script runs (`U+0F00..U+0FFF`) automatically use Jomolhari with full `GSUB` stacking (`ccmp`, `abvs`, `blws`, `calt`). Run `reader ttf` in `lsh` to inspect font status and cache hit/miss statistics.
+  * **TrueType Font Rendering (PSRAM / DRAM targets)**: When `/sd0/fonts/NotoSerif-Regular.ttf` is present on storage, `ugui` rasterizes TrueType glyphs (`cmap` format 4/12, `glyf`, `hmtx`) on-device into a PSRAM glyph cache, with OpenType `GSUB` ligature/stacking shaping and `GPOS`/`kern` kerning. If `/sd0/fonts/Jomolhari-Regular.ttf` is present, Tibetan script runs (`U+0F00..U+0FFF`) automatically use Jomolhari with full `GSUB` stacking (`ccmp`, `abvs`, `blws`, `calt`) and syllable line-breaking after Tibetan tsheg (`U+0F0B`). Run `reader ttf` in `lsh` to inspect font status and cache hit/miss statistics.
 * **Inline Emphasis & Styling**:
   * **Bold**: `**bold text**` rendered with weighted glyph stems.
   * **Italic**: `*italic text*` rendered with an algorithmic shear angle.
-  * **Inline Code**: `` `code` `` rendered with monospace font inside a subtle pill background (`gray=245`).
+  * **Inline Code**: `` `code` `` rendered with monospace font inside a subtle pill background (`gray=245`) for ASCII text; non-ASCII inline code spans (such as inline Tibetan in EPUBs) render with the proportional TrueType/fallback serif font.
   * **2D Hyperlinks**: `[label](shell.md)` rendered in underlined serif with touch / click targeting.
   * **Footnotes**: `[^id]` rendered as superscript badge and linked to `#fn:id` definitions.
 * **Block Elements**:
