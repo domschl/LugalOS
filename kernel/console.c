@@ -1084,20 +1084,19 @@ void console_hotkey(unsigned code) {
 }
 
 void console_sync_readers(void) {
-    uint8_t req[2] = { 'R', 0 };
+    uint8_t req[3] = { 'R', 0, 0 };
     uint8_t reply[SCREEN_REPLY_LEN];
     if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
     uint8_t count = reply[1];
     for (uint8_t i = 0; i < count; i++) {
         req[0] = 'R';
         req[1] = i;
-        if (console_canvas(req, 2, reply) && reply[0] == 0) {
+        req[2] = 1;
+        if (console_canvas(req, 3, reply) && reply[0] == 0) {
             const view_ops_t *v = view_for_window(reply[1]);
             if (v) {                                     /* a view: its content's size now */
-                int rx0 = (int)(reply[4] | (reply[5] << 8));
-                int rx1 = (int)(reply[6] | (reply[7] << 8));
-                int vw = rx1 - rx0 - 1;
-                int vh = (int)(reply[10] | (reply[11] << 8));
+                int vw = (int)(reply[4] | (reply[5] << 8));
+                int vh = (int)(reply[6] | (reply[7] << 8));
                 if (vw > 0) {
                     win_event_t ev;
                     memset(&ev, 0, sizeof ev);
@@ -1249,18 +1248,18 @@ static void sys_tell(const win_event_t *ev) {
  * window's content size now (the views get theirs from
  * console_sync_readers()). */
 static void sys_resize_canvases(void) {
-    uint8_t req[2] = { 'R', 0 }, reply[SCREEN_REPLY_LEN];
+    uint8_t req[3] = { 'R', 0, 0 }, reply[SCREEN_REPLY_LEN];
     if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
     uint8_t count = reply[1];
     for (uint8_t i = 0; i < count; i++) {
         req[1] = i;
-        if (!console_canvas(req, 2, reply) || reply[0] != 0 || reply[1] != 2 /* RIBBON_WIN_CANVAS */) continue;
-        int rx0 = (int)(reply[4] | (reply[5] << 8)), rx1 = (int)(reply[6] | (reply[7] << 8));
+        req[2] = 1;
+        if (!console_canvas(req, 3, reply) || reply[0] != 0 || reply[1] != 2 /* RIBBON_WIN_CANVAS */) continue;
         win_event_t ev;
         memset(&ev, 0, sizeof ev);
         ev.type = WIN_EV_RESIZE;
-        ev.w = (uint16_t)(rx1 - rx0 - 1);
-        ev.h = (uint16_t)(reply[10] | (reply[11] << 8));
+        ev.w = (uint16_t)(reply[4] | (reply[5] << 8));
+        ev.h = (uint16_t)(reply[6] | (reply[7] << 8));
         window_post((win_t)reply[2], &ev);
     }
 }

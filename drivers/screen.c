@@ -3740,6 +3740,13 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             int r_x, r_y, r_w, r_h;
             screen_win_content(scr, i, &r_x, &r_y, &r_w, &r_h);
             if (ribbon_is_view(w->type)) r_h -= screen_osk_rows(scr, i);   /* the keyboard has the rest */
+            if (n >= 3 && req[2] == 1) {
+                /* Content dimensions (orientation-independent: m0..m1 is Y in portrait). */
+                reply[4] = (uint8_t)(r_w & 0xff);
+                reply[5] = (uint8_t)((r_w >> 8) & 0xff);
+                reply[6] = (uint8_t)(r_h & 0xff);
+                reply[7] = (uint8_t)((r_h >> 8) & 0xff);
+            }
             reply[10] = (uint8_t)(r_h & 0xff);
             reply[11] = (uint8_t)((r_h >> 8) & 0xff);
             uint32_t tl = 0;
