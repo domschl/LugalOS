@@ -102,9 +102,16 @@
 - Docs: `doc/user/reader.md` (TTF fonts, `.epub` reading, fullscreen gestures); `python3 tools/gendocs.py --all` and `--check`.
 - RAM baselines re-recorded; `sizereport` for RP2350 shows no SRAM growth.
 
+### 78.6 — OpenType Shaping (GSUB/GPOS), Kerning, Ligatures & Complex-Script Fallback
+- **Glyph-ID keyed cache & rasterizer:** Key `ttf_cache` by `(font_id, glyph_id, size_px)` so shaped/ligated/stacked glyphs without direct Unicode codepoints are cached in PSRAM alongside `cmap`-mapped glyphs.
+- **GSUB shaping:** Parse `GSUB` ScriptList/FeatureList/LookupList and execute Lookup Types `1` (Single), `2` (Multiple), `4` (Ligature), and `6` (Chaining Contextual) in pure integer/fixed-point freestanding C (`ccmp`, `abvs`, `blws`, `calt`, `liga`).
+- **GPOS kerning:** Parse `GPOS` Lookup Type `2` (Pair Adjustment, formats 1 & 2) and legacy `kern` table for horizontal advance adjustments (`kern`), with integer `26.6`/px rounding.
+- **Script fallback font slot:** Support a secondary Tibetan/complex-script font (`/sd0/fonts/Jomolhari-Regular.ttf`) for `U+0F00..U+0FFF` runs while keeping `/sd0/fonts/NotoSerif-Regular.ttf` for Latin/Greek/Cyrillic, and render shaped glyph runs cleanly in `ugui` + `reader_view.c`.
+- **Acceptance:** `ttf_host` ASan/UBSan verifies `Jomolhari-Regular.ttf` Tibetan stacking (`GSUB` `ccmp`/`abvs`/`blws`/`calt`) and `NotoSerif-Regular.ttf` `liga`/`kern`; `Nyengyü Trekchö translation.epub` and `Nyengyü Tögal translation.epub` open and render both English and Tibetan on Tab5.
+
 ---
 
 ## 3. Out of scope — future extensions
 - **Book images and inline figures:** Decode embedded JPEG/PNG images from `.epub` archives into PSRAM surfaces and render them as `image` blocks in the layout index.
-- **OpenType CFF (`.otf`) outlines, GPOS kerning, GSUB ligatures, and font hinting.**
+- **OpenType CFF (`.otf`) outlines, GPOS mark-to-base/mark-to-mark (`mark`/`mkmk`), and TrueType bytecode hinting.**
 - **Hyphenation; justified text.**

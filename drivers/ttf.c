@@ -94,6 +94,9 @@ bool ttf_open_io(ttf_font_t *f, ttf_read_fn read_fn, void *ctx, uint32_t size) {
         case 0x6c6f6361u: f->loca_off = off; f->loca_len = len; break; /* 'loca' */
         case 0x676c7966u: f->glyf_off = off; f->glyf_len = len; break; /* 'glyf' */
         case 0x636d6170u: cmap_off = off; cmap_len = len; break; /* 'cmap' */
+        case 0x47535542u: f->gsub_off = off; f->gsub_len = len; break; /* 'GSUB' */
+        case 0x47504f53u: f->gpos_off = off; f->gpos_len = len; break; /* 'GPOS' */
+        case 0x6b65726eu: f->kern_off = off; f->kern_len = len; break; /* 'kern' */
         default: break;
         }
     }
@@ -271,15 +274,19 @@ int ttf_baseline_px(const ttf_font_t *f, int cell_h) {
     return (int)(((int64_t)f->ascent * cell_h + span / 2) / span);
 }
 
-int ttf_advance_px(const ttf_font_t *f, int cell_h, uint32_t codepoint) {
+int ttf_gid_advance_px(const ttf_font_t *f, int cell_h, uint16_t gid) {
     if (!f || cell_h <= 0) return 0;
-    uint16_t gid = ttf_glyph_index(f, codepoint);
     int32_t adv = 0, lsb = 0;
     ttf_hmetrics_raw(f, gid, &adv, &lsb);
     int32_t span = ttf_em_span(f);
     int px = (int)(((int64_t)adv * cell_h + span / 2) / span);
     if (px == 0 && adv > 0) px = 1;
     return px;
+}
+
+int ttf_advance_px(const ttf_font_t *f, int cell_h, uint32_t codepoint) {
+    if (!f || cell_h <= 0) return 0;
+    return ttf_gid_advance_px(f, cell_h, ttf_glyph_index(f, codepoint));
 }
 
 static bool glyph_loca_range(const ttf_font_t *f, uint16_t gid, uint32_t *out_off, uint32_t *out_len) {
@@ -576,13 +583,12 @@ static void raster_scanline_seg(ttf_scratch_t *sc, int py, int gw,
     }
 }
 
-bool ttf_rasterize_glyph(const ttf_font_t *f, ttf_scratch_t *sc, int cell_h,
-                         uint32_t codepoint, ttf_glyph_metrics_t *out_m,
-                         uint8_t *out_aa, uint32_t out_cap) {
+bool ttf_rasterize_glyph_id(const ttf_font_t *f, ttf_scratch_t *sc, int cell_h,
+                            uint16_t gid, ttf_glyph_metrics_t *out_m,
+                            uint8_t *out_aa, uint32_t out_cap) {
     if (!f || !sc || !out_m || cell_h <= 0) return false;
     memset(out_m, 0, sizeof(*out_m));
 
-    uint16_t gid = ttf_glyph_index(f, codepoint);
     int32_t adv_fu = 0, lsb_fu = 0;
     ttf_hmetrics_raw(f, gid, &adv_fu, &lsb_fu);
 
@@ -774,6 +780,14 @@ bool ttf_rasterize_glyph(const ttf_font_t *f, ttf_scratch_t *sc, int cell_h,
     out_m->h = (uint8_t)gh;
     out_m->stride = stride;
     return true;
+}
+
+bool ttf_rasterize_glyph(const ttf_font_t *f, ttf_scratch_t *sc, int cell_h,
+                         uint32_t codepoint, ttf_glyph_metrics_t *out_m,
+                         uint8_t *out_aa, uint32_t out_cap) {
+    if (!f) return false;
+    return ttf_rasterize_glyph_id(f, sc, cell_h, ttf_glyph_index(f, codepoint),
+                                  out_m, out_aa, out_cap);
 }
 
 #endif /* LUGALOS_HOST_TEST || CONFIG_PSRAM_BYTES || CONFIG_BOARD_VISIONFIVE2 */

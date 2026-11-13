@@ -26,7 +26,7 @@ HARNESSES := gesture_host fat32_host chibicc_host p9_host net_host kobj_host uhe
 
 epub_host_SRC    := epub_host.c $(ROOT)/fs/epub.c $(ROOT)/kernel/zlib.c
 
-ttf_host_SRC     := ttf_host.c $(ROOT)/drivers/ttf.c
+ttf_host_SRC     := ttf_host.c $(ROOT)/drivers/ttf.c $(ROOT)/drivers/ttf_ot.c
 
 git_host_SRC     := git_host.c $(ROOT)/net/git.c $(ROOT)/net/git_pack.c $(ROOT)/kernel/zlib.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
                     $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/monocypher/monocypher-ed25519.c $(ROOT)/third_party/crypto/p256-m/p256-m.c

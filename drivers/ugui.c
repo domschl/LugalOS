@@ -769,16 +769,47 @@ static unsigned face_index(char ch) {
            FONT_SERIF_FACES_FIRST;
 }
 
+#if UGUI_TTF_SUPPORT
+static inline bool is_tibetan_cp(uint32_t cp) {
+    return cp >= 0x0F00u && cp <= 0x0FFFu;
+}
+
+static int ttf_next_script_run(const char *str, uint32_t len, uint32_t *pos,
+                               uint32_t *cps, int max_cps) {
+    int n = 0;
+    bool run_tibt = false;
+    while (str && *pos < len && str[*pos] && n < max_cps) {
+        uint32_t save = *pos;
+        uint32_t cp = utf8_next_cp(str, len, pos);
+        bool tibt = is_tibetan_cp(cp);
+        if (n == 0) {
+            run_tibt = tibt;
+        } else if (tibt != run_tibt) {
+            *pos = save;
+            break;
+        }
+        cps[n++] = cp;
+    }
+    return n;
+}
+#endif
+
 int ugui_face_width(const ugui_surface_t *s, const ugui_face_t *f, const char *str, uint32_t len) {
     if (!f) return ugui_text_serif_width(s, str, len);
 #if UGUI_TTF_SUPPORT
     if (f->use_ttf) {
         int w = 0;
         uint32_t i = 0;
+        uint32_t cps[TTF_MAX_SHAPED];
+        ttf_shaped_glyph_t shaped[TTF_MAX_SHAPED];
         while (str && i < len && str[i]) {
-            uint32_t cp = utf8_next_cp(str, len, &i);
-            const ttf_glyph_metrics_t *m = ttf_cache_get(f->h, cp, NULL);
-            w += m ? (int)m->advance : (int)(f->h / 2);
+            int n = ttf_next_script_run(str, len, &i, cps, TTF_MAX_SHAPED);
+            uint8_t fid = TTF_FONT_PRIMARY;
+            int sn = ttf_cache_shape_run(cps, n, f->h, &fid, shaped, TTF_MAX_SHAPED);
+            for (int k = 0; k < sn; k++) {
+                const ttf_glyph_metrics_t *m = ttf_cache_get_gid(fid, f->h, shaped[k].gid, NULL);
+                w += (m ? (int)m->advance : (int)(f->h / 2)) + (int)shaped[k].kern_px;
+            }
         }
         return w;
     }
@@ -833,10 +864,11 @@ static int face_glyph(const ugui_surface_t *s, const ugui_face_t *f, int x, int 
 }
 
 #if UGUI_TTF_SUPPORT
-static int face_glyph_ttf(const ugui_surface_t *s, const ugui_face_t *f, int x, int y, uint32_t cp,
-                          bool bold, bool italic, uint8_t fg) {
+static int face_glyph_ttf_gid(const ugui_surface_t *s, const ugui_face_t *f, int x, int y,
+                              uint8_t font_id, uint16_t gid,
+                              bool bold, bool italic, uint8_t fg) {
     const uint8_t *aa = NULL;
-    const ttf_glyph_metrics_t *m = ttf_cache_get(f->h, cp, &aa);
+    const ttf_glyph_metrics_t *m = ttf_cache_get_gid(font_id, f->h, gid, &aa);
     if (!m) return (int)(f->h / 2);
     if (!aa || m->w == 0 || m->h == 0) return (int)m->advance;
 
@@ -883,9 +915,16 @@ static int raw_face_text(const ugui_surface_t *s, const ugui_face_t *f, int x, i
 #if UGUI_TTF_SUPPORT
     if (f->use_ttf) {
         uint32_t i = 0;
+        uint32_t cps[TTF_MAX_SHAPED];
+        ttf_shaped_glyph_t shaped[TTF_MAX_SHAPED];
         while (i < len && str[i]) {
-            uint32_t cp = utf8_next_cp(str, len, &i);
-            cx += face_glyph_ttf(s, f, cx, y, cp, bold, italic, fg);
+            int n = ttf_next_script_run(str, len, &i, cps, TTF_MAX_SHAPED);
+            uint8_t fid = TTF_FONT_PRIMARY;
+            int sn = ttf_cache_shape_run(cps, n, f->h, &fid, shaped, TTF_MAX_SHAPED);
+            for (int k = 0; k < sn; k++) {
+                cx += face_glyph_ttf_gid(s, f, cx, y, fid, shaped[k].gid, bold, italic, fg)
+                    + (int)shaped[k].kern_px;
+            }
         }
         if (inverted && s->c1 && w > 0) canvas1_invert(s->c1, x, y, x + w - 1, y + f->h - 1);
         return w;

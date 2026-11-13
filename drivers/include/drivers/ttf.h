@@ -27,6 +27,13 @@ typedef struct {
     uint32_t    cmap_sub_len;
     uint16_t    cmap_fmt;
 
+    uint32_t    gsub_off;
+    uint32_t    gsub_len;
+    uint32_t    gpos_off;
+    uint32_t    gpos_len;
+    uint32_t    kern_off;
+    uint32_t    kern_len;
+
     uint16_t    units_per_em;
     int16_t     ascent;
     int16_t     descent;
@@ -72,15 +79,19 @@ bool ttf_open_io(ttf_font_t *f, ttf_read_fn read_fn, void *ctx, uint32_t size);
 /* Map Unicode codepoint to glyph ID (0 = .notdef if absent). */
 uint16_t ttf_glyph_index(const ttf_font_t *f, uint32_t codepoint);
 
-/* Scaled cell baseline (px from top of cell_h) and advance for codepoint. */
+/* Scaled cell baseline (px from top of cell_h) and advance for codepoint or gid. */
 int ttf_baseline_px(const ttf_font_t *f, int cell_h);
 int ttf_advance_px(const ttf_font_t *f, int cell_h, uint32_t codepoint);
+int ttf_gid_advance_px(const ttf_font_t *f, int cell_h, uint16_t gid);
 
-/* Rasterize codepoint at cell_h into 4-bit packed coverage (out_aa, max
- * TTF_MAX_GLYPH_W * TTF_MAX_GLYPH_H / 2 bytes). Low nibble = even x,
+/* Rasterize codepoint or glyph ID at cell_h into 4-bit packed coverage (out_aa,
+ * max TTF_MAX_GLYPH_W * TTF_MAX_GLYPH_H / 2 bytes). Low nibble = even x,
  * high nibble = odd x, values 0..15. Returns false only on malformed input. */
 bool ttf_rasterize_glyph(const ttf_font_t *f, ttf_scratch_t *sc, int cell_h,
                          uint32_t codepoint, ttf_glyph_metrics_t *out_m,
                          uint8_t *out_aa, uint32_t out_cap);
+bool ttf_rasterize_glyph_id(const ttf_font_t *f, ttf_scratch_t *sc, int cell_h,
+                            uint16_t gid, ttf_glyph_metrics_t *out_m,
+                            uint8_t *out_aa, uint32_t out_cap);
 
 #endif /* LUGALOS_DRIVERS_TTF_H */

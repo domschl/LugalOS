@@ -1,4 +1,5 @@
 #include "drivers/ttf.h"
+#include "drivers/ttf_ot.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -210,7 +211,76 @@ static void test_noto_serif_if_present(void) {
         }
     }
 
+    /* Verify GSUB ligature ('fi' -> 1 glyph) and GPOS kerning ('AV' < 0). */
+    uint32_t ot_sz = ttf_ot_required_bytes(&font);
+    assert(ot_sz > 0);
+    uint8_t *ot_buf = malloc(ot_sz);
+    assert(ot_buf != NULL);
+    ttf_ot_t ot;
+    assert(ttf_ot_init(&ot, &font, 0x6C61746Eu /* 'latn' */, ot_buf, ot_sz));
+
+    const uint32_t fi_cps[2] = { 'f', 'i' };
+    uint16_t fi_gids[8];
+    int16_t fi_kern[8];
+    int fi_n = ttf_ot_shape(&font, &ot, fi_cps, 2, fi_gids, fi_kern, 8);
+    assert(fi_n == 1);
+    assert(ttf_rasterize_glyph_id(&font, sc, 32, fi_gids[0], &m, aa, sizeof(aa)));
+    assert(m.w > 0 && m.h > 0);
+
+    const uint32_t av_cps[2] = { 'A', 'V' };
+    uint16_t av_gids[8];
+    int16_t av_kern[8];
+    int av_n = ttf_ot_shape(&font, &ot, av_cps, 2, av_gids, av_kern, 8);
+    assert(av_n == 2);
+    assert(av_kern[0] < 0);
+
+    free(ot_buf);
     free(sc);
+    free(data);
+}
+
+static void test_jomolhari_if_present(void) {
+    const char *path = "/home/dsc/Source/git/Tibetan/Translation/Resources/Jomolhari-Regular.ttf";
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    assert(sz > 0);
+
+    uint8_t *data = malloc((size_t)sz);
+    assert(data != NULL);
+    assert(fread(data, 1, (size_t)sz, fp) == (size_t)sz);
+    fclose(fp);
+
+    ttf_font_t font;
+    assert(ttf_open_mem(&font, data, (uint32_t)sz));
+
+    uint32_t ot_sz = ttf_ot_required_bytes(&font);
+    assert(ot_sz > 0);
+    uint8_t *ot_buf = malloc(ot_sz);
+    assert(ot_buf != NULL);
+    ttf_ot_t ot;
+    assert(ttf_ot_init(&ot, &font, 0x74696274u /* 'tibt' */, ot_buf, ot_sz));
+
+    /* "སྒྲོལ་" (sgrol + tsheg): 6 codepoints must stack into fewer glyphs. */
+    const uint32_t sgrol[6] = { 0x0F66u, 0x0F92u, 0x0FB2u, 0x0F7Cu, 0x0F63u, 0x0F0Bu };
+    uint16_t gids[16];
+    int16_t kern[16];
+    int sn = ttf_ot_shape(&font, &ot, sgrol, 6, gids, kern, 16);
+    assert(sn > 0 && sn < 6);
+
+    ttf_scratch_t *sc = calloc(1, sizeof(ttf_scratch_t));
+    assert(sc != NULL);
+    uint8_t aa[TTF_MAX_GLYPH_W * TTF_MAX_GLYPH_H / 2];
+    ttf_glyph_metrics_t m;
+    for (int i = 0; i < sn; i++) {
+        assert(ttf_rasterize_glyph_id(&font, sc, 32, gids[i], &m, aa, sizeof(aa)));
+    }
+    printf("ttf_host: Jomolhari 'sgrol' 6 cps -> %d shaped glyphs OK\n", sn);
+
+    free(sc);
+    free(ot_buf);
     free(data);
 }
 
@@ -253,6 +323,7 @@ int main(int argc, char **argv) {
     uint32_t seed = (argc > 2) ? (uint32_t)strtoul(argv[2], NULL, 0) : 0x40c0ffeeu;
     test_synthetic();
     test_noto_serif_if_present();
+    test_jomolhari_if_present();
     test_fuzz(iters, seed);
     printf("ttf_host: PASS (%d fuzz iters)\n", iters);
     return 0;

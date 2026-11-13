@@ -102,6 +102,8 @@ int main(int argc, char **argv) {
     test_xhtml_to_md();
     test_gutenberg_file("/home/dsc/.gemini/antigravity-cli/brain/ea7d6a4f-a7c1-4653-bb90-6dec76dca55b/scratch/books/alice.epub", "Alice");
     test_gutenberg_file("/home/dsc/.gemini/antigravity-cli/brain/ea7d6a4f-a7c1-4653-bb90-6dec76dca55b/scratch/books/verwandlung.epub", "Gregor");
+    test_gutenberg_file("/home/dsc/Source/git/Tibetan/Translation/Ebooks/Nyengyü Trekchö translation.epub", NULL);
+    test_gutenberg_file("/home/dsc/Source/git/Tibetan/Translation/Ebooks/Nyengyü Tögal translation.epub", NULL);
     test_fuzz(iters, seed);
     printf("epub_host: PASS (%d fuzz iters)\n", iters);
     return 0;
