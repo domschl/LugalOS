@@ -78,7 +78,7 @@
     "drivers/touch_gt911.c": 264,
     "drivers/tsl2561.c": 84,
     "drivers/tsl2591.c": 84,
-    "drivers/ttf_cache.c": 5452,
+    "drivers/ttf_cache.c": 5592,
     "drivers/uart_esp32p4.c": 899,
     "drivers/uart_net.c": 14740,
     "drivers/ugui.c": 16,
@@ -190,7 +190,7 @@
     "clock-app": 136,
     "crypto": 38,
     "display": 4654,
-    "drivers": 6757,
+    "drivers": 6897,
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
@@ -210,5 +210,5 @@
     "vfs": 3727
   },
   "ram_code": 1806,
-  "total": 222923
+  "total": 223063
 }

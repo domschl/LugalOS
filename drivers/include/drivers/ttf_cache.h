@@ -11,7 +11,8 @@
 
 #define TTF_FONT_PRIMARY  0u
 #define TTF_FONT_TIBETAN  1u
-#define TTF_FONT_SLOTS    2u
+#define TTF_FONT_MATH     2u
+#define TTF_FONT_SLOTS    3u
 #define TTF_MAX_SHAPED    128
 
 typedef struct {
@@ -25,6 +26,7 @@ bool ttf_cache_load_slot(uint8_t font_id, const char *path, uint32_t script_tag)
 void ttf_cache_unload(void);
 bool ttf_cache_ensure_default(void);
 bool ttf_cache_ensure_tibetan(void);
+bool ttf_cache_ensure_math(void);
 void ttf_cache_reset_probe(void);
 
 /* Lookup or rasterize a glyph by codepoint or shaped glyph ID at `cell_h` px;
@@ -32,8 +34,12 @@ void ttf_cache_reset_probe(void);
  * `out_aa` receives the 4-bit packed coverage pointer (NULL for empty glyphs). */
 const ttf_glyph_metrics_t *ttf_cache_get(int cell_h, uint32_t codepoint,
                                          const uint8_t **out_aa);
+/* Like ttf_cache_get(), but returns NULL when codepoint maps to .notdef (gid 0). */
+const ttf_glyph_metrics_t *ttf_cache_get_exact(int cell_h, uint32_t codepoint,
+                                               const uint8_t **out_aa);
 const ttf_glyph_metrics_t *ttf_cache_get_gid(uint8_t font_id, int cell_h,
                                              uint16_t gid, const uint8_t **out_aa);
+int ttf_cache_baseline_px(int cell_h);
 
 /* Shape a single-script codepoint run (`cps[0..count-1]`) using GSUB/GPOS
  * and return the font slot used (`out_font_id`) + shaped glyph count. */

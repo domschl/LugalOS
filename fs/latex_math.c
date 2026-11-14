@@ -153,20 +153,52 @@ static const math_sym_entry_t MATH_SYMBOLS[] = {
     { "gamma",      0x03B3 },
     { "delta",      0x03B4 },
     { "epsilon",    0x03B5 },
+    { "varepsilon", 0x03B5 },
     { "zeta",       0x03B6 },
     { "eta",        0x03B7 },
     { "theta",      0x03B8 },
+    { "vartheta",   0x03D1 },
+    { "iota",       0x03B9 },
+    { "kappa",      0x03BA },
     { "lambda",     0x03BB },
     { "mu",         0x03BC },
+    { "nu",         0x03BD },
+    { "xi",         0x03BE },
     { "pi",         0x03C0 },
+    { "varpi",      0x03D6 },
     { "rho",        0x03C1 },
+    { "varrho",     0x03F1 },
     { "sigma",      0x03C3 },
+    { "varsigma",   0x03C2 },
+    { "tau",        0x03C4 },
+    { "upsilon",    0x03C5 },
     { "phi",        0x03C6 },
+    { "varphi",     0x03C6 },
+    { "chi",        0x03C7 },
+    { "psi",        0x03C8 },
     { "omega",      0x03C9 },
+    { "Alpha",      0x0391 },
+    { "Beta",       0x0392 },
     { "Gamma",      0x0393 },
     { "Delta",      0x0394 },
+    { "Epsilon",    0x0395 },
+    { "Zeta",       0x0396 },
+    { "Eta",        0x0397 },
     { "Theta",      0x0398 },
+    { "Iota",       0x0399 },
+    { "Kappa",      0x039A },
+    { "Lambda",     0x039B },
+    { "Mu",         0x039C },
+    { "Nu",         0x039D },
+    { "Xi",         0x039E },
+    { "Pi",         0x03A0 },
+    { "Rho",        0x03A1 },
     { "Sigma",      0x03A3 },
+    { "Tau",        0x03A4 },
+    { "Upsilon",    0x03A5 },
+    { "Phi",        0x03A6 },
+    { "Chi",        0x03A7 },
+    { "Psi",        0x03A8 },
     { "Omega",      0x03A9 },
     { "pm",         0x00B1 },
     { "mp",         0x2213 },
@@ -181,12 +213,53 @@ static const math_sym_entry_t MATH_SYMBOLS[] = {
     { "equiv",      0x2261 },
     { "in",         0x2208 },
     { "notin",      0x2209 },
+    { "subset",     0x2282 },
+    { "supset",     0x2283 },
+    { "subseteq",   0x2286 },
+    { "supseteq",   0x2287 },
+    { "cup",        0x222A },
+    { "cap",        0x2229 },
+    { "emptyset",   0x2205 },
+    { "forall",     0x2200 },
+    { "exists",     0x2203 },
+    { "land",       0x2227 },
+    { "lor",        0x2228 },
+    { "neg",        0x00AC },
+    { "lnot",       0x00AC },
+    { "propto",     0x221D },
+    { "sim",        0x223C },
+    { "simeq",      0x2243 },
+    { "cong",       0x2245 },
+    { "perp",       0x22A5 },
+    { "parallel",   0x2225 },
+    { "angle",      0x2220 },
     { "infty",      0x221E },
     { "partial",    0x2202 },
     { "nabla",      0x2207 },
     { "to",         0x2192 },
+    { "rightarrow", 0x2192 },
+    { "leftarrow",  0x2190 },
+    { "gets",       0x2190 },
+    { "leftrightarrow", 0x2194 },
+    { "mapsto",     0x21A6 },
+    { "uparrow",    0x2191 },
+    { "downarrow",  0x2193 },
     { "implies",    0x21D2 },
+    { "Rightarrow", 0x21D2 },
+    { "Leftarrow",  0x21D0 },
     { "iff",        0x21D4 },
+    { "Leftrightarrow", 0x21D4 },
+    { "Uparrow",    0x21D1 },
+    { "Downarrow",  0x21D3 },
+    { "ell",        0x2113 },
+    { "hbar",       0x210F },
+    { "Re",         0x211C },
+    { "Im",         0x2111 },
+    { "aleph",      0x2135 },
+    { "wp",         0x2118 },
+    { "ldots",      0x2026 },
+    { "cdots",      0x22EF },
+    { "dots",       0x2026 },
     { "sqrt",       0x221A },
     { "sum",        0x2211 },
     { "prod",       0x220F },
@@ -255,6 +328,80 @@ static math_delim_t token_to_delim(const math_token_t *tok) {
         if (strcmp(tok->cmd, ".") == 0) return DELIM_NONE;
     }
     return DELIM_NONE;
+}
+
+static void apply_font_family(math_box_t *b, uint8_t fam) {
+    while (b) {
+        if (b->type == MATH_BOX_CHAR) {
+            b->u.ch.font_family = fam;
+        } else if (b->type == MATH_BOX_HLIST) {
+            apply_font_family(b->u.list.head, fam);
+        } else if (b->type == MATH_BOX_SCRIPT) {
+            apply_font_family(b->u.script.nucleus, fam);
+        }
+        b = b->next;
+    }
+}
+
+/* Parse raw {...} text preserving spaces (for \text, \textbf, \operatorname). */
+static math_box_t *parse_raw_text_group(math_parser_t *p, math_style_t style,
+                                        uint8_t fam, bool add_trailing_space) {
+    math_box_t *hlist = math_box_new(p->arena, MATH_BOX_HLIST, style);
+    if (!hlist) return NULL;
+    math_box_t *cur = NULL;
+
+    if (p->cur.type == TOK_LBRACE) {
+        int depth = 1;
+        while (p->lexer.src[p->lexer.pos] && depth > 0) {
+            uint8_t c = (uint8_t)p->lexer.src[p->lexer.pos++];
+            if (c == '{') {
+                depth++;
+                continue;
+            }
+            if (c == '}') {
+                depth--;
+                if (depth == 0) break;
+                continue;
+            }
+            uint16_t cp = c;
+            if ((c & 0xE0u) == 0xC0u && p->lexer.src[p->lexer.pos]) {
+                uint8_t c1 = (uint8_t)p->lexer.src[p->lexer.pos++];
+                cp = (uint16_t)(((c & 0x1Fu) << 6) | (c1 & 0x3Fu));
+            } else if ((c & 0xF0u) == 0xE0u && p->lexer.src[p->lexer.pos] && p->lexer.src[p->lexer.pos + 1]) {
+                uint8_t c1 = (uint8_t)p->lexer.src[p->lexer.pos++];
+                uint8_t c2 = (uint8_t)p->lexer.src[p->lexer.pos++];
+                cp = (uint16_t)(((c & 0x0Fu) << 12) | ((c1 & 0x3Fu) << 6) | (c2 & 0x3Fu));
+            }
+            math_box_t *ch = math_box_new(p->arena, MATH_BOX_CHAR, style);
+            if (ch) {
+                ch->u.ch.codepoint = cp;
+                ch->u.ch.font_family = fam;
+                if (!hlist->u.list.head) hlist->u.list.head = ch;
+                else if (cur) cur->next = ch;
+                cur = ch;
+            }
+        }
+        parser_advance(p);
+    } else if (p->cur.type == TOK_CHAR) {
+        math_box_t *ch = math_box_new(p->arena, MATH_BOX_CHAR, style);
+        if (ch) {
+            ch->u.ch.codepoint = p->cur.codepoint;
+            ch->u.ch.font_family = fam;
+            hlist->u.list.head = ch;
+            cur = ch;
+        }
+        parser_advance(p);
+    }
+
+    if (add_trailing_space) {
+        math_box_t *sp = math_box_new(p->arena, MATH_BOX_SPACE, style);
+        if (sp) {
+            sp->u.space.width = 3;
+            if (!hlist->u.list.head) hlist->u.list.head = sp;
+            else if (cur) cur->next = sp;
+        }
+    }
+    return hlist;
 }
 
 static math_box_t *parse_atom(math_parser_t *p, math_style_t style) {
@@ -375,7 +522,13 @@ static math_box_t *parse_atom(math_parser_t *p, math_style_t style) {
         }
 
         /* 6. Named Functions: \sin, \cos, \ln, etc. */
-        const char *named_fns[] = { "sin", "cos", "tan", "ln", "log", "exp", "det", "lim", "max", "min", NULL };
+        const char *named_fns[] = {
+            "sin", "cos", "tan", "cot", "sec", "csc",
+            "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
+            "ln", "log", "exp", "det", "dim", "ker", "gcd", "deg",
+            "lim", "limsup", "liminf", "sup", "inf", "max", "min", "arg", "mod", "Pr",
+            NULL
+        };
         for (int i = 0; named_fns[i]; i++) {
             if (strcmp(cmd, named_fns[i]) == 0) {
                 math_box_t *hlist = math_box_new(p->arena, MATH_BOX_HLIST, style);
@@ -384,7 +537,7 @@ static math_box_t *parse_atom(math_parser_t *p, math_style_t style) {
                     math_box_t *ch = math_box_new(p->arena, MATH_BOX_CHAR, style);
                     if (ch) {
                         ch->u.ch.codepoint = (uint8_t)*s;
-                        ch->u.ch.font_family = 1; /* upright */
+                        ch->u.ch.font_family = MATH_FONT_ROMAN;
                         if (!hlist->u.list.head) hlist->u.list.head = ch;
                         else if (cur) cur->next = ch;
                         cur = ch;
@@ -394,19 +547,23 @@ static math_box_t *parse_atom(math_parser_t *p, math_style_t style) {
             }
         }
 
-        /* 7. Font Modifiers: \mathbf, \mathbb, \mathcal, \mathrm */
+        /* 7. Text & Font Modifiers: \text, \textbf, \operatorname, \mathbf, \mathbb, \mathcal, \mathrm */
+        if (strcmp(cmd, "text") == 0) {
+            return parse_raw_text_group(p, style, MATH_FONT_ROMAN, false);
+        }
+        if (strcmp(cmd, "textbf") == 0) {
+            return parse_raw_text_group(p, style, MATH_FONT_BOLD, false);
+        }
+        if (strcmp(cmd, "operatorname") == 0) {
+            return parse_raw_text_group(p, style, MATH_FONT_ROMAN, true);
+        }
         if (strcmp(cmd, "mathbf") == 0 || strcmp(cmd, "mathbb") == 0 ||
             strcmp(cmd, "mathcal") == 0 || strcmp(cmd, "mathrm") == 0) {
-            uint8_t fam = (strcmp(cmd, "mathbb") == 0) ? 2 :
-                          (strcmp(cmd, "mathcal") == 0) ? 3 :
-                          (strcmp(cmd, "mathrm") == 0) ? 1 : 0;
+            uint8_t fam = (strcmp(cmd, "mathbb") == 0) ? MATH_FONT_BBOLD :
+                          (strcmp(cmd, "mathcal") == 0) ? MATH_FONT_CAL :
+                          (strcmp(cmd, "mathrm") == 0) ? MATH_FONT_ROMAN : MATH_FONT_BOLD;
             math_box_t *inner = parse_group_or_atom(p, style);
-            /* Tag chars inside with family */
-            math_box_t *k = inner;
-            while (k) {
-                if (k->type == MATH_BOX_CHAR) k->u.ch.font_family = fam;
-                k = k->next;
-            }
+            apply_font_family(inner, fam);
             return inner;
         }
 
@@ -438,6 +595,21 @@ static math_box_t *parse_atom(math_parser_t *p, math_style_t style) {
             } else if (strcmp(env, "cases") == 0) {
                 mat->u.matrix.left_delim = DELIM_BRACE_L;
                 mat->u.matrix.right_delim = DELIM_NONE;
+                for (uint8_t ac = 0; ac < MATH_MATRIX_MAX_COLS; ac++) {
+                    mat->u.matrix.col_align[ac] = MATH_ALIGN_LEFT;
+                }
+            } else if (strcmp(env, "array") == 0 && p->cur.type == TOK_LBRACE) {
+                parser_advance(p);
+                uint8_t ac = 0;
+                while (p->cur.type != TOK_EOF && p->cur.type != TOK_RBRACE) {
+                    if (p->cur.type == TOK_CHAR && ac < MATH_MATRIX_MAX_COLS) {
+                        if (p->cur.codepoint == 'l') mat->u.matrix.col_align[ac++] = MATH_ALIGN_LEFT;
+                        else if (p->cur.codepoint == 'r') mat->u.matrix.col_align[ac++] = MATH_ALIGN_RIGHT;
+                        else if (p->cur.codepoint == 'c') mat->u.matrix.col_align[ac++] = MATH_ALIGN_CENTER;
+                    }
+                    parser_advance(p);
+                }
+                if (p->cur.type == TOK_RBRACE) parser_advance(p);
             }
 
             uint8_t r = 0, c = 0;
@@ -463,6 +635,9 @@ static math_box_t *parse_atom(math_parser_t *p, math_style_t style) {
                 } else if (p->cur.type == TOK_NEWLINE) {
                     parser_advance(p);
                     if (c + 1 > mat->u.matrix.cols) mat->u.matrix.cols = c + 1;
+                    if (p->cur.type == TOK_CMD && strcmp(p->cur.cmd, "end") == 0) {
+                        continue;
+                    }
                     r++;
                     c = 0;
                 } else {

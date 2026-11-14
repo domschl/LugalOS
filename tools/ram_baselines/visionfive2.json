@@ -6,7 +6,7 @@
   "heap_pages": 30692,
   "per_file": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 15725,
+    "(no line info: .rodata)": 15789,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 20,
     "arch/riscv/common/trap.c": 15,
@@ -66,7 +66,7 @@
     "drivers/tmp117.c": 248,
     "drivers/tsl2561.c": 263,
     "drivers/tsl2591.c": 140,
-    "drivers/ttf_cache.c": 5564,
+    "drivers/ttf_cache.c": 5748,
     "drivers/ttf_ot.c": 24,
     "drivers/uart_16550.c": 2759,
     "drivers/uart_net.c": 14836,
@@ -81,7 +81,7 @@
     "drivers/xhci_jh7110.c": 161762,
     "fs/9p.c": 11501,
     "fs/fat32.c": 41,
-    "fs/latex_math.c": 704,
+    "fs/latex_math.c": 1872,
     "fs/p9_chan.c": 12388,
     "fs/p9_link.c": 24976,
     "fs/p9_protect.c": 14,
@@ -194,7 +194,7 @@
   },
   "per_subsystem": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 15725,
+    "(no line info: .rodata)": 15789,
     "9p": 65775,
     "agent": 3501,
     "app:cc": 598,
@@ -206,8 +206,8 @@
     "clock-app": 608,
     "crypto": 4866,
     "display": 314937,
-    "drivers": 373546,
-    "fs": 853,
+    "drivers": 373730,
+    "fs": 2021,
     "httpd": 184,
     "identity": 4367,
     "kernel": 404218,
@@ -223,6 +223,6 @@
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 830180,
-  "total": 8123969
+  "ram_code": 835272,
+  "total": 8130477
 }

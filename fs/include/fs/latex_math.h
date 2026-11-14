@@ -61,6 +61,17 @@ typedef enum {
 #define MATH_MATRIX_MAX_ROWS 8
 #define MATH_MATRIX_MAX_COLS 8
 
+#define MATH_FONT_ITALIC 0u
+#define MATH_FONT_ROMAN  1u
+#define MATH_FONT_BBOLD  2u
+#define MATH_FONT_CAL    3u
+#define MATH_FONT_SYMBOL 4u
+#define MATH_FONT_BOLD   5u
+
+#define MATH_ALIGN_CENTER 0u
+#define MATH_ALIGN_LEFT   1u
+#define MATH_ALIGN_RIGHT  2u
+
 typedef struct math_box {
     uint8_t   type;       /* math_box_type_t */
     uint8_t   style;      /* math_style_t */
@@ -104,6 +115,7 @@ typedef struct math_box {
             struct math_box **cells;
             uint8_t rows;
             uint8_t cols;
+            uint8_t col_align[MATH_MATRIX_MAX_COLS];
             int16_t col_w[MATH_MATRIX_MAX_COLS];
             int16_t row_h[MATH_MATRIX_MAX_ROWS];
             int16_t row_d[MATH_MATRIX_MAX_ROWS];

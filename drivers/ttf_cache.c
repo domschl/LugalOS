@@ -293,6 +293,31 @@ bool ttf_cache_ensure_tibetan(void) {
     return false;
 }
 
+bool ttf_cache_ensure_math(void) {
+    if (!vfs_volume_mounted("sd0") && !vfs_volume_mounted("nvme0")) return false;
+    ylock_acquire(&s_ttf_lock);
+    ttf_font_slot_t *fs = &s_tc.fonts[TTF_FONT_MATH];
+    if (fs->loaded) {
+        ylock_release(&s_ttf_lock);
+        return true;
+    }
+    if (fs->probed) {
+        ylock_release(&s_ttf_lock);
+        return false;
+    }
+    fs->probed = true;
+    ylock_release(&s_ttf_lock);
+
+    static const char *const k_paths[] = {
+        "/nvme0/fonts/NotoSansMath-Regular.ttf",
+        "/sd0/fonts/NotoSansMath-Regular.ttf",
+    };
+    for (size_t i = 0; i < sizeof(k_paths) / sizeof(k_paths[0]); i++) {
+        if (ttf_cache_load_slot(TTF_FONT_MATH, k_paths[i], OT_TAG('m', 'a', 't', 'h'))) return true;
+    }
+    return false;
+}
+
 void ttf_cache_reset_probe(void) {
     ylock_acquire(&s_ttf_lock);
     for (uint8_t i = 0; i < TTF_FONT_SLOTS; i++) {
@@ -409,6 +434,41 @@ const ttf_glyph_metrics_t *ttf_cache_get(int cell_h, uint32_t codepoint,
     return ttf_cache_get_gid(font_id, cell_h, gid, out_aa);
 }
 
+const ttf_glyph_metrics_t *ttf_cache_get_exact(int cell_h, uint32_t codepoint,
+                                               const uint8_t **out_aa) {
+    uint8_t font_id = TTF_FONT_PRIMARY;
+    if (codepoint >= 0x0F00u && codepoint <= 0x0FFFu && ttf_cache_ensure_tibetan()) {
+        font_id = TTF_FONT_TIBETAN;
+    }
+    ylock_acquire(&s_ttf_lock);
+    ttf_font_slot_t *fs = &s_tc.fonts[font_id];
+    uint16_t gid = fs->loaded ? ttf_glyph_index(&fs->font, codepoint) : 0;
+    bool loaded = fs->loaded;
+    ylock_release(&s_ttf_lock);
+    if ((!loaded || gid == 0) && font_id == TTF_FONT_PRIMARY && ttf_cache_ensure_math()) {
+        ylock_acquire(&s_ttf_lock);
+        ttf_font_slot_t *mfs = &s_tc.fonts[TTF_FONT_MATH];
+        uint16_t mgid = mfs->loaded ? ttf_glyph_index(&mfs->font, codepoint) : 0;
+        ylock_release(&s_ttf_lock);
+        if (mgid != 0) {
+            return ttf_cache_get_gid(TTF_FONT_MATH, cell_h, mgid, out_aa);
+        }
+    }
+    if (!loaded || gid == 0) {
+        if (out_aa) *out_aa = NULL;
+        return NULL;
+    }
+    return ttf_cache_get_gid(font_id, cell_h, gid, out_aa);
+}
+
+int ttf_cache_baseline_px(int cell_h) {
+    ylock_acquire(&s_ttf_lock);
+    ttf_font_slot_t *fs = &s_tc.fonts[TTF_FONT_PRIMARY];
+    int bl = fs->loaded ? ttf_baseline_px(&fs->font, cell_h) : (cell_h * 3) / 4;
+    ylock_release(&s_ttf_lock);
+    return bl;
+}
+
 int ttf_cache_shape_run(const uint32_t *cps, int count, int cell_h,
                         uint8_t *out_font_id, ttf_shaped_glyph_t *out, int max_out) {
     if (!cps || count <= 0 || !out || max_out <= 0 || cell_h <= 0) return 0;
@@ -465,6 +525,7 @@ bool ttf_cache_load_slot(uint8_t font_id, const char *path, uint32_t script_tag)
 void ttf_cache_unload(void) {}
 bool ttf_cache_ensure_default(void) { return false; }
 bool ttf_cache_ensure_tibetan(void) { return false; }
+bool ttf_cache_ensure_math(void) { return false; }
 void ttf_cache_reset_probe(void) {}
 const ttf_glyph_metrics_t *ttf_cache_get(int cell_h, uint32_t codepoint,
                                          const uint8_t **out_aa) {
@@ -472,6 +533,13 @@ const ttf_glyph_metrics_t *ttf_cache_get(int cell_h, uint32_t codepoint,
     if (out_aa) *out_aa = NULL;
     return NULL;
 }
+const ttf_glyph_metrics_t *ttf_cache_get_exact(int cell_h, uint32_t codepoint,
+                                               const uint8_t **out_aa) {
+    (void)cell_h; (void)codepoint;
+    if (out_aa) *out_aa = NULL;
+    return NULL;
+}
+int ttf_cache_baseline_px(int cell_h) { return (cell_h * 3) / 4; }
 const ttf_glyph_metrics_t *ttf_cache_get_gid(uint8_t font_id, int cell_h,
                                              uint16_t gid, const uint8_t **out_aa) {
     (void)font_id; (void)cell_h; (void)gid;

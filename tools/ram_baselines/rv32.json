@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 125399040,
-  "heap_pages": 30615,
+  "heap_bytes": 125394944,
+  "heap_pages": 30614,
   "per_file": {
     "(no line info: .rodata)": 9475,
     "(no line info: .sdata)": 9,
@@ -70,7 +70,7 @@
     "drivers/vtterm.c": 16,
     "fs/9p.c": 10117,
     "fs/fat32.c": 41,
-    "fs/latex_math.c": 352,
+    "fs/latex_math.c": 936,
     "fs/p9_chan.c": 12340,
     "fs/p9_link.c": 24836,
     "fs/p9_protect.c": 14,
@@ -192,7 +192,7 @@
     "crypto": 4806,
     "display": 251458,
     "drivers": 125311,
-    "fs": 457,
+    "fs": 1041,
     "httpd": 172,
     "identity": 140,
     "kernel": 45267,
@@ -209,6 +209,6 @@
     "usb": 902,
     "vfs": 3894
   },
-  "ram_code": 1480442,
-  "total": 6800590
+  "ram_code": 1492080,
+  "total": 6812812
 }

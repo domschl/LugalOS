@@ -1777,6 +1777,59 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
     return cur_y;
 }
 
+static void render_display_math(ugui_surface_t *rd, const char *expr,
+                                int margin_x, int max_w, int scroll_y, int h,
+                                int *inout_doc_y) {
+    if (!expr || !*expr) return;
+#if (defined(__riscv) && (__riscv_xlen == 64)) || READER_IS_HIDPI
+    const uint32_t arena_pages = 4u;
+#else
+    const uint32_t arena_pages = 2u;
+#endif
+    uint8_t fallback[2048];
+    uint8_t *heap_arena = (uint8_t *)palloc_pages_bulk(arena_pages);
+    uint8_t *arena_buf = heap_arena ? heap_arena : fallback;
+    size_t arena_sz = heap_arena ? (size_t)arena_pages * 4096u : sizeof(fallback);
+
+    math_arena_t arena;
+    math_arena_init(&arena, arena_buf, arena_sz);
+    math_box_t *box = latex_parse(expr, STYLE_DISPLAY, &arena);
+    int base_scale = reader_math_scale();
+    if (box) {
+        latex_layout(box, base_scale);
+        int math_w = box->w;
+        int total_h = box->h + box->d + 16 * base_scale;
+        int cx = margin_x + (max_w - math_w) / 2;
+        if (cx < margin_x) cx = margin_x;
+
+        int my = *inout_doc_y - scroll_y;
+        if (my + total_h >= 0 && my < h) {
+            int baseline = my + box->h + 8 * base_scale;
+            if (rd->c1) {
+                latex_render_canvas1(box, cx, baseline, rd->c1, 1);
+            }
+            if (rd->aa_fb) {
+                latex_render_gray8(box, cx, baseline, rd->aa_fb, rd->aa_stride,
+                                   rd->w, rd->h, READER_FG_GRAY8, READER_BG_GRAY8);
+            }
+        }
+        *inout_doc_y += total_h;
+    } else {
+        int line_len = (int)strlen(expr);
+        int cw = rdraw_mono_cell_w(rd);
+        int txt_w = line_len * cw;
+        int cx = margin_x + (max_w - txt_w) / 2;
+        if (cx < margin_x) cx = margin_x;
+        int screen_y = *inout_doc_y - scroll_y;
+        if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
+            rdraw_fill(rd, cx - 8, screen_y - 2, cx + txt_w + 8, screen_y + READER_LINE_H, 244, CANVAS1_GREY);
+            rdraw_mono_text(rd, cx, screen_y, expr, line_len, max_w / cw);
+        }
+        *inout_doc_y += READER_LINE_H + 8;
+    }
+    if (heap_arena) palloc_free(heap_arena, arena_pages);
+}
+
 static void draw_reader_action_bar(reader_state_t *r, ugui_surface_t *rd, int w, int h) {
     if (r->fullscreen && !r->toc_mode) return;
     int sc = (int)CHROME_SCALE;
@@ -2006,6 +2059,10 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
     int line_pos = 0;
     bool in_code = false;
     bool in_math = false;
+    bool in_math_accum = false;
+    char math_buf[1024];
+    size_t math_len = 0;
+    math_buf[0] = '\0';
 
     /* With checkpoints for this width, from the last one at or above the
      * view, and only down to its bottom: the contents, the links' numbering
@@ -2078,8 +2135,21 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                     if (md.type == MD_LINE_TEXT) {
                         render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
                         doc_y += 4;
+                    } else if (md.type == MD_LINE_MATH_TEXT && in_math_accum) {
+                        size_t tlen = strlen(md.text);
+                        if (math_len + tlen + 2 < sizeof(math_buf)) {
+                            if (math_len > 0) math_buf[math_len++] = ' ';
+                            memcpy(math_buf + math_len, md.text, tlen);
+                            math_len += tlen;
+                            math_buf[math_len] = '\0';
+                        }
                     }
                 }
+            }
+            if (in_math_accum && math_len > 0) {
+                render_display_math(&rd, math_buf, margin_x, max_w, scroll_y, h, &doc_y);
+                in_math_accum = false;
+                math_len = 0;
             }
             break;
         }
@@ -2326,46 +2396,45 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                     break;
 
                 case MD_LINE_MATH_TOGGLE:
-                    doc_y += 8;
+                    if (!in_math_accum) {
+                        in_math_accum = true;
+                        math_len = 0;
+                        math_buf[0] = '\0';
+                        doc_y += 8;
+                    } else {
+                        if (math_len > 0) {
+                            render_display_math(&rd, math_buf, margin_x, max_w, scroll_y, h, &doc_y);
+                        }
+                        in_math_accum = false;
+                        math_len = 0;
+                        doc_y += 8;
+                    }
                     break;
 
                 case MD_LINE_MATH_TEXT:
-                    {
-                        uint8_t arena_buf[4096];
-                        math_arena_t arena;
-                        math_arena_init(&arena, arena_buf, sizeof(arena_buf));
-                        math_box_t *box = latex_parse(md.text, STYLE_DISPLAY, &arena);
-                        int base_scale = reader_math_scale();
-                        if (box) {
-                            latex_layout(box, base_scale);
-                            int math_w = box->w;
-                            int total_h = box->h + box->d + 16 * base_scale;
-                            int cx = margin_x + (max_w - math_w) / 2;
-                            if (cx < margin_x) cx = margin_x;
-
-                            int my = doc_y - scroll_y;
-                            if (my + total_h >= 0 && my < h) {
-                                int baseline = my + box->h + 8 * base_scale;
-                                if (rd.c1) {
-                                    latex_render_canvas1(box, cx, baseline, rd.c1, 1);
-                                }
-                                if (rd.aa_fb) {
-                                    latex_render_gray8(box, cx, baseline, rd.aa_fb, rd.aa_stride, rd.w, rd.h, READER_FG_GRAY8, READER_BG_GRAY8);
-                                }
-                            }
-                            doc_y += total_h;
-                        } else {
-                            int line_len = strlen(md.text);
-                            int cw = rdraw_mono_cell_w(&rd);
-                            int txt_w = line_len * cw;
-                            int cx = margin_x + (max_w - txt_w) / 2;
-                            if (cx < margin_x) cx = margin_x;
-                            if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
-                                rdraw_fill(&rd, cx - 8, screen_y - 2, cx + txt_w + 8, screen_y + READER_LINE_H, 244, CANVAS1_GREY);
-                                rdraw_mono_text(&rd, cx, screen_y, md.text, line_len, max_w / cw);
-                            }
-                            doc_y += READER_LINE_H + 8;
+                    if (in_math_accum) {
+                        size_t tlen = strlen(md.text);
+                        if (math_len + tlen + 2 < sizeof(math_buf)) {
+                            if (math_len > 0) math_buf[math_len++] = ' ';
+                            memcpy(math_buf + math_len, md.text, tlen);
+                            math_len += tlen;
+                            math_buf[math_len] = '\0';
                         }
+                    } else {
+                        /* Single-line $$ ... $$ or \[ ... \] block */
+                        const char *s = md.text;
+                        while (*s == ' ' || *s == '\t') s++;
+                        if ((s[0] == '$' && s[1] == '$') || (s[0] == '\\' && s[1] == '[')) s += 2;
+                        size_t slen = strlen(s);
+                        while (slen > 0 && (s[slen - 1] == ' ' || s[slen - 1] == '\t')) slen--;
+                        if (slen >= 2 && ((s[slen - 2] == '$' && s[slen - 1] == '$') ||
+                                          (s[slen - 2] == '\\' && s[slen - 1] == ']'))) {
+                            slen -= 2;
+                        }
+                        size_t copy_len = slen < sizeof(math_buf) - 1 ? slen : sizeof(math_buf) - 1;
+                        memcpy(math_buf, s, copy_len);
+                        math_buf[copy_len] = '\0';
+                        render_display_math(&rd, math_buf, margin_x, max_w, scroll_y, h, &doc_y);
                     }
                     break;
 
