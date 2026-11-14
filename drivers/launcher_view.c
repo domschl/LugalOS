@@ -571,7 +571,7 @@ static void file_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t row, 
     }
     ugui_surface_t ms = ugui_clip(s, (ugui_rect_t){ (int16_t)(right - mw), row.y, (int16_t)mw, row.h });
     ugui_text_serif(&ms, right - mw, ty, meta, (uint32_t)strlen(meta), false, true, armed);
-    ugui_add_hit(ctx, row, LAUNCHER_ID_FILE, (int16_t)i);
+    ugui_add_hit_s(s, ctx, row, LAUNCHER_ID_FILE, (int16_t)i);
 }
 
 static void draw_files(const ugui_surface_t *surf, ugui_rect_t r) {
@@ -649,7 +649,7 @@ static void draw_shortcuts(const ugui_surface_t *surf, ugui_rect_t r) {
         draw_icon(&cs, row.x + 6 * s, row.y + (row.h - 32 * s) / 2, shortcuts_icon(sc), "app", armed);
         ugui_text_serif(&cs, row.x + 46 * s, row.y + (row.h - ugui_serif_line_h(surf)) / 2, sc->label,
                         (uint32_t)strlen(sc->label), false, false, armed);
-        ugui_add_hit(ctx, row, LAUNCHER_ID_SHORTCUT, (int16_t)i);
+        ugui_add_hit_s(&cs, ctx, row, LAUNCHER_ID_SHORTCUT, (int16_t)i);
     }
 }
 

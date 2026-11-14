@@ -47,7 +47,7 @@
     "drivers/radio/radio_netif.c": 4,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 28,
-    "drivers/reader_view.c": 3985,
+    "drivers/reader_view.c": 3997,
     "drivers/sdio_slave_esp32c6.c": 55,
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
@@ -97,7 +97,7 @@
     "kernel/radio_osi_test.c": 252,
     "kernel/random.c": 4,
     "kernel/sched.c": 2501,
-    "kernel/settings.c": 35,
+    "kernel/settings.c": 37,
     "kernel/shell.c": 2708,
     "kernel/smp.c": 8,
     "kernel/status_led.c": 8,
@@ -130,12 +130,12 @@
     "agent": 987,
     "clock-app": 136,
     "crypto": 4,
-    "display": 4017,
+    "display": 4029,
     "drivers": 380,
     "fs": 36,
     "httpd": 53,
     "identity": 128,
-    "kernel": 19205,
+    "kernel": 19207,
     "lisp": 24755,
     "llp": 3545,
     "log": 4226,
@@ -151,5 +151,5 @@
     "vfs": 3215
   },
   "ram_code": 16634,
-  "total": 163302
+  "total": 163316
 }

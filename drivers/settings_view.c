@@ -47,6 +47,7 @@ static const char *const k_sections[SEC_COUNT] = { "Display", "Sound", "Input", 
 #define ID_WARM_INK  102
 #define ID_ORIENT    110         /* + segment */
 #define ID_TEXT      120         /* + segment */
+#define ID_FONTSIZE  125
 #define ID_VOLUME    130
 #define ID_CLICK     131
 #define ID_TEST      132
@@ -74,7 +75,7 @@ static struct {
     bool       wide;            /* as last drawn: the list beside the page */
     int        scroll, content_h;
     ugui_rect_t page;           /* the page's viewport, as last drawn */
-    ugui_rect_t sliders[3];     /* brightness, warmth, volume: their rects as last drawn */
+    ugui_rect_t sliders[4];     /* brightness, warmth, volume, font_size: their rects as last drawn */
     int        warm_drag;       /* the value under a dragging finger, -1: none */
     uint64_t   warm_ms;         /* when warmth was last applied */
     int        press_x, press_y;
@@ -147,6 +148,22 @@ static void page_display(const ugui_surface_t *s, ugui_rect_t *col) {
     header(s, col, "TEXT SIZE");
     static const char *const k_size[3] = { "Small", "Medium", "Large" };
     ugui_segmented(s, &s_st.ui, ugui_cut_top(col, 30 * sc), k_size, 3, settings_get("ui.text_size"), ID_TEXT);
+#if defined(CONFIG_PSRAM_BYTES) || defined(CONFIG_BOARD_VISIONFIVE2)
+    {
+        int fpx = settings_get("ui.font_size");
+        int ts = settings_get("ui.text_size");
+#if defined(CONFIG_FONT_CELL_W) && (CONFIG_FONT_CELL_W == 16)
+        int def_px = (ts == 0) ? 24 : (ts == 2) ? 40 : 32;
+#else
+        int def_px = (ts == 0) ? 13 : (ts == 2) ? 24 : 16;
+#endif
+        int eff = (fpx >= 16) ? fpx : def_px;
+        if (fpx >= 16) ksnprintf(v, sizeof v, "%d px", eff);
+        else ksnprintf(v, sizeof v, "%d px (preset)", eff);
+        gap(col, 6 * sc);
+        s_st.sliders[3] = slider_row(s, col, "Reader font", v, eff < 16 ? 16 : eff, 16, 64, ID_FONTSIZE, 0);
+    }
+#endif
     gap(col, 10 * sc);
 #if defined(CONFIG_BOARD_TAB5)
     header(s, col, "ORIENTATION");
@@ -465,6 +482,8 @@ static void slider_to(uint16_t id, int x, bool final) {
         warmth_apply(v, final);
     } else if (id == ID_VOLUME) {
         (void)settings_set("audio.volume", ugui_slider_value(&ss, s_st.sliders[2], x, 0, 100));
+    } else if (id == ID_FONTSIZE) {
+        (void)settings_set("ui.font_size", ugui_slider_value(&ss, s_st.sliders[3], x, 16, 64));
     } else {
         return;
     }
@@ -477,6 +496,14 @@ static bool slider_key(uint16_t id, uint32_t key) {
     if (id == ID_BRIGHT) return settings_set("display.brightness", settings_get("display.brightness") + 10 * dir);
     if (id == ID_WARMTH) return settings_set("display.warmth", settings_get("display.warmth") + dir);
     if (id == ID_VOLUME) return settings_set("audio.volume", settings_get("audio.volume") + 10 * dir);
+    if (id == ID_FONTSIZE) {
+        int cur = settings_get("ui.font_size");
+        if (cur < 16) cur = 32;
+        int next = cur + 2 * dir;
+        if (next < 16) next = 16;
+        if (next > 64) next = 64;
+        return settings_set("ui.font_size", next);
+    }
     return false;
 }
 
@@ -495,11 +522,12 @@ static void st_act(uint16_t id, int16_t idx, int x) {
     } else if (id == ID_BACK) {
         s_st.page_open = false;
         ugui_set_focus(&s_st.ui, ID_SECTION, (int16_t)s_st.section);
-    } else if (id == ID_BRIGHT || id == ID_WARMTH || id == ID_VOLUME) {
+    } else if (id == ID_BRIGHT || id == ID_WARMTH || id == ID_VOLUME || id == ID_FONTSIZE) {
         if (x >= 0) { slider_to(id, x, true); return; }
     } else if (id == ID_WARM_INK) {
         toggle("display.warm_ink");
     } else if (id >= ID_TEXT && id < ID_TEXT + 3) {
+        (void)settings_set("ui.font_size", 0);
         (void)settings_set("ui.text_size", id - ID_TEXT);
     } else if (id >= ID_ORIENT && id < ID_ORIENT + 3) {
         (void)settings_set("display.orient", id - ID_ORIENT);
@@ -565,7 +593,7 @@ static void st_key(uint32_t key, uint8_t mods) {
 
 static bool st_active(uint8_t inst) { return s_st.active && inst == s_st.slot; }
 
-static bool st_is_slider(uint16_t id) { return id == ID_BRIGHT || id == ID_WARMTH || id == ID_VOLUME; }
+static bool st_is_slider(uint16_t id) { return id == ID_BRIGHT || id == ID_WARMTH || id == ID_VOLUME || id == ID_FONTSIZE; }
 
 static void st_event(uint8_t inst, const win_event_t *ev) {
     if (!st_active(inst)) return;

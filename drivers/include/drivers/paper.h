@@ -8,11 +8,9 @@
  * maps it to an ink and a paper colour at output, so "warmth" is that pair.
  *
  * display.warmth 0..PAPER_WARMTH_MAX moves the paper from white to a light
- * warm paper (#F4E8D0) at 5, then on to a deep, aged sepia (#E3CCA0) at 10;
- * with display.warm_ink on, the ink goes from black to dark brown (#3B2A1A)
- * by 5 and stays there. Contrast at 10: 8.8:1 with the brown ink, 13.4:1
- * with black (WCAG AAA asks 7:1). Warmth 0 is exactly black on white,
- * 0x0000 / 0xffff. */
+ * warm paper (#F4E8D0) at 5, then on to a rich sepia (#E8D7B4) at 10;
+ * with display.warm_ink on, the ink goes from black to sepia brown (#5B4636)
+ * by 5 and stays there. Warmth 0 is exactly black on white, 0x0000 / 0xffff. */
 
 #define PAPER_WARMTH_MAX 10
 

@@ -47,6 +47,7 @@ static const setting_def_t k_settings[] = {
     { "input.pointer_speed", SETTING_INT, 100, 25, 400, NULL },
     { "launcher.face",      SETTING_ENUM, 0,   0,  1,   k_face },
     { "ui.click_sound",     SETTING_BOOL, 0,   0,  1,   NULL },
+    { "ui.font_size",       SETTING_INT,  0,   0,  64,  NULL },
     { "ui.osk_preview",     SETTING_BOOL, 1,   0,  1,   NULL },
     { "ui.text_size",       SETTING_ENUM, 1,   0,  2,   k_text_size },
 };

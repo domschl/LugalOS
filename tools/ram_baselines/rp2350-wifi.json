@@ -32,7 +32,7 @@
     "drivers/pico_clock_ui.c": 136,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 28,
-    "drivers/reader_view.c": 3985,
+    "drivers/reader_view.c": 3997,
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
     "drivers/spisd_rp2350.c": 3133,
@@ -72,7 +72,7 @@
     "kernel/privilege.c": 8,
     "kernel/random.c": 38,
     "kernel/sched.c": 2501,
-    "kernel/settings.c": 35,
+    "kernel/settings.c": 37,
     "kernel/setup.c": 453,
     "kernel/setup_ap.c": 50,
     "kernel/setup_button.c": 64,
@@ -110,12 +110,12 @@
     "agent": 987,
     "clock-app": 136,
     "crypto": 67,
-    "display": 4017,
+    "display": 4029,
     "drivers": 2920,
     "fs": 64,
     "httpd": 70,
     "identity": 695,
-    "kernel": 13009,
+    "kernel": 13011,
     "lisp": 48395,
     "log": 4226,
     "mqtt": 4220,
@@ -130,5 +130,5 @@
     "vfs": 3727
   },
   "ram_code": 434,
-  "total": 173627
+  "total": 173641
 }

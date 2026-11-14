@@ -89,6 +89,8 @@ void ugui_begin(ugui_ctx_t *ctx);
 
 /* Register an explicit hit-box in the current draw pass */
 void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index);
+/* Register a hit-box clipped to surface s's clip rect and slop bounds */
+void ugui_add_hit_s(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index);
 /* ... one that follows a finger or a held mouse button (UGUI_HIT_DRAG: a
  * scrollbar the caller draws itself) */
 void ugui_add_drag_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id);
@@ -375,6 +377,7 @@ typedef struct {
 
 /* The face for size on this build's panels; NULL is the medium one. */
 const ugui_face_t *ugui_face(int size);
+const ugui_face_t *ugui_face_px(int px);
 /* A face's cell height (NULL: ugui_serif_line_h()). */
 int ugui_face_h(const ugui_surface_t *s, const ugui_face_t *f);
 int ugui_face_width(const ugui_surface_t *s, const ugui_face_t *f, const char *str, uint32_t len);

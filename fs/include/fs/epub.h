@@ -58,6 +58,10 @@ epub_err_t epub_load_chapter_md(const epub_book_t *book, int chapter_idx,
                                 uint8_t *scratch, uint32_t scratch_cap,
                                 char *md_out, uint32_t md_cap, uint32_t *out_len);
 
+/* Resolve `rel_href` (stripping any #fragment) relative to `from_chapter`
+ * and return the matching spine index, or -1 if not found. */
+int epub_find_spine_href(const epub_book_t *book, int from_chapter, const char *rel_href);
+
 /* Standalone XHTML -> UTF-8 Markdown stream converter. */
 uint32_t epub_xhtml_to_md(const uint8_t *xhtml, uint32_t xhtml_len,
                           char *md_out, uint32_t md_cap);

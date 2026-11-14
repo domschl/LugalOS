@@ -247,6 +247,10 @@ static void add_hit_s(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, u
     ctx->cur_bound = keep;
 }
 
+void ugui_add_hit_s(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index) {
+    add_hit_s(s, ctx, r, id, index, 0);
+}
+
 void ugui_disable_next(ugui_ctx_t *ctx, uint8_t parts) {
     if (ctx) ctx->next_disabled = parts;
 }
@@ -641,8 +645,24 @@ int ugui_mono_cell_h(const ugui_surface_t *s) {
     return 16 * sc;
 }
 
+#if UGUI_TTF_SUPPORT && defined(UGUI_TEXT_SIZES)
+static bool has_non_ascii(const char *str, uint32_t len) {
+    for (uint32_t i = 0; str && i < len && str[i]; i++) {
+        if ((uint8_t)str[i] >= 0x80u) return true;
+    }
+    return false;
+}
+static int raw_face_text(const ugui_surface_t *s, const ugui_face_t *f, int x, int y, const char *str, uint32_t len,
+                         bool bold, bool italic, bool inverted);
+#endif
+
 int ugui_text_serif_width(const ugui_surface_t *s, const char *str, uint32_t len) {
     if (!str || len == 0) return 0;
+#if UGUI_TTF_SUPPORT && defined(UGUI_TEXT_SIZES)
+    if (has_non_ascii(str, len) && ttf_cache_ensure_default()) {
+        return ugui_face_width(s, ugui_face(1), str, len);
+    }
+#endif
     int sc = (s && s->scale > 0) ? s->scale : 1;
     if (sc >= 2) {
 #if UGUI_HAS_NOTO_FONTS
@@ -657,6 +677,11 @@ int ugui_text_serif_width(const ugui_surface_t *s, const char *str, uint32_t len
 static int raw_text_serif(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
                           bool bold, bool italic, bool inverted) {
     if (!s || !str || len == 0) return 0;
+#if UGUI_TTF_SUPPORT && defined(UGUI_TEXT_SIZES)
+    if (has_non_ascii(str, len) && ttf_cache_ensure_default()) {
+        return raw_face_text(s, ugui_face(1), x, y, str, len, bold, italic, inverted);
+    }
+#endif
     int sc = s->scale > 0 ? s->scale : 1;
     uint8_t fg = inverted ? UGUI_GRAY_CARD : UGUI_GRAY_INK;
     uint8_t bg = inverted ? UGUI_GRAY_INK : UGUI_GRAY_PAPER;
@@ -734,6 +759,20 @@ const ugui_face_t *ugui_face(int size) {
     if (size == 2) return &k_large;
 #else
     (void)size;
+#endif
+    return NULL;
+}
+
+const ugui_face_t *ugui_face_px(int px) {
+#if defined(UGUI_TEXT_SIZES) && UGUI_TTF_SUPPORT
+    if (px >= 12 && px <= 72 && ttf_cache_ensure_default()) {
+        /* single task: views (drivers/view.h) */
+        static ugui_face_t s_custom = { 32, 0, NULL, NULL, true };
+        s_custom.h = (uint8_t)px;
+        return &s_custom;
+    }
+#else
+    (void)px;
 #endif
     return NULL;
 }

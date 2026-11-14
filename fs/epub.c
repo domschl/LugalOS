@@ -392,7 +392,22 @@ typedef struct {
     char href[EPUB_MAX_PATH];
 } opf_manifest_item_t;
 
-static void parse_ncx_titles(epub_book_t *book, const char *ncx, size_t len) {
+static void dir_of_path(const char *path, char *dir, size_t dir_cap) {
+    const char *slash = NULL;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') slash = p;
+    }
+    if (slash) {
+        size_t dlen = (size_t)(slash - path);
+        if (dlen >= dir_cap) dlen = dir_cap - 1;
+        memcpy(dir, path, dlen);
+        dir[dlen] = '\0';
+    } else if (dir_cap > 0) {
+        dir[0] = '\0';
+    }
+}
+
+static void parse_ncx_titles(epub_book_t *book, const char *ncx_dir, const char *ncx, size_t len) {
     size_t pos = 0;
     while (pos < len) {
         const char *np = find_xml_tag(ncx + pos, len - pos, "<navPoint");
@@ -400,6 +415,12 @@ static void parse_ncx_titles(epub_book_t *book, const char *ncx, size_t len) {
         size_t np_off = (size_t)(np - ncx);
         const char *np_end = ci_strstr(np, len - np_off, "</navPoint>");
         size_t block_len = np_end ? (size_t)(np_end - np) : (len - np_off);
+        if (block_len > 9u) {
+            const char *child = find_xml_tag(np + 9u, block_len - 9u, "<navPoint");
+            if (child && (size_t)(child - np) < block_len) {
+                block_len = (size_t)(child - np);
+            }
+        }
 
         char label[EPUB_MAX_TITLE];
         extract_xml_text(np, block_len, "<text", label, sizeof(label));
@@ -411,7 +432,7 @@ static void parse_ncx_titles(epub_book_t *book, const char *ncx, size_t len) {
                 char src[EPUB_MAX_PATH];
                 if (extract_attr(cp, (size_t)(gt - cp), "src", src, sizeof(src))) {
                     char resolved[EPUB_MAX_PATH];
-                    resolve_href(book->opf_dir, src, resolved, sizeof(resolved));
+                    resolve_href(ncx_dir, src, resolved, sizeof(resolved));
                     for (int i = 0; i < book->spine_count; i++) {
                         if (strcmp(book->spine[i].href, resolved) == 0 &&
                             !book->spine[i].title[0]) {
@@ -563,7 +584,9 @@ epub_err_t epub_open(epub_book_t *book, epub_read_fn read_fn, void *ctx,
         if (zip_find_entry(book, ncx_href, &ncx_e)) {
             uint32_t noff = 0, nlen = 0;
             if (zip_extract_entry(book, &ncx_e, scratch, scratch_cap, &noff, &nlen) == EPUB_OK) {
-                parse_ncx_titles(book, (const char *)(scratch + noff), nlen);
+                char ncx_dir[EPUB_MAX_PATH];
+                dir_of_path(ncx_href, ncx_dir, sizeof(ncx_dir));
+                parse_ncx_titles(book, ncx_dir, (const char *)(scratch + noff), nlen);
             }
         }
     }
@@ -790,6 +813,55 @@ epub_err_t epub_load_chapter_md(const epub_book_t *book, int chapter_idx,
     uint32_t mlen = epub_xhtml_to_md(scratch + off, len, md_out, md_cap);
     if (out_len) *out_len = mlen;
     return EPUB_OK;
+}
+
+static void percent_decode(const char *src, char *dst, size_t dst_cap) {
+    size_t op = 0;
+    for (size_t i = 0; src[i] && op + 1 < dst_cap; ) {
+        if (src[i] == '%' && src[i + 1] && src[i + 2]) {
+            char h1 = src[i + 1], h2 = src[i + 2];
+            int d1 = (h1 >= '0' && h1 <= '9') ? (h1 - '0') :
+                     (h1 >= 'a' && h1 <= 'f') ? (h1 - 'a' + 10) :
+                     (h1 >= 'A' && h1 <= 'F') ? (h1 - 'A' + 10) : -1;
+            int d2 = (h2 >= '0' && h2 <= '9') ? (h2 - '0') :
+                     (h2 >= 'a' && h2 <= 'f') ? (h2 - 'a' + 10) :
+                     (h2 >= 'A' && h2 <= 'F') ? (h2 - 'A' + 10) : -1;
+            if (d1 >= 0 && d2 >= 0) {
+                dst[op++] = (char)((d1 << 4) | d2);
+                i += 3;
+                continue;
+            }
+        }
+        dst[op++] = src[i++];
+    }
+    dst[op] = '\0';
+}
+
+int epub_find_spine_href(const epub_book_t *book, int from_chapter, const char *rel_href) {
+    if (!book || !rel_href || !rel_href[0]) return -1;
+    char base_dir[EPUB_MAX_PATH];
+    if (from_chapter >= 0 && from_chapter < book->spine_count) {
+        dir_of_path(book->spine[from_chapter].href, base_dir, sizeof(base_dir));
+    } else {
+        strncpy(base_dir, book->opf_dir, sizeof(base_dir) - 1);
+        base_dir[sizeof(base_dir) - 1] = '\0';
+    }
+    char resolved[EPUB_MAX_PATH];
+    resolve_href(base_dir, rel_href, resolved, sizeof(resolved));
+    if (!resolved[0]) return -1;
+
+    for (int i = 0; i < book->spine_count; i++) {
+        if (strcmp(book->spine[i].href, resolved) == 0) return i;
+    }
+
+    char decoded[EPUB_MAX_PATH];
+    percent_decode(resolved, decoded, sizeof(decoded));
+    if (strcmp(decoded, resolved) != 0) {
+        for (int i = 0; i < book->spine_count; i++) {
+            if (strcmp(book->spine[i].href, decoded) == 0) return i;
+        }
+    }
+    return -1;
 }
 
 #endif /* LUGALOS_HOST_TEST || CONFIG_PSRAM_BYTES || CONFIG_BOARD_VISIONFIVE2 */

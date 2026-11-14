@@ -33,6 +33,7 @@
 #include "net/spartan.h"
 #include "kernel/vterm.h"
 #include "kernel/palloc.h"
+#include "kernel/time.h"
 #include <string.h>
 
 #if defined(CONFIG_PSRAM_BYTES) || defined(CONFIG_BOARD_VISIONFIVE2)
@@ -88,12 +89,14 @@ static struct {
 #define READER_LINE_H (s_rm.line_h ? s_rm.line_h : READER_LINE_H_BASE)
 
 static void reader_metrics(void) {
+    int fpx = settings_get("ui.font_size");
     int size = settings_get("ui.text_size");
     if (size < 0) size = 1;
-    const ugui_face_t *f = ugui_face(size);
+    const ugui_face_t *f = (fpx >= 16) ? ugui_face_px(fpx) : NULL;
+    if (!f) f = ugui_face(size);
     int base_h = READER_IS_HIDPI ? 32 : 16;
     s_rm.face = f;
-    s_rm.size = size;
+    s_rm.size = f ? (f->h + (size << 8)) : size;
     s_rm.line_h = f ? (f->h * READER_LINE_H_BASE + base_h / 2) / base_h : READER_LINE_H_BASE;
 }
 #define READER_FACE  (s_rm.face)
@@ -177,6 +180,7 @@ typedef struct {
     int                 toc_count;
     bool                toc_mode;
     bool                fullscreen;
+    uint64_t            last_page_tap_ms;
     ugui_ctx_t          ui_ctx;
     uint8_t            *aa_buf;        /* Anti-aliased 8-bpp (GRAY8) surface in PSRAM */
     uint32_t            aa_stride;
@@ -331,6 +335,19 @@ static void reader_free_epub(reader_state_t *r) {
     }
 }
 
+static uint8_t *reader_alloc_epub_scratch(uint32_t *out_pages) {
+    static const uint32_t k_tries[] = { 512u, 256u, 128u };
+    for (size_t i = 0; i < sizeof(k_tries) / sizeof(k_tries[0]); i++) {
+        uint8_t *p = (uint8_t *)palloc_pages_bulk(k_tries[i]);
+        if (p) {
+            *out_pages = k_tries[i];
+            return p;
+        }
+    }
+    *out_pages = 0;
+    return NULL;
+}
+
 static bool reader_load_epub_chapter(reader_state_t *r, int ch) {
     if (!r || !r->is_epub || !r->epub_book || !r->epub_md) return false;
     if (ch < 0 || ch >= r->epub_book->spine_count) return false;
@@ -338,8 +355,8 @@ static bool reader_load_epub_chapter(reader_state_t *r, int ch) {
     int fd = vfs_open(r->path, VFS_O_READ);
     if (fd < 0) return false;
 
-    const uint32_t scratch_pages = 128u; /* 512 KB */
-    uint8_t *scratch = (uint8_t *)palloc_pages_bulk(scratch_pages);
+    uint32_t scratch_pages = 0;
+    uint8_t *scratch = reader_alloc_epub_scratch(&scratch_pages);
     if (!scratch) {
         vfs_close(fd);
         return false;
@@ -370,12 +387,16 @@ static bool reader_open_epub(reader_state_t *r, const char *path) {
     if (fd < 0) return false;
 
     uint32_t book_pages = (uint32_t)((sizeof(epub_book_t) + 4095u) / 4096u);
-    uint32_t md_pages = 64u; /* 256 KB chapter Markdown buffer */
-    uint32_t scratch_pages = 128u; /* 512 KB inflate/parse scratch */
+    uint32_t md_pages = 128u; /* 512 KB chapter Markdown buffer */
+    uint32_t scratch_pages = 0;
 
     epub_book_t *book = (epub_book_t *)palloc_pages_bulk(book_pages);
     char *md = (char *)palloc_pages_bulk(md_pages);
-    uint8_t *scratch = (uint8_t *)palloc_pages_bulk(scratch_pages);
+    if (!md) {
+        md_pages = 64u;
+        md = (char *)palloc_pages_bulk(md_pages);
+    }
+    uint8_t *scratch = reader_alloc_epub_scratch(&scratch_pages);
     if (!book || !md || !scratch) {
         if (book) palloc_free(book, book_pages);
         if (md) palloc_free(md, md_pages);
@@ -438,6 +459,7 @@ static bool reader_open_epub(reader_state_t *r, const char *path) {
     r->epub_md_pages = md_pages;
     r->epub_md_len = out_len;
     r->fullscreen = true; /* epub opens directly in distraction-free fullscreen */
+    if (!lcdterm_fullscreen()) console_hotkey(CONSOLE_HOTKEY_FULLSCREEN);
     if (book->title[0]) {
         strncpy(r->title, book->title, sizeof(r->title) - 1);
         r->title[sizeof(r->title) - 1] = '\0';
@@ -982,6 +1004,7 @@ enum {
     READER_UI_ROTATE   = 3,
     READER_UI_TOP      = 4,
     READER_UI_FULL     = 5,
+    READER_UI_SEPIA    = 6,
 };
 
 static bool reader_tap_act(uint8_t rid, int client_x, int client_y);
@@ -1064,8 +1087,70 @@ static bool reader_page_step(uint8_t rid, int dir) {
         }
     }
 #endif
-    reader_scroll_instance(rid, dir * step);
+    int target_y = r->scroll_y + dir * step;
+    int max_scroll = r->total_h - 120;
+    if (max_scroll < 0) max_scroll = 0;
+    if (target_y < 0) target_y = 0;
+    if (target_y > max_scroll) target_y = max_scroll;
+    if (target_y != r->scroll_y) {
+        r->scroll_y = target_y;
+        reader_update_instance(rid);
+    }
     return true;
+}
+
+static void reader_set_fullscreen(uint8_t rid, bool on) {
+    reader_state_t *r = &s_readers[rid];
+    r->fullscreen = on;
+    r->toc_mode = false;
+    r->cp_valid = false;
+    if (lcdterm_fullscreen() != on) {
+        console_hotkey(on ? CONSOLE_HOTKEY_FULLSCREEN : CONSOLE_HOTKEY_FS_LEAVE);
+    }
+    reader_update_instance(rid);
+}
+
+static bool reader_follow_target(uint8_t rid, const char *target) {
+    reader_state_t *r = &s_readers[rid];
+    if (r->toc_mode) r->toc_mode = false;
+
+#if READER_EPUB_SUPPORT
+    if (r->is_epub && r->epub_book) {
+        if (strncmp(target, "#epub:", 6) == 0) {
+            int ch = 0;
+            for (const char *p = target + 6; *p >= '0' && *p <= '9'; p++) {
+                ch = ch * 10 + (*p - '0');
+            }
+            if (reader_load_epub_chapter(r, ch)) {
+                reader_update_instance(rid);
+                return true;
+            }
+        }
+        /* Relative in-book link (e.g. part0005.html#anchor): resolve inside EPUB spine. */
+        if (target[0] != '#' && target[0] != '/' && !strstr(target, "://")) {
+            int ch = epub_find_spine_href(r->epub_book, r->epub_chapter, target);
+            if (ch >= 0 && reader_load_epub_chapter(r, ch)) {
+                reader_update_instance(rid);
+                return true;
+            }
+        }
+    }
+#endif
+
+    if (target[0] == '#') {
+        if (reader_jump_anchor(rid, target)) return true;
+    }
+
+    char resolved[128];
+    bool ok = false;
+    if (md_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
+        resolve_doc_path(target, resolved, sizeof(resolved))) {
+        ok = reader_open_internal(rid, resolved, true);
+    } else {
+        ok = reader_open_internal(rid, target, true);
+    }
+    if (ok) reader_update_instance(rid);
+    return ok;
 }
 
 static bool reader_tap_act(uint8_t rid, int client_x, int client_y) {
@@ -1093,66 +1178,40 @@ static bool reader_tap_act(uint8_t rid, int client_x, int client_y) {
         return true;
     }
     if (hit == READER_UI_FULL) {
-        r->fullscreen = !r->fullscreen;
-        r->toc_mode = false;
-        r->cp_valid = false;
-        reader_update_instance(rid);
+        reader_set_fullscreen(rid, !r->fullscreen);
+        return true;
+    }
+    if (hit == READER_UI_SEPIA) {
+        bool is_sepia = settings_get("display.warmth") >= 5;
+        if (is_sepia) {
+            (void)settings_set("display.warmth", 0);
+        } else {
+            (void)settings_set("display.warm_ink", 1);
+            (void)settings_set("display.warmth", 8);
+        }
+        reader_redraw_bar(rid);
         return true;
     }
 
     if (link < 0) {
         if (r->fullscreen && !r->toc_mode) {
             int w = r->win_w > 0 ? r->win_w : 480;
-            if (client_x < w / 3) return reader_page_step(rid, -1);
-            if (client_x > (2 * w) / 3) return reader_page_step(rid, 1);
-            r->fullscreen = false;
-            r->cp_valid = false;
-            reader_update_instance(rid);
+            if (client_x < w / 3 || client_x > (2 * w) / 3) {
+                uint64_t now = time_get_ms();
+                if (r->last_page_tap_ms && (now - r->last_page_tap_ms) < 300u) return true;
+                r->last_page_tap_ms = now;
+                return reader_page_step(rid, client_x < w / 3 ? -1 : 1);
+            }
+            reader_set_fullscreen(rid, false);
             return true;
         }
         return false;
     }
-    {
-        int i = link;
-        {
-            char target[128];
-            strncpy(target, r->links[i].url, sizeof(target) - 1);
-            target[sizeof(target) - 1] = '\0';
 
-            if (r->toc_mode) {
-                r->toc_mode = false;
-            }
-
-#if READER_EPUB_SUPPORT
-            if (r->is_epub && strncmp(target, "#epub:", 6) == 0) {
-                int ch = 0;
-                for (const char *p = target + 6; *p >= '0' && *p <= '9'; p++) {
-                    ch = ch * 10 + (*p - '0');
-                }
-                if (reader_load_epub_chapter(r, ch)) {
-                    reader_update_instance(rid);
-                    return true;
-                }
-            }
-#endif
-
-            if (target[0] == '#') {
-                if (reader_jump_anchor(rid, target)) return true;
-            }
-
-            char resolved[128];
-            bool ok = false;
-            if (md_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
-                resolve_doc_path(target, resolved, sizeof(resolved))) {
-                ok = reader_open_internal(rid, resolved, true);
-            } else {
-                ok = reader_open_internal(rid, target, true);
-            }
-            if (ok) reader_update_instance(rid);
-            return ok;
-        }
-    }
-    return false;
+    char target[128];
+    strncpy(target, r->links[link].url, sizeof(target) - 1);
+    target[sizeof(target) - 1] = '\0';
+    return reader_follow_target(rid, target);
 }
 
 bool reader_tap(int client_x, int client_y) {
@@ -1167,25 +1226,7 @@ bool reader_follow_link_num_instance(uint8_t rid, int num) {
             char target[128];
             strncpy(target, r->links[i].url, sizeof(target) - 1);
             target[sizeof(target) - 1] = '\0';
-
-            if (r->toc_mode) {
-                r->toc_mode = false;
-            }
-
-            if (target[0] == '#') {
-                if (reader_jump_anchor(rid, target)) return true;
-            }
-
-            char resolved[128];
-            bool ok = false;
-            if (md_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
-                resolve_doc_path(target, resolved, sizeof(resolved))) {
-                ok = reader_open_internal(rid, resolved, true);
-            } else {
-                ok = reader_open_internal(rid, target, true);
-            }
-            if (ok) reader_update_instance(rid);
-            return ok;
+            return reader_follow_target(rid, target);
         }
     }
     return false;
@@ -1279,10 +1320,7 @@ static void reader_key(uint8_t rid, uint32_t key, uint8_t mods) {
         reader_update_instance(rid);
         return;
     case 'f': case 'F':
-        r->fullscreen = !r->fullscreen;
-        r->toc_mode = false;
-        r->cp_valid = false;
-        reader_update_instance(rid);
+        reader_set_fullscreen(rid, !r->fullscreen);
         return;
 #if READER_EPUB_SUPPORT
     case 'n': case 'N':
@@ -1310,7 +1348,8 @@ static void reader_key(uint8_t rid, uint32_t key, uint8_t mods) {
  * face, at about the same place -- the scroll scaled by the line heights. */
 static void reader_text_size_changed(uint8_t rid, uint32_t key) {
     const setting_def_t *d = settings_at(key);
-    if (!d || strcmp(d->key, "ui.text_size") != 0 || rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
+    if (!d || (strcmp(d->key, "ui.text_size") != 0 && strcmp(d->key, "ui.font_size") != 0) ||
+        rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
     reader_state_t *r = &s_readers[rid];
     int old_h = READER_LINE_H;
     reader_metrics();
@@ -1341,9 +1380,7 @@ static void reader_view_event(uint8_t rid, const win_event_t *ev) {
     case WIN_EV_DRAG_END:
         if (rid < READER_MAX_INSTANCES && s_readers[rid].fullscreen &&
             !s_readers[rid].toc_mode && ev->dy > 80) {
-            s_readers[rid].fullscreen = false;
-            s_readers[rid].cp_valid = false;
-            reader_update_instance(rid);
+            reader_set_fullscreen(rid, false);
             return;
         }
         reader_drag_end(ev->dy, ev->key);
@@ -1351,9 +1388,7 @@ static void reader_view_event(uint8_t rid, const win_event_t *ev) {
     case WIN_EV_SCROLL:
         if (rid < READER_MAX_INSTANCES && s_readers[rid].fullscreen &&
             !s_readers[rid].toc_mode && !(ev->flags & WIN_EVF_WHEEL) && ev->dy > 60) {
-            s_readers[rid].fullscreen = false;
-            s_readers[rid].cp_valid = false;
-            reader_update_instance(rid);
+            reader_set_fullscreen(rid, false);
             return;
         }
         if (ev->flags & WIN_EVF_WHEEL) reader_scroll_instance(rid, -(int)ev->dy * 3 * READER_LINE_H);   /* three lines a notch */
@@ -1372,7 +1407,16 @@ static void reader_view_event(uint8_t rid, const win_event_t *ev) {
 }
 
 static void reader_view_resize(uint8_t rid, int w, int h) {
-    if (reader_set_target(rid, w, h)) reader_update_instance(rid);
+    bool changed = reader_set_target(rid, w, h);
+    if (rid < READER_MAX_INSTANCES) {
+        bool os_fs = lcdterm_fullscreen();
+        if ((rid == s_active_reader_rid || !os_fs) && s_readers[rid].fullscreen != os_fs) {
+            s_readers[rid].fullscreen = os_fs;
+            s_readers[rid].cp_valid = false;
+            changed = true;
+        }
+    }
+    if (changed) reader_update_instance(rid);
 }
 
 const view_ops_t g_reader_view = {
@@ -1679,36 +1723,63 @@ static void draw_reader_action_bar(reader_state_t *r, ugui_surface_t *rd, int w,
     };
     ugui_toolbar_button(&surf, &r->ui_ctx, b_toc, r->toc_mode ? "Close" : "Contents", READER_UI_CONTENTS, false);
 
-    ugui_rect_t b_full = {
-        .x = (int16_t)(b_toc.x + b_toc.w + gap),
-        .y = (int16_t)btn_y,
-        .w = (int16_t)(48 * sc),
-        .h = (int16_t)btn_h,
+    static const uint16_t k_icon_sepia[16] = {
+        0x0180, 0x0180, 0x1008, 0x0810, 0x03C0, 0x0420, 0x0810, 0x781E,
+        0x781E, 0x0810, 0x0420, 0x03C0, 0x0810, 0x1008, 0x0180, 0x0180,
     };
-    if (!r->toc_mode && (b_full.x + b_full.w + gap < w - pad_x - 46 * sc)) {
-        ugui_toolbar_button(&surf, &r->ui_ctx, b_full, "Full", READER_UI_FULL, false);
-    }
+#if defined(CONFIG_BOARD_TAB5)
+    static const uint16_t k_icon_rotate[16] = {
+        0x0000, 0x07C0, 0x1FF0, 0x3838, 0x601C, 0x603E, 0xC01C, 0xC000,
+        0xC000, 0xC000, 0x6000, 0x6004, 0x381C, 0x1FF8, 0x07E0, 0x0000,
+    };
+#endif
 
     ugui_rect_t b_top = {
-        .x = (int16_t)(w - pad_x - 46 * sc),
+        .x = (int16_t)(w - pad_x - 42 * sc),
         .y = (int16_t)btn_y,
-        .w = (int16_t)(46 * sc),
+        .w = (int16_t)(42 * sc),
         .h = (int16_t)btn_h,
     };
     if (!r->toc_mode && r->scroll_y <= 0) ugui_disable_next(&r->ui_ctx, 1);
     ugui_toolbar_button(&surf, &r->ui_ctx, b_top, "Top", READER_UI_TOP, false);
 
+    int right_x = b_top.x;
 #if defined(CONFIG_BOARD_TAB5)
     ugui_rect_t b_rot = {
-        .x = (int16_t)(b_top.x - gap - 60 * sc),
+        .x = (int16_t)(b_top.x - gap - 26 * sc),
         .y = (int16_t)btn_y,
-        .w = (int16_t)(60 * sc),
+        .w = (int16_t)(26 * sc),
         .h = (int16_t)btn_h,
     };
     if (b_rot.x > b_toc.x + b_toc.w + gap) {
-        ugui_toolbar_button(&surf, &r->ui_ctx, b_rot, "Rotate", READER_UI_ROTATE, false);
+        ugui_toolbar_button(&surf, &r->ui_ctx, b_rot, "", READER_UI_ROTATE, false);
+        ugui_icon16(&surf, b_rot.x + (b_rot.w - 16 * sc) / 2, b_rot.y + (b_rot.h - 16 * sc) / 2,
+                    k_icon_rotate, 1, false);
+        right_x = b_rot.x;
     }
 #endif
+
+    ugui_rect_t b_full = {
+        .x = (int16_t)(b_toc.x + b_toc.w + gap),
+        .y = (int16_t)btn_y,
+        .w = (int16_t)(44 * sc),
+        .h = (int16_t)btn_h,
+    };
+    if (!r->toc_mode && (b_full.x + b_full.w + gap <= right_x)) {
+        ugui_toolbar_button(&surf, &r->ui_ctx, b_full, "Full", READER_UI_FULL, false);
+        ugui_rect_t b_sepia = {
+            .x = (int16_t)(b_full.x + b_full.w + gap),
+            .y = (int16_t)btn_y,
+            .w = (int16_t)(26 * sc),
+            .h = (int16_t)btn_h,
+        };
+        if (b_sepia.x + b_sepia.w + gap <= right_x) {
+            bool sepia_on = settings_get("display.warmth") >= 5;
+            ugui_toolbar_button(&surf, &r->ui_ctx, b_sepia, "", READER_UI_SEPIA, sepia_on);
+            ugui_icon16(&surf, b_sepia.x + (b_sepia.w - 16 * sc) / 2, b_sepia.y + (b_sepia.h - 16 * sc) / 2,
+                        k_icon_sepia, 1, sepia_on);
+        }
+    }
     ugui_draw_hover(&surf, &r->ui_ctx);
 }
 
@@ -2292,7 +2363,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                 if (sp->title[0]) {
                     ksnprintf(label, sizeof(label), "[%d] %s", i + 1, sp->title);
                 } else {
-                    ksnprintf(label, sizeof(label), "[%d] Chapter %d", i + 1, i + 1);
+                    ksnprintf(label, sizeof(label), "[%d] Section %d", i + 1, i + 1);
                 }
                 bool cur = (i == r->epub_chapter);
                 (void)rdraw_serif_text(&rd, margin_x, ty, label, strlen(label), cur, false);

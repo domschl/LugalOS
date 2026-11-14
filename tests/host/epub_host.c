@@ -71,6 +71,22 @@ static void test_gutenberg_file(const char *path, const char *expect_substr) {
     free(buf);
 }
 
+static void test_find_spine_href(void) {
+    epub_book_t *book = calloc(1, sizeof(epub_book_t));
+    assert(book != NULL);
+    strcpy(book->opf_dir, "OEBPS");
+    book->spine_count = 3;
+    strcpy(book->spine[0].href, "OEBPS/Text/toc.html");
+    strcpy(book->spine[1].href, "OEBPS/Text/part0005.html");
+    strcpy(book->spine[2].href, "OEBPS/part two.html");
+
+    assert(epub_find_spine_href(book, 0, "part0005.html#4OIQ0123") == 1);
+    assert(epub_find_spine_href(book, 0, "./part0005.html") == 1);
+    assert(epub_find_spine_href(book, 0, "../part%20two.html#sec1") == 2);
+    assert(epub_find_spine_href(book, 0, "missing.html") == -1);
+    free(book);
+}
+
 static uint32_t xorshift32(uint32_t *state) {
     uint32_t x = *state;
     x ^= x << 13;
@@ -100,6 +116,7 @@ int main(int argc, char **argv) {
     int iters = (argc > 1) ? atoi(argv[1]) : 1000;
     uint32_t seed = (argc > 2) ? (uint32_t)strtoul(argv[2], NULL, 0) : 0x40c0ffeeu;
     test_xhtml_to_md();
+    test_find_spine_href();
     test_gutenberg_file("/home/dsc/.gemini/antigravity-cli/brain/ea7d6a4f-a7c1-4653-bb90-6dec76dca55b/scratch/books/alice.epub", "Alice");
     test_gutenberg_file("/home/dsc/.gemini/antigravity-cli/brain/ea7d6a4f-a7c1-4653-bb90-6dec76dca55b/scratch/books/verwandlung.epub", "Gregor");
     test_gutenberg_file("/home/dsc/Source/git/Tibetan/Translation/Ebooks/Nyengyü Trekchö translation.epub", NULL);

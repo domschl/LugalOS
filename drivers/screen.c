@@ -20,6 +20,13 @@
 #include "drivers/osk.h"
 #include "kernel/console.h"
 
+#if (defined(CONFIG_PSRAM_BYTES) && !defined(CONFIG_BOARD_RP2350)) || defined(CONFIG_BOARD_VISIONFIVE2)
+#define SCREEN_TTF_SUPPORT 1
+#include "drivers/ttf_cache.h"
+#else
+#define SCREEN_TTF_SUPPORT 0
+#endif
+
 #if defined(CONFIG_BOARD_RP2350)
 #define CANVAS_SUPPORT_RGB565 0
 #else
@@ -817,6 +824,107 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
 #define TB_CLOSE 0x1u   /* draw_titlebar(): the close box, at the left */
 #define TB_ZOOM  0x2u   /* ... the zoom box, at the right (Cmd+F) */
 
+#if SCREEN_TTF_SUPPORT
+static bool title_has_non_ascii(const char *s, uint32_t n) {
+    for (uint32_t i = 0; i < n && s[i]; i++) {
+        if ((uint8_t)s[i] >= 0x80u) return true;
+    }
+    return false;
+}
+
+static uint32_t title_utf8_next(const char *s, uint32_t n, uint32_t *i) {
+    uint8_t c = (uint8_t)s[*i];
+    if (c < 0x80u) { (*i)++; return c; }
+    uint32_t cp = 0xFFFDu;
+    unsigned need = 0;
+    if ((c & 0xE0u) == 0xC0u) { cp = c & 0x1Fu; need = 1; }
+    else if ((c & 0xF0u) == 0xE0u) { cp = c & 0x0Fu; need = 2; }
+    else if ((c & 0xF8u) == 0xF0u) { cp = c & 0x07u; need = 3; }
+    (*i)++;
+    while (need-- && *i < n && ((uint8_t)s[*i] & 0xC0u) == 0x80u) {
+        cp = (cp << 6) | ((uint8_t)s[*i] & 0x3Fu);
+        (*i)++;
+    }
+    return cp;
+}
+
+static int title_next_run(const char *s, uint32_t n, uint32_t *pos, uint32_t *cps, int max_cps) {
+    int count = 0;
+    bool run_tib = false;
+    while (*pos < n && count < max_cps) {
+        uint32_t saved = *pos;
+        uint32_t cp = title_utf8_next(s, n, pos);
+        bool tib = (cp >= 0x0F00u && cp <= 0x0FFFu);
+        if (count == 0) run_tib = tib;
+        else if (tib != run_tib) { *pos = saved; break; }
+        cps[count++] = cp;
+    }
+    return count;
+}
+
+static int title_ttf_width(const char *s, uint32_t n, int cell_h, int max_px) {
+    int w = 0;
+    uint32_t i = 0;
+    uint32_t cps[TTF_MAX_SHAPED];
+    ttf_shaped_glyph_t shaped[TTF_MAX_SHAPED];
+    while (i < n && s[i]) {
+        int cnt = title_next_run(s, n, &i, cps, TTF_MAX_SHAPED);
+        uint8_t fid = TTF_FONT_PRIMARY;
+        int sn = ttf_cache_shape_run(cps, cnt, cell_h, &fid, shaped, TTF_MAX_SHAPED);
+        for (int k = 0; k < sn; k++) {
+            const ttf_glyph_metrics_t *m = ttf_cache_get_gid(fid, cell_h, shaped[k].gid, NULL);
+            int adv = (m ? (int)m->advance : (cell_h / 2)) + (int)shaped[k].kern_px;
+            if (w + adv > max_px) return w;
+            w += adv;
+        }
+    }
+    return w;
+}
+
+static void title_ttf_draw(const canvas1_t *cv, int x, int y, const char *s, uint32_t n,
+                           int cell_h, int max_px) {
+    int cx = x;
+    int end_x = x + max_px;
+    uint32_t i = 0;
+    uint32_t cps[TTF_MAX_SHAPED];
+    ttf_shaped_glyph_t shaped[TTF_MAX_SHAPED];
+    while (i < n && s[i]) {
+        int cnt = title_next_run(s, n, &i, cps, TTF_MAX_SHAPED);
+        uint8_t fid = TTF_FONT_PRIMARY;
+        int sn = ttf_cache_shape_run(cps, cnt, cell_h, &fid, shaped, TTF_MAX_SHAPED);
+        for (int k = 0; k < sn; k++) {
+            const uint8_t *aa = NULL;
+            const ttf_glyph_metrics_t *m = ttf_cache_get_gid(fid, cell_h, shaped[k].gid, &aa);
+            int adv = (m ? (int)m->advance : (cell_h / 2)) + (int)shaped[k].kern_px;
+            if (cx + adv > end_x) return;
+            if (m && aa && m->w > 0 && m->h > 0) {
+                int gx0 = cx + m->xoff;
+                int gy0 = y + m->yoff;
+                for (int r = 0; r < (int)m->h; r++) {
+                    int py = gy0 + r;
+                    if (py < 0 || py >= (int)cv->h || py + cv->oy < 0) continue;
+                    const uint8_t *row = aa + (uint32_t)r * m->stride;
+                    uint8_t *line1 = cv->fb + (uint32_t)(py + cv->oy) * cv->stride;
+                    for (int c = 0; c < (int)m->w; c++) {
+                        uint8_t pair = row[c >> 1];
+                        unsigned a = (c & 1) ? (unsigned)(pair >> 4) : (unsigned)(pair & 0x0Fu);
+                        if (a < 6u) continue;
+                        int px = gx0 + c;
+                        if (px >= 0 && px < (int)cv->w) {
+                            int spx = px + cv->ox;
+                            if (spx >= 0 && spx < (int)cv->stride * 8) {
+                                line1[spx >> 3] |= (uint8_t)(1u << (spx & 7));
+                            }
+                        }
+                    }
+                }
+            }
+            cx += adv;
+        }
+    }
+}
+#endif
+
 LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int x1, const char *t, bool active, unsigned boxes) {
     const int s = CHROME_SCALE;
     const int cw = (int)FONT_CELL_W;
@@ -886,9 +994,25 @@ LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int
     }
 
     uint32_t n = cstr_len(t);
+    int max_px = vx1 - vx0 - 1 - (has_box ? 56 * s : 40 * s) - (has_zoom ? 16 * s : 0);
+    if (max_px < 0) max_px = 0;
+#if SCREEN_TTF_SUPPORT
+    if (title_has_non_ascii(t, n) && ttf_cache_ensure_default()) {
+        int cell_h = 16 * s;
+        int tw = title_ttf_width(t, n, cell_h, max_px);
+        if (tw > 0) {
+            int bw = tw + 12 * s;
+            int cx = (vx0 + vx1 + 1) / 2 - bw / 2;
+            if (has_box && cx < bx0 + 17 * s) cx = bx0 + 17 * s;
+            else if (cx < vx0 + 2 * s) cx = vx0 + 2 * s;
+            canvas1_fill(cv, cx, y0 + 1, cx + bw - 1, y0 + th - 2, CANVAS1_WHITE);
+            title_ttf_draw(cv, cx + 6 * s, y0 + 1 * s, t, n, cell_h, tw);
+        }
+        return;
+    }
+#endif
     unsigned len = canvas1_text_len(t, n);
-    int max = (vx1 - vx0 - 1 - (has_box ? 56 * s : 40 * s) - (has_zoom ? 16 * s : 0)) / cw;   /* leave some stripes either side */
-    if (max < 0) max = 0;
+    int max = max_px / cw;   /* leave some stripes either side */
     if (len > (unsigned)max) len = (unsigned)max;
     if (len > 0) {
         int bw = cw * (int)len + 12 * s;
@@ -1893,6 +2017,13 @@ LCDTERM_UTEXT static inline void lcdterm_delay_us(uint32_t us) {
     (void)us;
 #endif
 }
+
+#if (defined(CONFIG_PSRAM_BYTES) && !defined(CONFIG_BOARD_RP2350)) || defined(CONFIG_BOARD_VISIONFIVE2)
+#define SCREEN_TTF_SUPPORT 1
+#include "drivers/ttf_cache.h"
+#else
+#define SCREEN_TTF_SUPPORT 0
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
 LCDTERM_UTEXT static inline void lcdterm_sync_pre(void) {

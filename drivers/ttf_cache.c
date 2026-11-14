@@ -244,6 +244,7 @@ bool ttf_cache_load(const char *path) {
 }
 
 bool ttf_cache_ensure_default(void) {
+    if (!vfs_volume_mounted("sd0") && !vfs_volume_mounted("nvme0")) return false;
     ylock_acquire(&s_ttf_lock);
     ttf_font_slot_t *fs = &s_tc.fonts[TTF_FONT_PRIMARY];
     if (fs->loaded) {
@@ -268,6 +269,7 @@ bool ttf_cache_ensure_default(void) {
 }
 
 bool ttf_cache_ensure_tibetan(void) {
+    if (!vfs_volume_mounted("sd0") && !vfs_volume_mounted("nvme0")) return false;
     ylock_acquire(&s_ttf_lock);
     ttf_font_slot_t *fs = &s_tc.fonts[TTF_FONT_TIBETAN];
     if (fs->loaded) {

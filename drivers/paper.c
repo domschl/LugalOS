@@ -22,12 +22,12 @@
 #define MID_R   0xF4
 #define MID_G   0xE8
 #define MID_B   0xD0
-#define DEEP_R  0xE3
-#define DEEP_G  0xCC
-#define DEEP_B  0xA0
-#define INK_R   0x3B
-#define INK_G   0x2A
-#define INK_B   0x1A
+#define DEEP_R  0xE8
+#define DEEP_G  0xD7
+#define DEEP_B  0xB4
+#define INK_R   0x5B
+#define INK_G   0x46
+#define INK_B   0x36
 
 #if defined(PAPER_P4) || defined(PAPER_LCD7) || defined(PAPER_VF2)
 #define PAPER_PANEL 1
@@ -96,11 +96,11 @@ bool paper_selftest(void) {
     paper_pair(0, true, &ink, &paper);
     if (ink != 0x0000 || paper != 0xffff) return false;
     paper_pair(PAPER_MID, true, &ink, &paper);
-    if (ink != 0x3943 || paper != 0xf75a) return false;
+    if (ink != 0x5a26 || paper != 0xf75a) return false;
     paper_pair(PAPER_WARMTH_MAX, true, &ink, &paper);
-    if (ink != 0x3943 || paper != 0xe674) return false;
+    if (ink != 0x5a26 || paper != 0xeeb6) return false;
     paper_pair(PAPER_WARMTH_MAX, false, &ink, &paper);
-    if (ink != 0x0000 || paper != 0xe674) return false;
+    if (ink != 0x0000 || paper != 0xeeb6) return false;
     paper_pair(-3, true, &ink, &paper);                  /* clamped */
     if (ink != 0x0000 || paper != 0xffff) return false;
     /* Each step no lighter paper and no darker ink than the one before:
