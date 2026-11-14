@@ -1593,6 +1593,20 @@ static bool span_has_non_ascii(const char *s, size_t len) {
     return false;
 }
 
+static unsigned rtext_width(ugui_surface_t *rd, bool is_code_mono, const char *s, size_t len) {
+    if (is_code_mono) {
+        return (unsigned)len * (unsigned)rdraw_mono_cell_w(rd);
+    }
+    if (READER_FACE) {
+        return (unsigned)ugui_face_width(rd, READER_FACE, s, (uint32_t)len);
+    }
+#if READER_IS_HIDPI
+    return font_noto_serif_text_width(s, (uint32_t)len);
+#else
+    return font_serif_text_width(s, (uint32_t)len);
+#endif
+}
+
 /* Word wrapping and rich proportional / monospace span rendering */
 static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, int max_w,
                                 const char *text, int line_h, uint16_t extra_style,
@@ -1690,25 +1704,36 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
                 span_remaining--;
             }
 
-            unsigned word_w = 0;
-            unsigned space_w = 0;
             bool is_code_mono = ((span.style & MD_STYLE_CODE) != 0) &&
                                 !(READER_FACE && span_has_non_ascii(word_start, word_len));
-            if (is_code_mono) {
-                unsigned cw = (unsigned)rdraw_mono_cell_w(rd);
-                word_w = (unsigned)word_len * cw;
-                space_w = cw;
-            } else if (READER_FACE) {
-                word_w = (unsigned)ugui_face_width(rd, READER_FACE, word_start, (uint32_t)word_len);
-                space_w = (unsigned)ugui_face_width(rd, READER_FACE, " ", 1);
-            } else {
-#if READER_IS_HIDPI
-                word_w = font_noto_serif_text_width(word_start, (uint32_t)word_len);
-                space_w = font_noto_serif_char_width(' ');
-#else
-                word_w = font_serif_text_width(word_start, (uint32_t)word_len);
-                space_w = font_serif_char_width(' ');
-#endif
+            unsigned word_w = rtext_width(rd, is_code_mono, word_start, word_len);
+            unsigned space_w = rtext_width(rd, is_code_mono, " ", 1);
+
+            if ((int)word_w > max_w && max_w > 0) {
+                if (cur_x > x0) {
+                    cur_x = x0;
+                    cur_y += line_h;
+                }
+                size_t fit = 0;
+                unsigned fit_w = 0;
+                while (fit < word_len) {
+                    size_t next = fit + 1;
+                    while (next < word_len && ((uint8_t)word_start[next] & 0xC0u) == 0x80u) {
+                        next++;
+                    }
+                    unsigned w_try = rtext_width(rd, is_code_mono, word_start, next);
+                    if (fit > 0 && (int)w_try > max_w) break;
+                    fit = next;
+                    fit_w = w_try;
+                }
+                if (fit < word_len) {
+                    size_t rem = word_len - fit;
+                    p -= rem;
+                    span_remaining += rem;
+                    word_len = fit;
+                    word_w = fit_w;
+                    ended_at_tsheg = true;
+                }
             }
 
             if (cur_x + (int)word_w > x0 + max_w && cur_x > x0) {
@@ -2241,20 +2266,42 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                         char cells[MD_TABLE_MAX_COLS][MD_CELL_MAX];
                         int cols = md_parse_table_cells(line_buf, cells);
                         if (cols > 0) {
+                            bool is_hdr = (md.type == MD_LINE_TABLE_HDR);
+                            uint16_t cell_style = is_hdr ? MD_STYLE_BOLD : 0;
                             int cell_w = max_w / cols;
+                            int cell_inner_w = cell_w - 12;
+                            if (cell_inner_w < 16) cell_inner_w = 16;
+
+                            /* First pass: measure wrapped height of every cell so row_h
+                             * covers the tallest cell before drawing background/borders. */
                             int row_h = READER_LINE_H + 4;
+                            int dummy_link = link_idx;
+                            for (int c = 0; c < cols; c++) {
+                                int cell_end_y = doc_y + 2;
+                                int cx = margin_x + c * cell_w + 6;
+                                render_wrapped_spans(NULL, &rd, cx, cell_inner_w, cells[c],
+                                                     READER_LINE_H, cell_style,
+                                                     -1000000, 0, &cell_end_y, &dummy_link);
+                                int ch = (cell_end_y - doc_y) + 2;
+                                if (ch > row_h) row_h = ch;
+                            }
+
                             if (screen_y + row_h >= 0 && screen_y < h) {
-                                bool is_hdr = (md.type == MD_LINE_TABLE_HDR);
                                 uint8_t bg_gray = is_hdr ? 238 : 250;
                                 rdraw_fill(&rd, margin_x, screen_y, margin_x + max_w, screen_y + row_h - 1, bg_gray, CANVAS1_GREY);
                                 for (int c = 0; c < cols; c++) {
+                                    int cell_y = doc_y + 2;
                                     int cx = margin_x + c * cell_w + 6;
-                                    rdraw_serif_text(&rd, cx, screen_y + 2, cells[c], strlen(cells[c]), is_hdr, false);
+                                    render_wrapped_spans(r, &rd, cx, cell_inner_w, cells[c],
+                                                         READER_LINE_H, cell_style,
+                                                         scroll_y, h, &cell_y, &link_idx);
                                     if (c > 0) {
                                         rdraw_fill(&rd, margin_x + c * cell_w, screen_y, margin_x + c * cell_w, screen_y + row_h - 1, 210, CANVAS1_BLACK);
                                     }
                                 }
                                 rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + row_h - 1, is_hdr ? READER_RULE_GRAY8 : 210, CANVAS1_BLACK);
+                            } else {
+                                link_idx = dummy_link;
                             }
                             doc_y += row_h;
                         }
