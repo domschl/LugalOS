@@ -25,7 +25,8 @@ For deep board-specific specifications, peripheral registers, and hardware errat
     * Type hints: Always use modern typing syntax (`| None`, `list`, `dict`; never legacy `Optional`, `List`, `Dict`).
 * **Critical Architectural Rules:**
   * **Freestanding C:** Built with `-nostdlib -ffreestanding`.
-  * **Zero Floating-Point in Kernel / M-Mode:** The RISC-V boot code intentionally boots with `mstatus.FS = 0` (FPU disabled). Hardware float instructions or compiler soft-float `libm` calls will trigger **Illegal Instruction** traps. All mathematical routines must use pure fixed-point (e.g. scale $10^6$ for transcendental functions) or exact integer/bignum/rational arithmetic.
+  * **Zero Hardware Floating-Point in Kernel / M-Mode:** The RISC-V boot code intentionally boots with `mstatus.FS = 0` (FPU disabled), and context switches only save/restore integer registers. Hardware float instructions (`f0`–`f31`) will trigger **Illegal Instruction** traps. Kernel math and Lisp must use pure fixed-point (e.g. scale $10^6$ for transcendental functions) or exact integer/bignum/rational arithmetic.
+    * **U-mode Soft-Float Exception (`mpy.elf`):** Isolated U-mode MicroPython (`user/mpy/`) enables 32-bit **software** floating-point (`MICROPY_FLOAT_IMPL_FLOAT` + vendored MIT `libm` + `-lgcc` soft-float helpers) under the integer ABI (`-mabi=ilp32` / `-mabi=lp64`). This emits only integer instructions (zero `f0`–`f31` / `mstatus.FS` usage), works identically on FPU-less cores (RP2350, ESP32-C6), and gives Python standard `1/2`, `math`, JSON floats, and `sleep(0.1)` semantics.
   * **Zero SRAM Overhead:** Optional features, symbols, and builtins must be stored in Flash `.rodata` tables sorted in ASCII order for $O(\log N)$ `bsearch()`.
   * **Web Architecture:** Simple HTML, vanilla JavaScript, and CSS. Avoid third-party web frameworks and heavy dependencies. For bidirectional real-time communication, prefer WebSockets + JSON.
 

@@ -95,4 +95,7 @@ bool lispui_text_set(uint16_t id, const char *text);
 /* For `ui` in the shell and the tests: what the window is and holds. */
 void lispui_report(void);
 
+/* Registers the "/srv/ui" channel endpoint for U-mode immediate-mode UI. */
+void lispui_chan_init(void);
+
 #endif /* LUGALOS_DRIVERS_LISPUI_H */

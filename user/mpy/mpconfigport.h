@@ -16,8 +16,8 @@
 #define MICROPY_OPT_COMPUTED_GOTO               (0)
 #define MICROPY_ROM_TEXT_COMPRESSION            (0)
 
-/* Kernel boots with mstatus.FS = 0; avoid float/libgcc soft-float in base port. */
-#define MICROPY_FLOAT_IMPL                      (MICROPY_FLOAT_IMPL_NONE)
+/* Kernel boots with mstatus.FS = 0; use 32-bit soft-float (integer ABI, zero FPU instructions). */
+#define MICROPY_FLOAT_IMPL                      (MICROPY_FLOAT_IMPL_FLOAT)
 #define MICROPY_LONGINT_IMPL                    (MICROPY_LONGINT_IMPL_MPZ)
 
 /* Portable integer-only setjmp/longjmp NLR and GC register scanning. */

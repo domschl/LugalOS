@@ -144,9 +144,16 @@ static inline long lugal_sensor_list(char *buf, long max_len) {
     return n;
 }
 
-static inline bool lugal_sensor_read(const char *chan, int32_t *val_out, uint32_t *age_out) {
+static inline uint16_t lugal_rgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return (uint16_t)((((uint16_t)r & 0xf8u) << 8) |
+                      (((uint16_t)g & 0xfcu) << 3) |
+                      (((uint16_t)b & 0xf8u) >> 3));
+}
+
+static inline bool lugal_sensor_read_op(char op, const char *chan,
+                                        int32_t *val_out, uint32_t *age_out) {
     uint8_t req[33];
-    req[0] = 'R';
+    req[0] = (uint8_t)op;
     uint32_t i = 0;
     while (chan && chan[i] && i < 31u) {
         req[1u + i] = (uint8_t)chan[i];
@@ -155,6 +162,33 @@ static inline bool lugal_sensor_read(const char *chan, int32_t *val_out, uint32_
     req[1u + i] = '\0';
     uint8_t resp[9];
     long n = uchan_call("sensor", req, (long)(2u + i), resp, sizeof(resp));
+    if (n < 9 || resp[0] != 0) return false;
+    if (val_out) *val_out = lugal_get_le32(resp + 1);
+    if (age_out) *age_out = (uint32_t)lugal_get_le32(resp + 5);
+    return true;
+}
+
+static inline bool lugal_sensor_read(const char *chan, int32_t *val_out, uint32_t *age_out) {
+    return lugal_sensor_read_op('R', chan, val_out, age_out);
+}
+
+static inline bool lugal_sensor_read_filtered(const char *chan, int32_t *val_out, uint32_t *age_out) {
+    return lugal_sensor_read_op('F', chan, val_out, age_out);
+}
+
+static inline bool lugal_sensor_read_dev(const char *dev, const char *chan,
+                                         int32_t *val_out, uint32_t *age_out) {
+    uint8_t req[66];
+    req[0] = 'D';
+    uint32_t pos = 1;
+    uint32_t i = 0;
+    while (dev && dev[i] && i < 31u) req[pos++] = (uint8_t)dev[i++];
+    req[pos++] = '\0';
+    i = 0;
+    while (chan && chan[i] && i < 31u) req[pos++] = (uint8_t)chan[i++];
+    req[pos++] = '\0';
+    uint8_t resp[9];
+    long n = uchan_call("sensor", req, (long)pos, resp, sizeof(resp));
     if (n < 9 || resp[0] != 0) return false;
     if (val_out) *val_out = lugal_get_le32(resp + 1);
     if (age_out) *age_out = (uint32_t)lugal_get_le32(resp + 5);

@@ -61,7 +61,11 @@ uint64_t mp_hal_time_ns(void) {
     return (uint64_t)(unsigned long)utime_ms() * 1000000ULL;
 }
 
-mp_import_stat_t mp_import_stat(const char *path) {
+void lugal_resolve_path(const char *in, char *out, size_t out_max);
+
+mp_import_stat_t mp_import_stat(const char *raw_path) {
+    char path[256];
+    lugal_resolve_path(raw_path, path, sizeof(path));
     lugal_stat_t st;
     if (ustat(path, &st) != 0) {
         return MP_IMPORT_STAT_NO_EXIST;
@@ -96,7 +100,8 @@ static void lugal_reader_close(void *data) {
 }
 
 mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
-    const char *path = qstr_str(filename);
+    char path[256];
+    lugal_resolve_path(qstr_str(filename), path, sizeof(path));
     int fd = uopen(path, LUGAL_O_READ);
     if (fd < 0) {
         mp_raise_OSError(2); /* ENOENT */
@@ -109,17 +114,29 @@ mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
     return mp_lexer_new(filename, reader);
 }
 
-static mp_obj_t lugal_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
-    (void)n_args;
-    (void)args;
-    (void)kwargs;
-    mp_raise_OSError(38); /* ENOSYS until VFS open() is wired */
-}
-MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, lugal_builtin_open);
-
 void nlr_jump_fail(void *val) {
     (void)val;
     uprint("FATAL: uncaught NLR\n");
     uexit(1);
     for (;;) {}
+}
+
+/* Soft-float helpers expected by MicroPython's libm under -fno-builtin. */
+float fabsf(float x) {
+    union { float f; uint32_t u; } v = { x };
+    v.u &= 0x7fffffffu;
+    return v.f;
+}
+
+float copysignf(float x, float y) {
+    union { float f; uint32_t u; } vx = { x }, vy = { y };
+    vx.u = (vx.u & 0x7fffffffu) | (vy.u & 0x80000000u);
+    return vx.f;
+}
+
+float nanf(const char *tagp) {
+    (void)tagp;
+    union { float f; uint32_t u; } v;
+    v.u = 0x7fc00000u;
+    return v.f;
 }

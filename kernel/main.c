@@ -49,6 +49,9 @@
 #include "drivers/watchdog.h"   /* watchdog_start() */
 #include "kernel/taint.h"       /* the boot banner's taint, 45.9 */
 #include "net/ip.h"
+#include "net/net_chan.h"
+#include "drivers/hal_chan.h"
+#include "drivers/lispui.h"
 #include "drivers/bme280.h"
 #include "drivers/sensor_hub.h"
 #include "net/mqttd.h"
@@ -428,6 +431,9 @@ void kernel_main(void) {
     dev_claim("vconsole");
 
     console_server_init();
+    lispui_chan_init();
+    net_chan_init();
+    hal_chan_init();
 
     /* Re-bind by name now that the registry exists. The bootstrap binding
      * above had to be a direct function pointer -- the console must work

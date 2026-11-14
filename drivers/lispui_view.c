@@ -8,6 +8,8 @@
 
 #include "drivers/lispui.h"
 
+#include <string.h>
+
 #if defined(LISPUI_PRESENT)
 
 #include "drivers/view.h"
@@ -22,7 +24,6 @@
 #include "kernel/printk.h"
 
 #include <stdarg.h>
-#include <string.h>
 
 #define LU_LIST_BYTES   6144u   /* one picture's display list */
 #define LU_TEXTS        4       /* text fields a window keeps */
@@ -781,3 +782,134 @@ bool lispui_text_set(uint16_t id, const char *text) { (void)id; (void)text; retu
 void lispui_report(void) { cprintf("ui: no views on this board\n"); }
 
 #endif
+
+#include "kernel/chan.h"
+#include "kernel/balloc.h"
+
+static uint16_t ui_get_be16(const uint8_t *p) {
+    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+
+static void ui_put_be16(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)((v >> 8) & 0xffu);
+    p[1] = (uint8_t)(v & 0xffu);
+}
+
+static int32_t ui_get_le32(const uint8_t *p) {
+    uint32_t u = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                 ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    return (int32_t)u;
+}
+
+static void ui_put_le32(uint8_t *p, int32_t v) {
+    uint32_t u = (uint32_t)v;
+    p[0] = (uint8_t)(u & 0xffu);
+    p[1] = (uint8_t)((u >> 8) & 0xffu);
+    p[2] = (uint8_t)((u >> 16) & 0xffu);
+    p[3] = (uint8_t)((u >> 24) & 0xffu);
+}
+
+static int ui_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
+                           uint8_t *resp, uint32_t resp_max) {
+    (void)ctx;
+    if (req_len == 0 || resp_max == 0) return -1;
+    uint8_t op = req[0];
+    if (op == 'O' && req_len >= 2) {
+        char title[64];
+        uint32_t tl = req_len - 1u;
+        if (tl >= sizeof(title)) tl = sizeof(title) - 1u;
+        memcpy(title, req + 1, tl);
+        title[tl] = '\0';
+        resp[0] = lispui_open(title) ? 1u : 0u;
+        return 1;
+    }
+    if (op == 'C') {
+        lispui_close();
+        resp[0] = 1u;
+        return 1;
+    }
+    if (op == 'S' && resp_max >= 5) {
+        int w = 0, h = 0;
+        bool ok = lispui_size(&w, &h);
+        resp[0] = ok ? 1u : 0u;
+        ui_put_be16(resp + 1, (uint16_t)w);
+        ui_put_be16(resp + 3, (uint16_t)h);
+        return 5;
+    }
+    if (op == 'B') {
+        lispui_begin();
+        resp[0] = 1u;
+        return 1;
+    }
+    if (op == 'E') {
+        resp[0] = lispui_end() ? 1u : 0u;
+        return 1;
+    }
+    if (op == 'A' && req_len >= 4) {
+        lispui_op_t uop = (lispui_op_t)req[1];
+        uint8_t nnums = req[2];
+        uint8_t nstrs = req[3];
+        if (nnums > LISPUI_MAX_NUMS || nstrs > LISPUI_MAX_STRS) return -1;
+        uint32_t pos = 4u;
+        if (pos + (uint32_t)nnums * 4u > req_len) return -1;
+        int32_t nums[LISPUI_MAX_NUMS];
+        for (uint8_t i = 0; i < nnums; i++) {
+            nums[i] = ui_get_le32(req + pos);
+            pos += 4u;
+        }
+        const char *strs[LISPUI_MAX_STRS];
+        for (uint8_t i = 0; i < nstrs; i++) {
+            if (pos >= req_len) return -1;
+            const char *s = (const char *)(req + pos);
+            const char *nul = (const char *)memchr(s, '\0', req_len - pos);
+            if (!nul) return -1;
+            strs[i] = s;
+            pos = (uint32_t)((const uint8_t *)nul - req) + 1u;
+        }
+        resp[0] = lispui_add(uop, nums, nnums, strs, nstrs) ? 1u : 0u;
+        return 1;
+    }
+    if (op == 'V' && resp_max >= 14) {
+        lispui_ev_t ev;
+        if (!lispui_next_event(&ev)) {
+            resp[0] = 0u;
+            return 1;
+        }
+        resp[0] = 1u;
+        resp[1] = ev.type;
+        ui_put_be16(resp + 2, ev.id);
+        ui_put_be16(resp + 4, (uint16_t)ev.index);
+        ui_put_be16(resp + 6, (uint16_t)ev.x);
+        ui_put_be16(resp + 8, (uint16_t)ev.y);
+        ui_put_le32(resp + 10, ev.value);
+        return 14;
+    }
+    if (op == 'G' && req_len >= 3 && resp_max >= 2) {
+        uint16_t id = ui_get_be16(req + 1);
+        char buf[LISPUI_TEXT_MAX];
+        lispui_text_get(id, buf, sizeof(buf));
+        size_t sl = strlen(buf);
+        if (sl > resp_max - 1u) sl = resp_max - 1u;
+        resp[0] = 1u;
+        memcpy(resp + 1, buf, sl);
+        return (int)(1u + sl);
+    }
+    if (op == 'T' && req_len >= 4) {
+        uint16_t id = ui_get_be16(req + 1);
+        char buf[LISPUI_TEXT_MAX];
+        uint32_t sl = req_len - 3u;
+        if (sl >= sizeof(buf)) sl = sizeof(buf) - 1u;
+        memcpy(buf, req + 3, sl);
+        buf[sl] = '\0';
+        resp[0] = lispui_text_set(id, buf) ? 1u : 0u;
+        return 1;
+    }
+    return -1;
+}
+
+void lispui_chan_init(void) {
+    uint8_t *req = (uint8_t *)balloc_alloc(256u);
+    uint8_t *resp = (uint8_t *)balloc_alloc(128u);
+    if (!req || !resp) return;
+    (void)chan_register("ui", ui_chan_handler, NULL, req, 256u, resp, 128u);
+}

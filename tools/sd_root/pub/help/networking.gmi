@@ -84,21 +84,27 @@ Interfaces:
   rx: 1420 frames, tx: 850 frames
 ```
 
-### Joining a Wi-Fi Network
-For wireless presets (rp2350-wifi, esp32c6):
-1. Derive the 64-character hex WPA2 PSK on the host:
+### Initial Wi-Fi Setup (All Boards)
+
+1. Derive the 64-character hex WPA2 PSK on the host (use the psk= hex line, not the passphrase):
 ```bash
    wpa_passphrase "MySSID" "MyPassword"
 ```
-2. Join the network from the board:
-```text
-   lsh> wifi join MySSID <64-char-hex-psk>
+2. Configure Wi-Fi on the board in lsh>:
+
 ```
-3. Assign a static IP address or let the supervisor auto-configure:
+| Board / Preset | Command | Persistence |
+| :--- | :--- | :--- |
+| ESP32-P4 + C6 (esp32p4-tab5, esp32p4-lcd7b, esp32p4) & RP2350 Terminal + C6 | wlan MySSID  | Stored in the host's identity store; automatically pushed to /c6/dev/wlan on every boot/link-up (see Section 4 for how forwarding works). |
+| Standalone ESP32-C6 (esp32c6, esp32c6-mini) | radio join MySSID  | Current session; use wlan MySSID  to persist across reboots. |
+| RP2350 Pico 2 W (rp2350-wifi) | wifi join MySSID  | Current session; use wlan MySSID  to persist across reboots. |
+```
+
+3. DHCP runs automatically once the link associates (or assign a static IP):
 ```text
    lsh> netcfg 192.168.1.50 255.255.255.0 192.168.1.1
 ```
-4. Start the 9P TCP file server:
+4. Optionally start the 9P TCP file server:
 ```text
    lsh> net listen 564
 ```

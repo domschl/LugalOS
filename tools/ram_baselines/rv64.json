@@ -143,6 +143,7 @@
     "net/mdnsd.c": 4,
     "net/mqtt.c": 382,
     "net/mqttd.c": 4264,
+    "net/net_chan.c": 64,
     "net/netif.c": 20,
     "net/ntp.c": 76,
     "net/ntp_server.c": 18,
@@ -202,7 +203,7 @@
     "llp": 4324,
     "log": 8370,
     "mqtt": 4646,
-    "net": 26223,
+    "net": 26287,
     "radio": 3464,
     "selftest": 10607,
     "sensors": 21040,
@@ -211,6 +212,6 @@
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1464750,
-  "total": 8171113
+  "ram_code": 1469286,
+  "total": 8175713
 }

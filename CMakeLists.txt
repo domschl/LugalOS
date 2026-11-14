@@ -389,8 +389,11 @@ list(APPEND USER_PROG_STAGED ulibctest)
 set(MPY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/micropython)
 set(MPY_GENHDR_OUT ${CMAKE_CURRENT_BINARY_DIR}/mpy_genhdr)
 file(GLOB MPY_PY_SOURCES CONFIGURE_DEPENDS "${MPY_DIR}/py/*.c")
+file(GLOB MPY_LIBM_SOURCES CONFIGURE_DEPENDS "${MPY_DIR}/lib/libm/*.c")
+list(REMOVE_ITEM MPY_LIBM_SOURCES "${MPY_DIR}/lib/libm/thumb_vfp_sqrtf.c")
 set(MPY_SOURCES
     ${MPY_PY_SOURCES}
+    ${MPY_LIBM_SOURCES}
     ${MPY_DIR}/shared/runtime/gchelper_generic.c
     ${MPY_DIR}/shared/runtime/pyexec.c
     ${MPY_DIR}/shared/runtime/stdout_helpers.c
@@ -401,6 +404,10 @@ set(MPY_SOURCES
     ${MPY_DIR}/extmod/modrandom.c
     ${MPY_DIR}/extmod/modtime.c
     ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/mphalport.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/modlugal.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/modos_lugal.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/modsocket_lugal.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/modmachine_lugal.c
     ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/main.c)
 set(MPY_GENHDR_FILES
     ${MPY_GENHDR_OUT}/genhdr/mpversion.h
@@ -445,7 +452,12 @@ add_custom_target(mpy_genhdr DEPENDS ${MPY_GENHDR_FILES})
 
 add_executable(mpy.elf ${MPY_SOURCES} ${ULIBC_SOURCES})
 add_dependencies(mpy.elf mpy_genhdr)
+set(MPY_NOFP_FLAGS "")
+if(ARCH_MARCH MATCHES "^rv64gc")
+    set(MPY_NOFP_FLAGS -march=rv64imac -mabi=lp64)
+endif()
 target_compile_options(mpy.elf PRIVATE
+    ${MPY_NOFP_FLAGS}
     -fno-sanitize=all -Os -mno-relax -msmall-data-limit=0
     -fno-jump-tables -fno-common -fno-tree-loop-distribute-patterns
     -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
@@ -456,7 +468,9 @@ target_include_directories(mpy.elf PRIVATE
     ${MPY_GENHDR_OUT})
 set(USER_MPY_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/user_mpy.ld)
 target_link_options(mpy.elf PRIVATE
+    ${MPY_NOFP_FLAGS}
     -T${USER_MPY_LINKER_SCRIPT} -nostdlib -static -Wl,-q -Wl,--no-relax -Wl,--build-id=none)
+target_link_libraries(mpy.elf PRIVATE -lgcc)
 set_target_properties(mpy.elf PROPERTIES LINK_DEPENDS ${USER_MPY_LINKER_SCRIPT})
 add_custom_command(TARGET mpy.elf POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} --strip-all $<TARGET_FILE:mpy.elf>
@@ -939,6 +953,7 @@ set(SOURCES
     drivers/viewtest.c
     # `ui-` windows for Lisp programs (76.2): a view whose picture Lisp describes.
     drivers/lispui_view.c
+    drivers/hal_chan.c
     # the Settings app (77.1), a view of its own.
     drivers/settings_view.c
     # display.warmth's ink and paper colours, given to whichever panel there is.
@@ -1025,6 +1040,7 @@ set(SOURCES
     # R3: server-side TCP. An accepted connection is a p9_link_t, so
     # everything built above a byte stream works over it unchanged.
     net/tcp.c
+    net/net_chan.c
     # R6: the SNTP client. Built everywhere for the same reason the layers
     # under it are -- the fixed-point and epoch arithmetic is the fiddly part,
     # and arithmetic should not be debugged by flashing.

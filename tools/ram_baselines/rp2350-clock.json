@@ -96,6 +96,7 @@
     "net/llm.c": 261,
     "net/mqtt.c": 248,
     "net/mqttd.c": 3972,
+    "net/net_chan.c": 32,
     "net/netif.c": 12,
     "net/ntp.c": 76,
     "net/ntp_server.c": 18,
@@ -129,7 +130,7 @@
     "lisp": 48395,
     "log": 8322,
     "mqtt": 4220,
-    "net": 1731,
+    "net": 1763,
     "ota": 126,
     "radio": 12072,
     "selftest": 1653,
@@ -139,5 +140,5 @@
     "vfs": 3215
   },
   "ram_code": 358,
-  "total": 183808
+  "total": 183840
 }

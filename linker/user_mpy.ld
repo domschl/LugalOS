@@ -24,7 +24,7 @@ SECTIONS
         . = ALIGN(8);
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
-        . = ALIGN(4096);
+        . = ALIGN(0x10000);
     } :text
 
     . = ALIGN(0x40000);
