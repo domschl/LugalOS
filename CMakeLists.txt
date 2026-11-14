@@ -359,6 +359,32 @@ foreach(uprog ${USER_PROGRAMS})
     list(APPEND USER_PROG_STAGED ${uprog})
 endforeach()
 
+# Large multi-page U-mode programs using user/libc + linker/user_large.ld.
+set(USER_LARGE_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/user_large.ld)
+set(ULIBC_SOURCES
+    user/libc/crt0.S
+    user/libc/setjmp.S
+    user/libc/ulibc.c
+    user/libc/div64.c
+    libc/string.c)
+
+add_executable(ulibctest.elf user/progs/ulibctest.c ${ULIBC_SOURCES})
+target_compile_options(ulibctest.elf PRIVATE
+    -fno-sanitize=all -Os -mno-relax -msmall-data-limit=0
+    -fno-jump-tables -fno-common -fno-tree-loop-distribute-patterns)
+target_include_directories(ulibctest.elf PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/libc/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/libc/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/progs)
+target_link_options(ulibctest.elf PRIVATE
+    -T${USER_LARGE_LINKER_SCRIPT} -nostdlib -static -Wl,--no-relax -Wl,--build-id=none)
+set_target_properties(ulibctest.elf PROPERTIES LINK_DEPENDS ${USER_LARGE_LINKER_SCRIPT})
+add_custom_command(TARGET ulibctest.elf POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} --strip-all $<TARGET_FILE:ulibctest.elf>
+            ${CMAKE_CURRENT_BINARY_DIR}/ulibctest.stripped
+    COMMENT "Stripping user program ulibctest.elf")
+list(APPEND USER_PROG_STAGED ulibctest)
+
 # Generate Embedded Flash FAT32 image (flash_fs.c)
 #
 # Built from a staging directory rather than straight from tools/sd_root, so
@@ -483,7 +509,7 @@ add_custom_command(
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/NotoSerif-Regular.ttf
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/Jomolhari-Regular.ttf
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/NotoSansMath-Regular.ttf
-            uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf uvfs.elf
+            uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf uvfs.elf ulibctest.elf
     COMMENT "${FLASH_FS_COMMENT}"
 )
 

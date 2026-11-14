@@ -106,7 +106,7 @@ void esp32p4_icache_sync(void);
  * heap can place a naturally aligned run that size (see the note on NAPOT
  * placement below). This only bounds the arithmetic and keeps a corrupt
  * header from asking for something absurd before any of that is checked. */
-#define USER_IMAGE_MAX_PAGES 64u
+#define USER_IMAGE_MAX_PAGES 1024u
 
 /* How many of a domain's regions the image may use. One is kept back for the
  * program's stack, which every image needs and which is granted separately. */
@@ -132,6 +132,7 @@ typedef struct {
     uintptr_t     user_sp;    /* below the argv block, not the page top */
     uintptr_t     argv_addr;  /* a user address inside this program's stack page */
     int           argc;
+    bool          has_exit_stub;
     mem_domain_t  domain;
 } user_proc_t;
 
@@ -571,8 +572,9 @@ static int parse_headers(const char *path, const uint8_t *hdr, uint32_t hdrlen,
  * the sub-region grants inside it to be expressible at all.
  */
 static uint32_t image_span_pages(const char *path, const seg_t *segs, int nseg,
-                                 uint32_t *span_out) {
+                                 uint32_t *span_out, bool *exit_stub_out) {
     uint32_t high = 0;
+    bool has_stub = true;
 
     for (int i = 0; i < nseg; i++) {
         uint32_t start = segs[i].vaddr;
@@ -584,16 +586,14 @@ static uint32_t image_span_pages(const char *path, const seg_t *segs, int nseg,
         }
         if (end > high) high = end;
 
-        /* The exit stub occupies the top of the first page, which is where a
-         * program that simply returns from _start ends up. A segment crossing
-         * into it would be silently overwritten, so refuse instead. */
+        /* Small user.ld images fit page 0 under USER_TEXT_MAX so the loader
+         * plants an exit stub at the top of page 0; larger multi-page .text
+         * images (linker/user_large.ld) use crt0 -> SYS_UEXIT directly. */
         if (start < (uint32_t)PAGE_SIZE && end > USER_TEXT_MAX) {
-            printk("[ELF Error] '%s': segment %d ends at 0x%x, past the %u-byte "
-                   "first-page limit (the last %u bytes hold the exit stub)\n",
-                   path, i, end, USER_TEXT_MAX, EXIT_STUB_BYTES);
-            return 0;
+            has_stub = false;
         }
     }
+    if (exit_stub_out) *exit_stub_out = has_stub;
 
     if (high == 0) {
         printk("[ELF Error] '%s': image is empty\n", path);
@@ -631,7 +631,7 @@ static void user_program_body(void *arg) {
 
     arch_enter_user((void (*)(void))p->entry,
                     p->user_sp,
-                    (uintptr_t)p->image + PAGE_SIZE - EXIT_STUB_BYTES,
+                    p->has_exit_stub ? ((uintptr_t)p->image + PAGE_SIZE - EXIT_STUB_BYTES) : 0u,
                     (uintptr_t)p->argc, p->argv_addr);
 }
 
@@ -688,14 +688,16 @@ static user_proc_t * load_into_slot_locked(const char *path, int argc,
     }
 
     uint32_t span_pages = 0;
-    uint32_t image_pages = image_span_pages(path, segs, nseg, &span_pages);
+    bool has_exit_stub = true;
+    uint32_t image_pages = image_span_pages(path, segs, nseg, &span_pages, &has_exit_stub);
     if (image_pages == 0) {
         vfs_close(fd);
         return NULL;
     }
 
-    if (entry_off > USER_TEXT_MAX) {
-        printk("[ELF Error] '%s': entry point 0x%lx is outside the text page\n",
+    uint32_t entry_limit = has_exit_stub ? USER_TEXT_MAX : (span_pages * (uint32_t)PAGE_SIZE);
+    if (entry_off >= entry_limit) {
+        printk("[ELF Error] '%s': entry point 0x%lx is outside the text range\n",
                path, (unsigned long)entry_off);
         vfs_close(fd);
         return NULL;
@@ -706,6 +708,7 @@ static user_proc_t * load_into_slot_locked(const char *path, int argc,
         vfs_close(fd);
         return NULL;
     }
+    p->has_exit_stub = has_exit_stub;
 
     /* Zeroed before loading. palloc_pages() already returns zeroed memory, so
      * this is belt and braces for the .bss of a segment whose memsz exceeds
@@ -755,7 +758,7 @@ static user_proc_t * load_into_slot_locked(const char *path, int argc,
         regions += n;
     }
 
-    install_exit_stub(p->image);
+    if (p->has_exit_stub) install_exit_stub(p->image);
 
     /* The kernel just wrote instructions through the data path. Without this
      * the core may execute whatever the instruction fetch already had cached
