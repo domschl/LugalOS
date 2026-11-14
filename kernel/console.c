@@ -1880,6 +1880,10 @@ static const char *g_bound_name = "(none)";
 static uint8_t g_console_req[256];
 static uint8_t g_console_resp[8];
 
+/* guarded by: chan endpoint lock */
+static uint8_t g_canvas_req[256];
+static uint8_t g_canvas_resp[SCREEN_REPLY_LEN];
+
 static int console_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
                                 uint8_t *resp, uint32_t resp_max) {
     (void)ctx;
@@ -1894,12 +1898,29 @@ static int console_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
     return 0;
 }
 
+static int canvas_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
+                               uint8_t *resp, uint32_t resp_max) {
+    (void)ctx;
+    if (req_len == 0 || resp_max < SCREEN_REPLY_LEN) return -1;
+    uint8_t kreply[SCREEN_REPLY_LEN];
+    for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) kreply[i] = 0;
+    bool ok = console_canvas(req, req_len, kreply);
+    if (!ok) kreply[0] = 1;
+    for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) resp[i] = kreply[i];
+    return (int)SCREEN_REPLY_LEN;
+}
+
 int console_server_init(void) {
     int rc = chan_register("console", console_chan_handler, NULL,
                            g_console_req, sizeof(g_console_req),
                            g_console_resp, sizeof(g_console_resp));
     if (rc == 0) {
         printk("[Console] Server endpoint '/srv/console' online.\n");
+    }
+    if (chan_register("canvas", canvas_chan_handler, NULL,
+                      g_canvas_req, sizeof(g_canvas_req),
+                      g_canvas_resp, sizeof(g_canvas_resp)) == 0) {
+        printk("[Console] Server endpoint '/srv/canvas' online.\n");
     }
     return rc;
 }

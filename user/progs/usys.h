@@ -37,6 +37,35 @@
 #define SYS_CHAN_SERVE_WAIT  25
 #define SYS_CHAN_SERVE_REPLY 26
 
+#define SYS_OPEN             100
+#define SYS_CLOSE            101
+#define SYS_READ             102
+#define SYS_WRITE            103
+#define SYS_LSEEK            104
+#define SYS_STAT             105
+#define SYS_FSTAT            106
+#define SYS_READDIR          107
+#define SYS_MKDIR            108
+#define SYS_UNLINK           109
+#define SYS_RMDIR            110
+#define SYS_RENAME           111
+
+#define LUGAL_O_READ         0x01
+#define LUGAL_O_WRITE        0x02
+#define LUGAL_O_CREATE       0x04
+#define LUGAL_O_TRUNC        0x08
+#define LUGAL_O_APPEND       0x10
+
+#define LUGAL_SEEK_SET       0
+#define LUGAL_SEEK_CUR       1
+#define LUGAL_SEEK_END       2
+
+typedef struct {
+    unsigned int  size;
+    unsigned char is_dir;
+    unsigned char _pad[3];
+} lugal_stat_t;
+
 static inline long usyscall(long nr, long a1, long a2, long a3) {
     register long r_a0 __asm__("a0") = nr;
     register long r_a1 __asm__("a1") = a1;
@@ -145,6 +174,56 @@ static inline long uchan_serve_wait(const char *name, void *buf, long buf_max) {
 
 static inline long uchan_serve_reply(const char *name, const void *buf, long len) {
     return usyscall5(SYS_CHAN_SERVE_REPLY, (long)name, (long)buf, len, 0, 0);
+}
+
+static inline int uopen(const char *path, int flags) {
+    return (int)usyscall(SYS_OPEN, (long)path, (long)flags, 0);
+}
+
+static inline int uclose(int fd) {
+    return (int)usyscall(SYS_CLOSE, (long)fd, 0, 0);
+}
+
+static inline long uread(int fd, void *buf, unsigned long len) {
+    return usyscall(SYS_READ, (long)fd, (long)buf, (long)len);
+}
+
+static inline long uwrite(int fd, const void *buf, unsigned long len) {
+    return usyscall(SYS_WRITE, (long)fd, (long)buf, (long)len);
+}
+
+static inline long ulseek(int fd, long offset, int whence) {
+    return usyscall(SYS_LSEEK, (long)fd, offset, (long)whence);
+}
+
+static inline int ustat(const char *path, lugal_stat_t *out) {
+    return (int)usyscall(SYS_STAT, (long)path, (long)out, 0);
+}
+
+static inline int ufstat(int fd, lugal_stat_t *out) {
+    return (int)usyscall(SYS_FSTAT, (long)fd, (long)out, 0);
+}
+
+static inline int ureaddir(int fd, unsigned int index, char *name_out,
+                           unsigned int name_max, lugal_stat_t *st_out) {
+    return (int)usyscall5(SYS_READDIR, (long)fd, (long)index, (long)name_out,
+                          (long)name_max, (long)st_out);
+}
+
+static inline int umkdir(const char *path) {
+    return (int)usyscall(SYS_MKDIR, (long)path, 0, 0);
+}
+
+static inline int uunlink(const char *path) {
+    return (int)usyscall(SYS_UNLINK, (long)path, 0, 0);
+}
+
+static inline int urmdir(const char *path) {
+    return (int)usyscall(SYS_RMDIR, (long)path, 0, 0);
+}
+
+static inline int urename(const char *from, const char *to) {
+    return (int)usyscall(SYS_RENAME, (long)from, (long)to, 0);
 }
 
 /* Ends the program with `status`. A program may equally just return from

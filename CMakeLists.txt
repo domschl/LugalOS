@@ -337,7 +337,7 @@ option(LUGALOS_ENABLE_SMP "Wake secondary harts (SMP multi-core support)" OFF)
 # A program that violates any of this does not fault mysteriously at run time:
 # it either fails to link, or trips one of user.ld's ASSERTs by name.
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/user.ld)
-set(USER_PROGRAMS uhello uisolate uspin uargs uchan ubig uwx)
+set(USER_PROGRAMS uhello uisolate uspin uargs uchan ubig uwx uvfs)
 set(USER_PROG_STAGED "")
 
 foreach(uprog ${USER_PROGRAMS})
@@ -483,7 +483,7 @@ add_custom_command(
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/NotoSerif-Regular.ttf
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/Jomolhari-Regular.ttf
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/NotoSansMath-Regular.ttf
-            uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf
+            uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf uvfs.elf
     COMMENT "${FLASH_FS_COMMENT}"
 )
 
@@ -892,6 +892,7 @@ set(SOURCES
     ${FLASH_FS_SOURCE}
     fs/fat32.c
     fs/vfs_server.c
+    fs/vfs_ufd.c
     fs/9p.c
     fs/p9_protect.c
     fs/p9_link.c

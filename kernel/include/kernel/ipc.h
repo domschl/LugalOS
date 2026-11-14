@@ -64,6 +64,32 @@
 #define SYS_SLEEP_MS         28
 #define SYS_LCD_SYNC         29
 
+/* POSIX-style VFS syscalls for U-mode programs (handle-based, offset-tracked,
+ * and auto-closed on task exit/fault via fs/vfs_ufd.c). */
+#define SYS_OPEN             100
+#define SYS_CLOSE            101
+#define SYS_READ             102
+#define SYS_WRITE            103
+#define SYS_LSEEK            104
+#define SYS_STAT             105
+#define SYS_FSTAT            106
+#define SYS_READDIR          107
+#define SYS_MKDIR            108
+#define SYS_UNLINK           109
+#define SYS_RMDIR            110
+#define SYS_RENAME           111
+
+#define LUGAL_O_APPEND       0x10
+#define LUGAL_SEEK_SET       0
+#define LUGAL_SEEK_CUR       1
+#define LUGAL_SEEK_END       2
+
+typedef struct {
+    uint32_t size;
+    uint8_t  is_dir;
+    uint8_t  _pad[3];
+} lugal_stat_t;
+
 void ipc_init(void);
 
 #endif /* LUGALOS_KERNEL_IPC_H */

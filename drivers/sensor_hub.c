@@ -20,6 +20,7 @@
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "kernel/identity.h"
+#include "kernel/chan.h"
 #include <string.h>
 
 /* Centralized Sensor Hub.
@@ -1038,10 +1039,114 @@ bool sensor_hub_register(sensor_dev_t *dev) {
     return r;
 }
 
+/* guarded by: chan endpoint lock */
+static uint8_t g_sensor_chan_req[96];
+static uint8_t g_sensor_chan_resp[256];
+/* guarded by: s_hub_lock */
+static bool    s_sensor_chan_registered;
+
+static bool sensor_chan_by_name(const char *name, sensor_chan_t *out) {
+    if (!name || !out) return false;
+    for (int ch = 0; ch < (int)SENSOR_CHAN_MAX; ch++) {
+        const char *cn = sensor_chan_name((sensor_chan_t)ch);
+        if (cn && strcmp(cn, name) == 0) {
+            *out = (sensor_chan_t)ch;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void put_le32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xffu);
+    p[1] = (uint8_t)((v >> 8) & 0xffu);
+    p[2] = (uint8_t)((v >> 16) & 0xffu);
+    p[3] = (uint8_t)((v >> 24) & 0xffu);
+}
+
+static int sensor_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
+                               uint8_t *resp, uint32_t resp_max) {
+    (void)ctx;
+    if (req_len == 0 || resp_max == 0) return -1;
+    uint8_t op = req[0];
+    if (op == 'L') {
+        uint32_t pos = 0;
+        uint32_t n = sensor_hub_device_count();
+        for (uint32_t i = 0; i < n; i++) {
+            sensor_dev_t *d = sensor_hub_device_get(i);
+            if (!d || !d->name) continue;
+            size_t nl = strlen(d->name);
+            if (pos + nl + 1u >= resp_max) break;
+            memcpy(resp + pos, d->name, nl);
+            pos += (uint32_t)nl;
+            resp[pos++] = '\n';
+        }
+        return (int)pos;
+    }
+    if ((op == 'R' || op == 'F') && req_len >= 2 && resp_max >= 9) {
+        char cname[32];
+        uint32_t cl = req_len - 1u;
+        if (cl >= sizeof(cname)) cl = sizeof(cname) - 1u;
+        memcpy(cname, req + 1, cl);
+        cname[cl] = '\0';
+        sensor_chan_t ch = SENSOR_CHAN_TEMP;
+        int32_t val = 0;
+        uint32_t age = 0;
+        bool ok = sensor_chan_by_name(cname, &ch) &&
+                  (op == 'R' ? sensor_hub_get(ch, &val, &age)
+                             : sensor_hub_get_filtered(ch, &val));
+        resp[0] = ok ? 0u : 1u;
+        put_le32(resp + 1, (uint32_t)val);
+        put_le32(resp + 5, age);
+        return 9;
+    }
+    if (op == 'D' && req_len >= 4 && resp_max >= 9) {
+        const char *dname = (const char *)(req + 1);
+        const char *nul1 = (const char *)memchr(dname, '\0', req_len - 1u);
+        if (!nul1) return -1;
+        size_t dlen = (size_t)(nul1 - dname);
+        if (1u + dlen + 1u >= req_len) return -1;
+        const char *cname = (const char *)(req + 1u + dlen + 1u);
+        size_t rem = req_len - (1u + dlen + 1u);
+        const char *nul2 = (const char *)memchr(cname, '\0', rem);
+        size_t clen = nul2 ? (size_t)(nul2 - cname) : rem;
+        char dbuf[32], cbuf[32];
+        if (dlen >= sizeof(dbuf) || clen >= sizeof(cbuf)) return -1;
+        memcpy(dbuf, dname, dlen); dbuf[dlen] = '\0';
+        memcpy(cbuf, cname, clen); cbuf[clen] = '\0';
+        sensor_chan_t ch = SENSOR_CHAN_TEMP;
+        int32_t val = 0;
+        uint32_t age = 0;
+        bool ok = false;
+        if (sensor_chan_by_name(cbuf, &ch)) {
+            uint32_t n = sensor_hub_device_count();
+            for (uint32_t i = 0; i < n; i++) {
+                sensor_dev_t *d = sensor_hub_device_get(i);
+                if (d && d->name && strcmp(d->name, dbuf) == 0) {
+                    ok = sensor_hub_get_dev(d, ch, &val, &age);
+                    break;
+                }
+            }
+        }
+        resp[0] = ok ? 0u : 1u;
+        put_le32(resp + 1, (uint32_t)val);
+        put_le32(resp + 5, age);
+        return 9;
+    }
+    return -1;
+}
+
 void sensor_hub_init(void) {
     ylock_acquire(&s_hub_lock);
     sensor_hub_init_locked();
+    bool do_reg = !s_sensor_chan_registered;
+    s_sensor_chan_registered = true;
     ylock_release(&s_hub_lock);
+    if (do_reg) {
+        (void)chan_register("sensor", sensor_chan_handler, NULL,
+                            g_sensor_chan_req, sizeof(g_sensor_chan_req),
+                            g_sensor_chan_resp, sizeof(g_sensor_chan_resp));
+    }
 }
 
 uint32_t sensor_hub_device_count(void) {

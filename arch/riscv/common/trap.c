@@ -18,6 +18,7 @@
 #include "drivers/lcdterm.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
+#include "fs/vfs_ufd.h"
 #if defined(CONFIG_KOBJ)
 #include "kernel/kobj_sys.h"
 #endif
@@ -1450,6 +1451,7 @@ void trap_handler(trap_frame_t *frame) {
                      * that asked to end, so a status recorded on it can
                      * never be confused with one from a task the fault
                      * handler killed. */
+                    vfs_ufd_cleanup_task(sched_current_pid());
                     task_set_exit_status((long)frame->a1);
                     task_exit();
                     ret = 0; /* unreachable */
@@ -1512,6 +1514,119 @@ void trap_handler(trap_frame_t *frame) {
                     palloc_free(kdata, 1);
                     break;
                 }
+                case SYS_OPEN: { /* (path, flags) -> ufd */
+                    char kpath[256];
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    ret = vfs_ufd_open(sched_current_pid(), kpath, (int)frame->a2);
+                    break;
+                }
+                case SYS_CLOSE: { /* (ufd) -> 0/-1 */
+                    ret = vfs_ufd_close(sched_current_pid(), (int)frame->a1);
+                    break;
+                }
+                case SYS_READ: { /* (ufd, buf, len) -> bytes read */
+                    uint32_t want = (uint32_t)frame->a3;
+                    if (want > (uint32_t)PAGE_SIZE) want = (uint32_t)PAGE_SIZE;
+                    if (want == 0) { ret = 0; break; }
+                    char *kdata = (char *)palloc_pages(1);
+                    if (!kdata) { ret = -1; break; }
+                    int n = vfs_ufd_read(sched_current_pid(), (int)frame->a1, kdata, want);
+                    if (n < 0) ret = n;
+                    else ret = (copy_to_user(frame->a2, kdata, (uint32_t)n) < 0) ? -1 : n;
+                    palloc_free(kdata, 1);
+                    break;
+                }
+                case SYS_WRITE: { /* (ufd, buf, len) -> bytes written */
+                    uint32_t len = (uint32_t)frame->a3;
+                    if (len > (uint32_t)PAGE_SIZE) len = (uint32_t)PAGE_SIZE;
+                    if (len == 0) { ret = 0; break; }
+                    char *kdata = (char *)palloc_pages(1);
+                    if (!kdata) { ret = -1; break; }
+                    if (copy_from_user(kdata, frame->a2, len) < 0) ret = -1;
+                    else ret = vfs_ufd_write(sched_current_pid(), (int)frame->a1, kdata, len);
+                    palloc_free(kdata, 1);
+                    break;
+                }
+                case SYS_LSEEK: { /* (ufd, offset, whence) -> new_offset */
+                    int64_t pos = vfs_ufd_lseek(sched_current_pid(), (int)frame->a1,
+                                                (int64_t)(long)frame->a2, (int)frame->a3);
+                    ret = (long)pos;
+                    break;
+                }
+                case SYS_STAT: { /* (path, lugal_stat_t *out) -> 0/-1 */
+                    char kpath[256];
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    vfs_stat_t vst;
+                    if (vfs_stat(kpath, &vst) < 0) { ret = -1; break; }
+                    lugal_stat_t ust = { .size = vst.size, .is_dir = vst.is_dir, ._pad = {0, 0, 0} };
+                    ret = (copy_to_user(frame->a2, &ust, sizeof(ust)) < 0) ? -1 : 0;
+                    break;
+                }
+                case SYS_FSTAT: { /* (ufd, lugal_stat_t *out) -> 0/-1 */
+                    vfs_stat_t vst;
+                    if (vfs_ufd_fstat(sched_current_pid(), (int)frame->a1, &vst) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    lugal_stat_t ust = { .size = vst.size, .is_dir = vst.is_dir, ._pad = {0, 0, 0} };
+                    ret = (copy_to_user(frame->a2, &ust, sizeof(ust)) < 0) ? -1 : 0;
+                    break;
+                }
+                case SYS_READDIR: { /* (ufd, index, name_out, name_max, lugal_stat_t *st) */
+                    uint32_t name_max = (uint32_t)frame->a4;
+                    if (name_max == 0) { ret = -1; break; }
+                    if (name_max > 256u) name_max = 256u;
+                    char kname[256];
+                    vfs_stat_t vst = {0};
+                    int rc = vfs_ufd_readdir(sched_current_pid(), (int)frame->a1,
+                                             (uint32_t)frame->a2, kname, name_max,
+                                             frame->a5 ? &vst : NULL);
+                    if (rc < 0) { ret = rc; break; }
+                    kname[name_max - 1u] = '\0';
+                    uint32_t slen = 0;
+                    while (kname[slen]) slen++;
+                    if (copy_to_user(frame->a3, kname, slen + 1u) < 0) { ret = -1; break; }
+                    if (frame->a5) {
+                        lugal_stat_t ust = { .size = vst.size, .is_dir = vst.is_dir, ._pad = {0, 0, 0} };
+                        if (copy_to_user(frame->a5, &ust, sizeof(ust)) < 0) { ret = -1; break; }
+                    }
+                    ret = rc;
+                    break;
+                }
+                case SYS_MKDIR: { /* (path) -> 0/-1 */
+                    char kpath[256];
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) { ret = -1; break; }
+                    ret = vfs_mkdir(kpath);
+                    break;
+                }
+                case SYS_UNLINK: { /* (path) -> 0/-1 */
+                    char kpath[256];
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) { ret = -1; break; }
+                    ret = vfs_remove(kpath);
+                    break;
+                }
+                case SYS_RMDIR: { /* (path) -> 0/-1 */
+                    char kpath[256];
+                    if (strncpy_from_user(kpath, frame->a1, sizeof(kpath)) < 0) { ret = -1; break; }
+                    ret = vfs_rmdir(kpath);
+                    break;
+                }
+                case SYS_RENAME: { /* (from, to) -> 0/-1 */
+                    char kfrom[256], kto[256];
+                    if (strncpy_from_user(kfrom, frame->a1, sizeof(kfrom)) < 0 ||
+                        strncpy_from_user(kto, frame->a2, sizeof(kto)) < 0) {
+                        ret = -1;
+                        break;
+                    }
+                    ret = vfs_rename(kfrom, kto);
+                    break;
+                }
                 default:
 #if defined(CONFIG_KOBJ)
                     /* 45.3b: the kernel objects a confined runtime uses
@@ -1556,6 +1671,7 @@ void trap_handler(trap_frame_t *frame) {
                    "terminating the task\n",
                    (unsigned long)code, (unsigned long)frame->epc,
                    (unsigned long)frame->tval);
+            vfs_ufd_cleanup_task(sched_current_pid());
             task_exit(); /* switches away; never returns */
         }
 
