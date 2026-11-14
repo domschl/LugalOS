@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #define ELF_MAGIC "\x7f" "ELF"
 #define EM_RISCV 0xF3
@@ -109,5 +110,6 @@ int elf_spawn(const char *path);
  * (C3). */
 int elf_spawn_argv(const char *path, int argc, const char *const *argv);
 int elf_load_and_run_argv(const char *path, int argc, const char *const *argv);
+void elf_set_waiting_stdin(int pid, bool waiting);
 
 #endif /* LUGALOS_ARCH_ELF_H */

@@ -1,6 +1,7 @@
 #include "lugalos_config.h"
 #include "arch/trap.h"
 #include "arch/csr.h"
+#include "arch/elf.h"
 #include "kernel/printk.h"
 #include "kernel/hart.h"
 #include "kernel/console.h"
@@ -1311,8 +1312,10 @@ void trap_handler(trap_frame_t *frame) {
                 case 15: /* SYS_GETCHAR (non-blocking: byte 0..255 or -1) */
                     console_flush();
                     if (console_has_char()) {
+                        elf_set_waiting_stdin(sched_current_pid(), false);
                         ret = (long)(unsigned char)console_getc();
                     } else {
+                        elf_set_waiting_stdin(sched_current_pid(), true);
                         ret = -1;
                     }
                     break;

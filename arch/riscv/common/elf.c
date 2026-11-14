@@ -133,6 +133,7 @@ typedef struct {
     uintptr_t     argv_addr;  /* a user address inside this program's stack page */
     int           argc;
     bool          has_exit_stub;
+    bool          waiting_stdin;
     mem_domain_t  domain;
 } user_proc_t;
 
@@ -793,6 +794,7 @@ static user_proc_t * load_into_slot_locked(const char *path, int argc,
         return NULL;
     }
     p->has_exit_stub = has_exit_stub;
+    p->waiting_stdin = false;
 
     /* Zeroed before loading. palloc_pages() already returns zeroed memory, so
      * this is belt and braces for the .bss of a segment whose memsz exceeds
@@ -925,6 +927,16 @@ int elf_load_and_run(const char *path) {
     return elf_load_and_run_argv(path, 0, NULL);
 }
 
+void elf_set_waiting_stdin(int pid, bool waiting) {
+    if (pid < 0) return;
+    for (int i = 0; i < USER_PROC_MAX; i++) {
+        if (g_procs[i].in_use && g_procs[i].pid == pid) {
+            __atomic_store_n(&g_procs[i].waiting_stdin, waiting, __ATOMIC_RELEASE);
+            return;
+        }
+    }
+}
+
 int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
     user_proc_t *p = load_into_slot(path, argc, argv);
     if (!p) return -1;
@@ -977,7 +989,11 @@ int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
          * what this loop does, so sched_yield() alone is enough for it (and
          * everything else) to get serviced. */
         sched_yield();
-        spins++;
+        if (__atomic_load_n(&p->waiting_stdin, __ATOMIC_ACQUIRE)) {
+            spins = 0;
+        } else {
+            spins++;
+        }
         if (spins == report_after && !reported) {
             reported = true;
             int st = sched_task_state(pid);

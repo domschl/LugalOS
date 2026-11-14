@@ -151,16 +151,40 @@ static mp_obj_t sensor_list(void) {
 static MP_DEFINE_CONST_FUN_OBJ_0(sensor_list_obj, sensor_list);
 
 static mp_obj_t sensor_read(size_t n_args, const mp_obj_t *args) {
-    const char *chan = mp_obj_str_get_str(args[0]);
-    bool filtered = n_args >= 2 && mp_obj_is_true(args[1]);
+    const char *name = mp_obj_str_get_str(args[0]);
     int32_t val = 0;
-    bool ok = filtered
-        ? lugal_sensor_read_filtered(chan, &val, NULL)
-        : lugal_sensor_read(chan, &val, NULL);
-    if (!ok) {
-        return mp_const_none;
+    if (n_args >= 2 && mp_obj_is_str(args[1])) {
+        const char *chan = mp_obj_str_get_str(args[1]);
+        if (!lugal_sensor_read_dev(name, chan, &val, NULL)) {
+            return mp_const_none;
+        }
+        return mp_obj_new_int(val);
     }
-    return mp_obj_new_int(val);
+    bool filtered = n_args >= 2 && mp_obj_is_true(args[1]);
+    bool ok = filtered
+        ? lugal_sensor_read_filtered(name, &val, NULL)
+        : lugal_sensor_read(name, &val, NULL);
+    if (ok) {
+        return mp_obj_new_int(val);
+    }
+    /* Fall back to reading all supported channels if `name` is a device. */
+    static const char *const chans[] = {
+        "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas_res",
+        "co", "no2", "nh3", "co2", "pressure_msl", "ah", "dew_point", "iaq",
+        "voltage", "current", "power", "battery",
+        "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"
+    };
+    mp_obj_t dict = mp_obj_new_dict(0);
+    size_t found = 0;
+    for (size_t i = 0; i < sizeof(chans) / sizeof(chans[0]); i++) {
+        if (lugal_sensor_read_dev(name, chans[i], &val, NULL)) {
+            mp_obj_dict_store(dict,
+                mp_obj_new_str(chans[i], strlen(chans[i])),
+                mp_obj_new_int(val));
+            found++;
+        }
+    }
+    return found > 0 ? dict : mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(sensor_read_obj, 1, 2, sensor_read);
 
