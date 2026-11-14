@@ -1040,8 +1040,8 @@ bool sensor_hub_register(sensor_dev_t *dev) {
 }
 
 /* guarded by: chan endpoint lock */
-static uint8_t g_sensor_chan_req[96];
-static uint8_t g_sensor_chan_resp[256];
+static uint8_t g_sensor_chan_req[72];
+static uint8_t g_sensor_chan_resp[128];
 /* guarded by: s_hub_lock */
 static bool    s_sensor_chan_registered;
 

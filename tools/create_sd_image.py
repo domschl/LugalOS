@@ -123,7 +123,12 @@ def entry_set(name: str, attr: int, cluster: int, size: int, taken: set[bytes]) 
     return b"".join(lfn_slots(name, short)) + dir_entry(short, attr, 0, cluster, size)
 
 
-def build_fat32_image(output_path: str, src_dir: str | None = None, num_sectors: int = NUM_SECTORS) -> None:
+def build_fat32_image(
+    output_path: str,
+    src_dir: str | None = None,
+    num_sectors: int = NUM_SECTORS,
+    exclude: frozenset[str] = frozenset(),
+) -> None:
     # The FAT has one 4-byte entry per cluster (one cluster a sector).
     fat_size: int = FAT_SIZE_SECTORS if num_sectors == NUM_SECTORS else -(-num_sectors // 128)
     data_start: int = RESERVED_SECTORS + 2 * fat_size
@@ -210,7 +215,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None, num_sectors:
         for name in sorted(os.listdir(dir_path)):
             # TrueType fonts (~2.9 MB) are staged in sd_root/fonts/ for hardware
             # p9sync, but exceed the 1 MB flashfs and 2 MB QEMU SD image budgets.
-            if first == 2 and name == "fonts":
+            if (first == 2 and name == "fonts") or name in exclude:
                 continue
             full_path = os.path.join(dir_path, name)
             if os.path.isdir(full_path):

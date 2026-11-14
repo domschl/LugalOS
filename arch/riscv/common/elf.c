@@ -635,6 +635,90 @@ static void user_program_body(void *arg) {
                     (uintptr_t)p->argc, p->argv_addr);
 }
 
+/* Applies LREL base-offset relocations from a PT_NOTE ("LREL") section
+ * produced by tools/pack_pie_relocs.py for multi-page U-mode binaries. */
+static int apply_pie_relocs(const char *path, int fd, const uint8_t *hdr,
+                            uint32_t fsize, uint8_t *image, uint32_t image_bytes) {
+    uint8_t elf_class = hdr[4];
+    uint32_t phoff = 0, phnum = 0;
+    if (elf_class == 1) {
+        const elf32_ehdr_t *e = (const elf32_ehdr_t *)hdr;
+        phoff = e->e_phoff;
+        phnum = e->e_phnum;
+    } else {
+        const elf64_ehdr_t *e = (const elf64_ehdr_t *)hdr;
+        phoff = (uint32_t)e->e_phoff;
+        phnum = e->e_phnum;
+    }
+
+    uint32_t note_off = 0, note_sz = 0;
+    for (uint32_t i = 0; i < phnum; i++) {
+        uint32_t p_type, p_off, p_filesz;
+        if (elf_class == 1) {
+            const elf32_phdr_t *ph = (const elf32_phdr_t *)(hdr + phoff) + i;
+            p_type = ph->p_type; p_off = ph->p_offset; p_filesz = ph->p_filesz;
+        } else {
+            const elf64_phdr_t *ph = (const elf64_phdr_t *)(hdr + phoff) + i;
+            p_type = ph->p_type;
+            p_off = (uint32_t)ph->p_offset;
+            p_filesz = (uint32_t)ph->p_filesz;
+        }
+        if (p_type == 4u /* PT_NOTE */ && p_filesz >= 8u &&
+            p_off <= fsize && p_filesz <= fsize - p_off) {
+            uint8_t nhdr[8];
+            if (vfs_pread(fd, nhdr, sizeof(nhdr), p_off) == (int)sizeof(nhdr) &&
+                nhdr[0] == 'L' && nhdr[1] == 'R' && nhdr[2] == 'E' && nhdr[3] == 'L') {
+                note_off = p_off;
+                note_sz = p_filesz;
+                break;
+            }
+        }
+    }
+    if (note_sz == 0) return 0;
+
+    uint32_t hdr_words[2];
+    if (vfs_pread(fd, hdr_words, sizeof(hdr_words), note_off) != (int)sizeof(hdr_words)) {
+        return -1;
+    }
+    uint32_t count = hdr_words[1];
+    if (count > (note_sz - 8u) / 4u) {
+        printk("[ELF Error] '%s': malformed LREL table\n", path);
+        return -1;
+    }
+
+    uint32_t ptr_sz = (elf_class == 1) ? 4u : 8u;
+    uint32_t chunk[128];
+    uint32_t pos = 0;
+    while (pos < count) {
+        uint32_t n = count - pos;
+        if (n > 128u) n = 128u;
+        uint32_t bytes = n * 4u;
+        if (vfs_pread(fd, chunk, bytes, note_off + 8u + pos * 4u) != (int)bytes) {
+            return -1;
+        }
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t off = chunk[i];
+            if (off > image_bytes - ptr_sz) {
+                printk("[ELF Error] '%s': reloc offset 0x%x out of bounds\n", path, off);
+                return -1;
+            }
+            if (elf_class == 1) {
+                uint32_t val;
+                memcpy(&val, image + off, sizeof(val));
+                val += (uint32_t)(uintptr_t)image;
+                memcpy(image + off, &val, sizeof(val));
+            } else {
+                uint64_t val;
+                memcpy(&val, image + off, sizeof(val));
+                val += (uint64_t)(uintptr_t)image;
+                memcpy(image + off, &val, sizeof(val));
+            }
+        }
+        pos += n;
+    }
+    return 0;
+}
+
 /* Loads `path` into a fresh slot and starts it. Returns the slot, or NULL --
  * having released anything it had claimed. Does not wait. */
 static user_proc_t * load_into_slot(const char *path, int argc,
@@ -727,6 +811,12 @@ static user_proc_t * load_into_slot_locked(const char *path, int argc,
             proc_release(p);
             return NULL;
         }
+    }
+    if (apply_pie_relocs(path, fd, hdrbuf, fsize, p->image,
+                         image_pages * (uint32_t)PAGE_SIZE) < 0) {
+        vfs_close(fd);
+        proc_release(p);
+        return NULL;
     }
     vfs_close(fd);
 

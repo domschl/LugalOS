@@ -36,3 +36,8 @@ This project incorporates and draws architectural inspiration from the following
 
 3. RISC-V Instruction Set Architecture (ISA)
    - RISC-V International Specifications
+
+4. MicroPython (v1.24.1)
+   - Copyright (c) 2013-2024 Damien P. George & MicroPython Contributors
+   - License: MIT License (third_party/micropython/LICENSE)
+   - Web: https://github.com/micropython/micropython

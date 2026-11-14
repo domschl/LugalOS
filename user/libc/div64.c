@@ -93,3 +93,30 @@ int64_t __moddi3(int64_t n, int64_t d) {
     (void)udivmod64(un, ud, &r);
     return neg ? -(int64_t)r : (int64_t)r;
 }
+
+int __clzsi2(uint32_t x) {
+    if (x == 0) return 32;
+    int n = 0;
+    if ((x & 0xFFFF0000u) == 0) { n += 16; x <<= 16; }
+    if ((x & 0xFF000000u) == 0) { n += 8;  x <<= 8;  }
+    if ((x & 0xF0000000u) == 0) { n += 4;  x <<= 4;  }
+    if ((x & 0xC0000000u) == 0) { n += 2;  x <<= 2;  }
+    if ((x & 0x80000000u) == 0) { n += 1; }
+    return n;
+}
+
+int __ctzsi2(uint32_t x) {
+    if (x == 0) return 32;
+    int n = 0;
+    if ((x & 0x0000FFFFu) == 0) { n += 16; x >>= 16; }
+    if ((x & 0x000000FFu) == 0) { n += 8;  x >>= 8;  }
+    if ((x & 0x0000000Fu) == 0) { n += 4;  x >>= 4;  }
+    if ((x & 0x00000003u) == 0) { n += 2;  x >>= 2;  }
+    if ((x & 0x00000001u) == 0) { n += 1; }
+    return n;
+}
+
+int __clzdi2(uint64_t x) {
+    uint32_t hi = (uint32_t)(x >> 32);
+    return hi ? __clzsi2(hi) : (32 + __clzsi2((uint32_t)x));
+}

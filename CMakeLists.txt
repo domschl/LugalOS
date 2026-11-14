@@ -385,6 +385,87 @@ add_custom_command(TARGET ulibctest.elf POST_BUILD
     COMMENT "Stripping user program ulibctest.elf")
 list(APPEND USER_PROG_STAGED ulibctest)
 
+# MicroPython U-mode ELF (mpy.elf)
+set(MPY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/micropython)
+set(MPY_GENHDR_OUT ${CMAKE_CURRENT_BINARY_DIR}/mpy_genhdr)
+file(GLOB MPY_PY_SOURCES CONFIGURE_DEPENDS "${MPY_DIR}/py/*.c")
+set(MPY_SOURCES
+    ${MPY_PY_SOURCES}
+    ${MPY_DIR}/shared/runtime/gchelper_generic.c
+    ${MPY_DIR}/shared/runtime/pyexec.c
+    ${MPY_DIR}/shared/runtime/stdout_helpers.c
+    ${MPY_DIR}/shared/readline/readline.c
+    ${MPY_DIR}/extmod/modbinascii.c
+    ${MPY_DIR}/extmod/modheapq.c
+    ${MPY_DIR}/extmod/modjson.c
+    ${MPY_DIR}/extmod/modrandom.c
+    ${MPY_DIR}/extmod/modtime.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/mphalport.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/main.c)
+set(MPY_GENHDR_FILES
+    ${MPY_GENHDR_OUT}/genhdr/mpversion.h
+    ${MPY_GENHDR_OUT}/genhdr/qstrdefs.generated.h
+    ${MPY_GENHDR_OUT}/genhdr/moduledefs.h
+    ${MPY_GENHDR_OUT}/genhdr/root_pointers.h)
+set(MPY_INCLUDES
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy
+    ${MPY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/libc/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/libc/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/progs)
+
+# Extract exact arch/abi flags from CMAKE_C_FLAGS for preprocessor qstr pass
+separate_arguments(MPY_GLOBAL_CFLAGS UNIX_COMMAND "${CMAKE_C_FLAGS}")
+set(MPY_GEN_CFLAGS "")
+foreach(_f ${MPY_GLOBAL_CFLAGS})
+    if(_f MATCHES "^-march=" OR _f MATCHES "^-mabi=" OR _f MATCHES "^-mcmodel=")
+        list(APPEND MPY_GEN_CFLAGS --cflag=${_f})
+    endif()
+endforeach()
+set(MPY_GEN_INCS "")
+foreach(_i ${MPY_INCLUDES})
+    list(APPEND MPY_GEN_INCS --inc=${_i})
+endforeach()
+
+add_custom_command(
+    OUTPUT ${MPY_GENHDR_FILES}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_mpy_hdrs.py
+            --cc=${CMAKE_C_COMPILER}
+            --mpy-dir=${MPY_DIR}
+            --out-dir=${MPY_GENHDR_OUT}
+            ${MPY_GEN_CFLAGS}
+            ${MPY_GEN_INCS}
+            ${MPY_SOURCES}
+    DEPENDS ${MPY_SOURCES}
+            ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/mpconfigport.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/qstrdefsport.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_mpy_hdrs.py
+    COMMENT "Generating MicroPython headers (qstr/moduledefs/root_pointers)")
+add_custom_target(mpy_genhdr DEPENDS ${MPY_GENHDR_FILES})
+
+add_executable(mpy.elf ${MPY_SOURCES} ${ULIBC_SOURCES})
+add_dependencies(mpy.elf mpy_genhdr)
+target_compile_options(mpy.elf PRIVATE
+    -fno-sanitize=all -Os -mno-relax -msmall-data-limit=0
+    -fno-jump-tables -fno-common -fno-tree-loop-distribute-patterns
+    -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
+    -Wno-missing-field-initializers -Wno-implicit-fallthrough
+    -Wno-cast-function-type -Wno-pedantic)
+target_include_directories(mpy.elf PRIVATE
+    ${MPY_INCLUDES}
+    ${MPY_GENHDR_OUT})
+set(USER_MPY_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker/user_mpy.ld)
+target_link_options(mpy.elf PRIVATE
+    -T${USER_MPY_LINKER_SCRIPT} -nostdlib -static -Wl,-q -Wl,--no-relax -Wl,--build-id=none)
+set_target_properties(mpy.elf PROPERTIES LINK_DEPENDS ${USER_MPY_LINKER_SCRIPT})
+add_custom_command(TARGET mpy.elf POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} --strip-all $<TARGET_FILE:mpy.elf>
+            ${CMAKE_CURRENT_BINARY_DIR}/mpy.stripped
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/pack_pie_relocs.py
+            $<TARGET_FILE:mpy.elf> ${CMAKE_CURRENT_BINARY_DIR}/mpy.stripped
+    COMMENT "Stripping and packing relocations for mpy.elf")
+list(APPEND USER_PROG_STAGED mpy)
+
 # Generate Embedded Flash FAT32 image (flash_fs.c)
 #
 # Built from a staging directory rather than straight from tools/sd_root, so
@@ -509,7 +590,7 @@ add_custom_command(
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/NotoSerif-Regular.ttf
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/Jomolhari-Regular.ttf
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/NotoSansMath-Regular.ttf
-            uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf uvfs.elf ulibctest.elf
+            uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf uvfs.elf ulibctest.elf mpy.elf
     COMMENT "${FLASH_FS_COMMENT}"
 )
 

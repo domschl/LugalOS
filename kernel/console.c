@@ -1881,7 +1881,7 @@ static uint8_t g_console_req[256];
 static uint8_t g_console_resp[8];
 
 /* guarded by: chan endpoint lock */
-static uint8_t g_canvas_req[256];
+static uint8_t g_canvas_req[128];
 static uint8_t g_canvas_resp[SCREEN_REPLY_LEN];
 
 static int console_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
