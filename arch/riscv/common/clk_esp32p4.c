@@ -299,10 +299,9 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us) {
 #define REGI2C_BUSY             (1u << 25)
 #define REGI2C_DATA_S           16
 
-/* LPPERI_CLK_EN, LPPERIPH + 0x0. CK_EN_LP_I2CMST is bit 27 and its reset
- * default is 1, so the master is clocked before anyone asks. Checked rather
- * than set: turning it on would be a write this milestone does not get to
- * make, and finding it off would itself be the answer. */
+/* LPPERI_CLK_EN, LPPERIPH + 0x0. CK_EN_LP_I2CMST is bit 27; any regi2c
+ * operation requires the analog I2C master clock to be ungated first
+ * (ESP-IDF ANA_I2C_MST_CLK_HAS_ROOT_GATING). */
 #define P4_LPPERI_CLK_EN        0x50120000UL
 #define LPPERI_CK_EN_LP_I2CMST  (1u << 27)
 
@@ -351,9 +350,7 @@ static bool regi2c_wait_idle(void) {
 /* Point the analog master at one block. Every transaction begins here;
  * ESP-IDF's regi2c_enable_block() does the same two clears and one set. */
 static bool regi2c_select(uint32_t mst_sel) {
-    if (!(P4_REG(P4_LPPERI_CLK_EN) & LPPERI_CK_EN_LP_I2CMST)) {
-        return false;   /* master is gated; say so rather than ungate it */
-    }
+    P4_REG(P4_LPPERI_CLK_EN) |= LPPERI_CK_EN_LP_I2CMST;
     P4_REG(P4_ANA_MST_ANA_CONF1) &= ~ANA_CONF_FIELD_M;
     P4_REG(P4_ANA_MST_ANA_CONF2) &= ~ANA_CONF_FIELD_M;
     P4_REG(P4_ANA_MST_ANA_CONF2) |= mst_sel;

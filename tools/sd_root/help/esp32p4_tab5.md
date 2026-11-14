@@ -110,12 +110,46 @@ The Tab5 is a self-contained appliance containing an internal ESP32-C6 connected
   * The Tab5 factory ESP-IDF bootloader locks Physical Memory Protection (PMP) entries 0-2 and 15 (`PMP_L`).
   * The LugalOS microkernel dynamically probes locked entries at boot and allocates user domains exclusively in unlocked slots 3-14 without triggering traps.
 * **Over-the-Air Updates over 9P:**
-  Updates to the internal C6 are performed through the P4 host over 9P/SDIO without opening the physical enclosure:
+  Once the C6 is running LugalOS (for factory-fresh boards, see Section 8 first), updates to the internal C6 are performed through the P4 host over 9P/SDIO without opening the physical enclosure:
   ```bash
   uv run tools/lota.py push build/esp32c6-mini --p4 tab5 --prefix /c6 --reboot --wait
   ```
 * **Boot-Time Network Configuration:**
   At boot, the Tab5 brings up LLP host mode, discovers the C6 over SDIO, mounts `/c6`, automatically pushes Wi-Fi credentials from `/sd0/etc/wlan.env` or the internal identity store to `/c6/dev/wlan`, registers network device `wlan0`, and launches the background DHCP client (`dhcpc`) to acquire an IP address.
+
+---
+
+## 8. Fresh Installation & First-Time Provisioning
+
+A brand-new Tab5 ships with the factory ESP-IDF image on the P4 and `esp-hosted-mcu` on the internal C6. Installing LugalOS for the first time requires flashing all P4 segments, provisioning an identity key, and migrating the C6 from `esp-hosted-mcu` to LugalOS:
+
+1. **Identify the USB-Serial/JTAG port** (if not yet registered in `~/.config/lugalos/p4-ports.env`, pass `--port` explicitly instead of `--board tab5`):
+   ```bash
+   ls /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*
+   ```
+2. **Build both cores:**
+   ```bash
+   ninja -C build/esp32p4-tab5 && ninja -C build/esp32c6-mini
+   ```
+3. **Flash the P4 (`boot`, `rec`, `os`, `fs`):**
+   Omitting `--only` writes the permanent bootloader, boot records, slot-A OS image, and `/flash0` filesystem:
+   ```bash
+   python3 tools/p4flash.py --port /dev/serial/by-id/TAB5_PORT --build build/esp32p4-tab5 --verify
+   ```
+4. **Boot and provision identity:**
+   At first boot, `idstore` initializes the identity sector with the derived name (`esp32p4-tab5-MAC4`) and silicon UID. Generate a device key in `lsh>`:
+   ```bash
+   python3 tools/p4run.py --port /dev/serial/by-id/TAB5_PORT --run \
+     --cmd "identity key --generate" --cmd "identity"
+   ```
+   (Optionally set a custom name with `identity name <name>`.)
+5. **Migrate the internal C6 from `esp-hosted-mcu` to LugalOS:**
+   Until the C6 speaks LLP, `/c6` is not mounted and `lota.py` cannot reach it. Copy `build/esp32c6-mini/lugalos-c6-app.bin` to `/sd0/lugalos-c6-app.bin` (on the MicroSD card or via 9P `p9share`), then run `sdio ota` in `lsh>`:
+   ```text
+   lsh> sdio ota
+   lsh> rm /sd0/lugalos-c6-app.bin
+   ```
+   Once `sdio ota` finishes (~14 s), the C6 reboots into LugalOS, LLP comes up, `/c6` mounts automatically, and future C6 updates can use `tools/lota.py push`.
 
 ---
 
