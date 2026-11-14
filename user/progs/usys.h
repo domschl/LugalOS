@@ -29,6 +29,7 @@
 #define SYS_PUTCHAR    12
 #define SYS_READ_FILE  13
 #define SYS_WRITE_FILE 14
+#define SYS_GETCHAR    15
 #define SYS_UEXIT      20
 #define SYS_TICKS      21
 #define SYS_YIELD      22
@@ -121,6 +122,10 @@ static inline void uputnum(long n) {
 
 static inline void uputchar(char c) {
     (void)usyscall(SYS_PUTCHAR, (long)c, 0, 0);
+}
+
+static inline int ugetchar_nb(void) {
+    return (int)usyscall(SYS_GETCHAR, 0, 0, 0);
 }
 
 static inline long uread_file(const char *path, void *buf, long max_len) {

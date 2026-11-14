@@ -1308,6 +1308,14 @@ void trap_handler(trap_frame_t *frame) {
                     if ((char)frame->a1 == '\n') console_flush();
                     ret = 0;
                     break;
+                case 15: /* SYS_GETCHAR (non-blocking: byte 0..255 or -1) */
+                    console_flush();
+                    if (console_has_char()) {
+                        ret = (long)(unsigned char)console_getc();
+                    } else {
+                        ret = -1;
+                    }
+                    break;
                 case 21: /* SYS_TICKS: the preemption tick counter */
                     /* A value, not a pointer, and read-only -- so it is safe
                      * to expose to U-mode as it stands.
