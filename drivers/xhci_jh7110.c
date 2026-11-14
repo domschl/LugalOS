@@ -1128,14 +1128,20 @@ static void xhci_handle_root_port_change(uint8_t root_port) {
 }
 
 static void xhci_poll_hubs(void) {
+    /* guarded by: g_xhci_lock */
+    static uint32_t s_hub_backoff_until[XHCI_MAX_SLOTS + 1];
+    uint32_t now = (uint32_t)time_get_ms();
+
     for (uint8_t hub_slot = 1; hub_slot <= XHCI_MAX_SLOTS; hub_slot++) {
         if (!g_devices[hub_slot].present || !g_devices[hub_slot].is_hub) continue;
+        if ((int32_t)(now - s_hub_backoff_until[hub_slot]) < 0) continue;
         uint8_t num_ports = g_devices[hub_slot].hub_num_ports;
 
         for (uint8_t p = 1; p <= num_ports; p++) {
             uint32_t port_status = 0;
             if (xhci_control_transfer(hub_slot, 0xA3, 0x00, 0, p, 4, &port_status, true) != 0) {
-                continue;
+                s_hub_backoff_until[hub_slot] = (uint32_t)time_get_ms() + 2000u;
+                break;
             }
 
             uint16_t status = (uint16_t)(port_status & 0xFFFF);
@@ -1228,8 +1234,22 @@ static void xhci_poll_hubs(void) {
 }
 
 /* Console Input Integration for physical USB Keyboard */
+static void xhci_poll_events_locked(void) {
+    xhci_trb_t ev;
+    while (xhci_wait_event(0, &ev, 0) == 0) {
+        uint8_t type = (ev.control >> 10) & 0x3Fu;
+        if (type == XHCI_TRB_PORT_STATUS_CHANGE) {
+            uint8_t root_port = (uint8_t)((ev.parameter >> 24) & 0xFFu);
+            xhci_handle_root_port_change(root_port);
+        }
+    }
+}
+
 static void xhci_kbd_pump(void) {
-    xhci_poll();
+    if (g_xhci_present && ylock_try_acquire(&g_xhci_lock)) {
+        xhci_poll_events_locked();
+        ylock_release(&g_xhci_lock);
+    }
     uint32_t now = (uint32_t)time_get_ms();
     if (g_kbd_online) {
         uint8_t rep[16];
@@ -1459,14 +1479,7 @@ bool xhci_take_mouse(int *dx, int *dy, uint8_t *buttons, int *wheel) {
 void xhci_poll(void) {
     if (!g_xhci_present) return;
     ylock_acquire(&g_xhci_lock);
-    xhci_trb_t ev;
-    while (xhci_wait_event(0, &ev, 0) == 0) {
-        uint8_t type = (ev.control >> 10) & 0x3Fu;
-        if (type == XHCI_TRB_PORT_STATUS_CHANGE) {
-            uint8_t root_port = (uint8_t)((ev.parameter >> 24) & 0xFFu);
-            xhci_handle_root_port_change(root_port);
-        }
-    }
+    xhci_poll_events_locked();
 
     /* Periodic downstream hub port monitoring for connect/disconnect.
      * guarded by: g_xhci_lock */

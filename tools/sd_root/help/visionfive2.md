@@ -32,7 +32,7 @@ The VisionFive 2 is powered by the **StarFive JH7110** SoC with 8 GiB LPDDR4 (`0
 > The onboard QSPI flash contains the factory `U-Boot SPL`, `OpenSBI v1.2`, and `U-Boot 2021.10`. LugalOS never writes to QSPI flash under any circumstances.
 
 1. At power-on or reset, QSPI flash boots `SPL -> OpenSBI v1.2 -> U-Boot 2021.10` (`StarFive #` prompt on UART0).
-2. `tools/vf2run.py` loads `build/visionfive2/lugalos.bin` into DRAM at `0x40200000` (above OpenSBI's protected `0x40000000 - 0x4007FFFF` firmware region) via 1.5 Mbps YMODEM (`loady` + `unzip`), TFTP (`tftpboot`), or local microSD (`fatload mmc 1:1 0x40200000 lugalos.bin`).
+2. `tools/vf2run.py` loads `build/visionfive2/lugalos.bin` into DRAM at `0x40200000` (above OpenSBI's protected `0x40000000 - 0x4007FFFF` firmware region) via 1.5 Mbps YMODEM (`loady` + `unzip`), TFTP (`tftpboot`), or local microSD (`fatload mmc 1:<part> 0x40200000 lugalos.bin`).
 3. U-Boot launches LugalOS in S-mode via its standard Linux RISC-V `Image` boot command:
    ```text
    booti 0x40200000 - ${fdtcontroladdr}
@@ -174,7 +174,7 @@ LugalOS features a native multicore General Matrix Multiply (GEMM) engine optimi
 To boot LugalOS automatically on power-on without a UART cable and without touching the onboard QSPI flash:
 
 1. Factory QSPI U-Boot evaluates `load_vf2_env` (`fatload mmc 1:3 ${scriptaddr} vf2_uEnv.txt`) on MMC device 1, partition 3.
-2. LugalOS tools configure an MBR partition 3 alias pointing to the FAT32 partition (`mmc dev 1; mmc read 0x44000000 0 1; cp.b 0x440001be 0x440001de 0x10; mmc write 0x44000000 0 1`).
+2. LugalOS tools move the FAT32 partition entry to MBR partition 3 (clearing partition 1 so hosts only see one partition, while LugalOS's FAT32 driver scans MBR partitions 1-4).
 3. `/sd0/vf2_uEnv.txt` defines:
    ```text
    boot2=echo Booting LugalOS from SD...; fatload mmc 1:3 0x40200000 lugalos.bin; booti 0x40200000 - ${fdtcontroladdr}

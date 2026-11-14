@@ -25,6 +25,7 @@ Usage:
 import argparse
 import glob
 import os
+import re
 import socket
 import struct
 import subprocess
@@ -379,16 +380,38 @@ def load_via_ymodem(ser: serial.Serial, file_bytes: bytes, addr: int = LOAD_ADDR
     uboot_cmd(ser, f"unzip 0x{scratch_addr:08x} 0x{addr:08x}", timeout_s=10.0, echo=True)
 
 
+def detect_sd_part(ser: serial.Serial) -> int:
+    """Return the active FAT32 partition number on mmc 1 (prefers 3, falls back to 1)."""
+    uboot_cmd(ser, "mmc dev 1", echo=False)
+    out = uboot_cmd(ser, "mmc part", echo=False)
+    has_3 = bool(re.search(r"(?m)^\s*3\s+", out))
+    has_1 = bool(re.search(r"(?m)^\s*1\s+", out))
+    if has_3:
+        return 3
+    if has_1:
+        return 1
+    return 3
+
+
 def setup_autoboot(ser: serial.Serial) -> None:
-    """Configure MicroSD MBR partition 3 alias and vf2_uEnv.txt so U-Boot auto-boots LugalOS."""
-    print("[vf2run] Configuring MicroSD MBR partition 3 alias...")
+    """Configure MicroSD MBR partition 3 (removing duplicate partition 1) and vf2_uEnv.txt."""
+    print("[vf2run] Configuring MicroSD MBR partition 3...")
     uboot_cmd(ser, "mmc dev 1", echo=True)
-    uboot_cmd(ser, "mmc read 0x44000000 0 1", echo=True)
-    uboot_cmd(ser, "cp.b 0x440001be 0x440001de 0x10", echo=True)
-    uboot_cmd(ser, "mmc write 0x44000000 0 1", echo=True)
     out = uboot_cmd(ser, "mmc part", echo=True)
-    if "3\t" not in out and "  3 " not in out:
-        sys.exit("[vf2run] Failed to set up partition 3 alias in MBR")
+    has_1 = bool(re.search(r"(?m)^\s*1\s+", out))
+    has_3 = bool(re.search(r"(?m)^\s*3\s+", out))
+
+    if has_1 or not has_3:
+        uboot_cmd(ser, "mmc read 0x44000000 0 1", echo=True)
+        if has_1 and not has_3:
+            uboot_cmd(ser, "cp.b 0x440001be 0x440001de 0x10", echo=True)
+        if has_1:
+            for off in range(0, 16, 4):
+                uboot_cmd(ser, f"mw.l 0x{0x440001be + off:08x} 0 1", echo=False)
+        uboot_cmd(ser, "mmc write 0x44000000 0 1", echo=True)
+        out = uboot_cmd(ser, "mmc part", echo=True)
+        if not re.search(r"(?m)^\s*3\s+", out):
+            sys.exit("[vf2run] Failed to configure partition 3 in MBR")
 
     print("[vf2run] Writing vf2_uEnv.txt to /sd0 via U-Boot fatwrite...")
     uenv_path = os.path.join(os.path.dirname(__file__), "sd_root", "vf2_uEnv.txt")
@@ -409,7 +432,7 @@ def setup_autoboot(ser: serial.Serial) -> None:
 
     uboot_cmd(
         ser,
-        f"fatwrite mmc 1:1 0x{scratch:08x} vf2_uEnv.txt {len(env_bytes):x}",
+        f"fatwrite mmc 1:3 0x{scratch:08x} vf2_uEnv.txt {len(env_bytes):x}",
         echo=True,
     )
     print("[vf2run] Unattended SD auto-boot configured successfully.")
@@ -509,8 +532,8 @@ def main() -> int:
             ensure_uboot_prompt(ser)
             setup_autoboot(ser)
             if args.reboot:
-                print("\n[vf2run] Rebooting to test unattended SD auto-boot...")
-                write_paced(ser, "reboot\r")
+                print("\n[vf2run] Resetting to test unattended SD auto-boot...")
+                write_paced(ser, "reset\r")
                 read_until_any(ser, ["lsh> ", "/> "], timeout_s=30.0, echo=True)
             return 0
 
@@ -530,15 +553,16 @@ def main() -> int:
 
             loaded = False
             if args.method == "sd":
-                print("[vf2run] Loading lugalos.bin from microSD (mmc 1:1) to 0x40200000...")
+                sd_part = detect_sd_part(ser)
+                print(f"[vf2run] Loading lugalos.bin from microSD (mmc 1:{sd_part}) to 0x40200000...")
                 out = uboot_cmd(
                     ser,
-                    f"fatload mmc 1:1 0x{LOAD_ADDR:08x} lugalos.bin",
+                    f"fatload mmc 1:{sd_part} 0x{LOAD_ADDR:08x} lugalos.bin",
                     timeout_s=10.0,
                     echo=True,
                 )
                 if "bytes read" not in out:
-                    sys.exit("[vf2run] Failed to fatload lugalos.bin from mmc 1:1")
+                    sys.exit(f"[vf2run] Failed to fatload lugalos.bin from mmc 1:{sd_part}")
                 loaded = True
             elif args.method == "nvme":
                 print("[vf2run] Initializing PCIe and NVMe in U-Boot...")
@@ -563,12 +587,13 @@ def main() -> int:
                 load_via_ymodem(ser, file_bytes, LOAD_ADDR)
 
             if args.save_sd and file_bytes:
+                sd_part = detect_sd_part(ser)
                 print(
-                    f"[vf2run] Saving {len(file_bytes)} bytes to /sd0/lugalos.bin via U-Boot fatwrite..."
+                    f"[vf2run] Saving {len(file_bytes)} bytes to /sd0/lugalos.bin (mmc 1:{sd_part}) via U-Boot fatwrite..."
                 )
                 uboot_cmd(
                     ser,
-                    f"fatwrite mmc 1:1 0x{LOAD_ADDR:08x} lugalos.bin {len(file_bytes):x}",
+                    f"fatwrite mmc 1:{sd_part} 0x{LOAD_ADDR:08x} lugalos.bin {len(file_bytes):x}",
                     timeout_s=20.0,
                     echo=True,
                 )

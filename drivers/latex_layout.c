@@ -11,7 +11,7 @@
 #include "drivers/latex_layout.h"
 #include "drivers/font_math.h"
 #include "drivers/font_serif.h"
-#if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)) || defined(LUGALOS_HOST_TEST)
+#if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)) || defined(CONFIG_BOARD_VISIONFIVE2) || defined(LUGALOS_HOST_TEST)
 #include "drivers/font_noto_serif.h"
 #define MATH_USE_HIDPI 1
 #else
@@ -53,28 +53,31 @@ int latex_layout(math_box_t *b, int base_scale) {
             }
             if (b->d < 0) b->d = 0;
         } else {
+            bool italic = (b->u.ch.font_family == 0 &&
+                           ((b->u.ch.codepoint >= 'a' && b->u.ch.codepoint <= 'z') ||
+                            (b->u.ch.codepoint >= 'A' && b->u.ch.codepoint <= 'Z')));
             /* Standard serif font metrics fallback */
 #if MATH_USE_HIDPI
             if (base_scale > 1) {
                 if (b->style == STYLE_SCRIPT) {
-                    /* In HiDPI, scripts use the 16px standard serif font */
-                    uint8_t sw = font_serif_char_width((char)b->u.ch.codepoint);
-                    b->w = (int16_t)sw;
-                    b->h = 12;
-                    b->d = 4;
-                } else if (b->style == STYLE_SCRIPTSCRIPT) {
-                    /* In HiDPI, scriptscript uses 10px font */
-                    uint8_t sw = font_serif_char_width((char)b->u.ch.codepoint);
-                    b->w = (int16_t)((sw * 7 + 5) / 10);
-                    if (b->w < 3) b->w = 3;
-                    b->h = 8;
-                    b->d = 2;
-                } else {
-                    /* Main text in HiDPI uses 32px Noto serif font */
+                    /* ~70% of main Noto serif size (22px at base_scale=2) */
                     uint8_t nw = font_noto_serif_char_width((char)b->u.ch.codepoint);
-                    b->w = (int16_t)nw;
-                    b->h = 24;
-                    b->d = 6;
+                    int dst_h = (32 * base_scale * 7 + 10) / 20;
+                    b->w = (int16_t)((nw * dst_h + 16) / 32);
+                    b->h = (int16_t)((24 * dst_h + 16) / 32);
+                    b->d = (int16_t)((6 * dst_h + 16) / 32);
+                } else if (b->style == STYLE_SCRIPTSCRIPT) {
+                    /* ~50% of main Noto serif size (16px at base_scale=2) */
+                    uint8_t sw = font_serif_char_width((char)b->u.ch.codepoint);
+                    b->w = (int16_t)((sw * base_scale + 1) / 2);
+                    b->h = (int16_t)((12 * base_scale + 1) / 2);
+                    b->d = (int16_t)((4 * base_scale + 1) / 2);
+                } else {
+                    /* Main text in HiDPI uses 32px Noto serif font, scaled if base_scale > 2 */
+                    uint8_t nw = font_noto_serif_char_width((char)b->u.ch.codepoint);
+                    b->w = (int16_t)((nw * base_scale + 1) / 2);
+                    b->h = (int16_t)((24 * base_scale + 1) / 2);
+                    b->d = (int16_t)((6 * base_scale + 1) / 2);
                 }
             } else
 #endif
@@ -95,6 +98,12 @@ int latex_layout(math_box_t *b, int base_scale) {
                     b->h = 12;
                     b->d = 4;
                 }
+            }
+            if (italic) {
+                /* Reserve horizontal overhang for the top-right italic slant */
+                int corr = (b->h + 4) / 5;
+                if (corr < 1) corr = 1;
+                b->w = (int16_t)(b->w + corr);
             }
         }
         break;
@@ -209,13 +218,17 @@ int latex_layout(math_box_t *b, int base_scale) {
     }
 
     case MATH_BOX_BIGOP: {
-        int16_t op_w = (int16_t)(14 * base_scale);
-        int16_t op_h = (int16_t)(16 * base_scale);
+        uint16_t op_cp = (b->u.bigop.op == BIGOP_SUM) ? 0x2211 :
+                         (b->u.bigop.op == BIGOP_PROD) ? 0x220F : 0x222B;
+        const math_glyph_t *g = font_math_lookup(op_cp, (math_style_t)b->style);
+        int16_t op_w = (int16_t)((g ? g->advance : 14) * base_scale);
+        int16_t op_h = (int16_t)((g ? g->bearing_y : 14) * base_scale);
+        int16_t op_d = (int16_t)((g && g->h > g->bearing_y ? (g->h - g->bearing_y) : 2) * base_scale);
 
         math_box_t *sup = b->u.bigop.sup;
         math_box_t *sub = b->u.bigop.sub;
 
-        if (b->style == STYLE_DISPLAY) {
+        if (b->style == STYLE_DISPLAY && b->u.bigop.op != BIGOP_INT) {
             latex_layout(sup, base_scale);
             latex_layout(sub, base_scale);
 
@@ -226,31 +239,32 @@ int latex_layout(math_box_t *b, int base_scale) {
             b->w = max_w;
             if (sup) {
                 sup->x = (int16_t)((max_w - sup->w) / 2);
-                sup->y = (int16_t)(op_h + 2 * base_scale);
+                sup->y = (int16_t)(op_h + 2 * base_scale + sup->d);
             }
             if (sub) {
                 sub->x = (int16_t)((max_w - sub->w) / 2);
-                sub->y = (int16_t)(-4 * base_scale - sub->h);
+                sub->y = (int16_t)(-op_d - 2 * base_scale - sub->h);
             }
             b->h = (sup) ? (int16_t)(sup->y + sup->h) : op_h;
-            b->d = (sub) ? (int16_t)(-sub->y + sub->d) : (int16_t)(4 * base_scale);
+            b->d = (sub) ? (int16_t)(-sub->y + sub->d) : op_d;
         } else {
-            /* Text style: limits to the right */
+            /* Integrals and text-style bigops: limits to the right of the operator */
             latex_layout(sup, base_scale);
             latex_layout(sub, base_scale);
             if (sup) {
-                sup->x = op_w;
-                sup->y = (int16_t)((op_h * 45) / 100);
+                sup->x = (int16_t)(op_w + base_scale);
+                sup->y = (int16_t)((op_h * 55) / 100);
             }
             if (sub) {
-                sub->x = op_w;
-                sub->y = (int16_t)(-4 * base_scale);
+                sub->x = (int16_t)(op_w);
+                sub->y = (int16_t)(-op_d - 2 * base_scale);
             }
-            int16_t script_w = (sup && sub) ? ((sup->w > sub->w) ? sup->w : sub->w) :
-                               (sup ? sup->w : (sub ? sub->w : 0));
+            int16_t script_w = 0;
+            if (sup && sup->x + sup->w > op_w + script_w) script_w = (int16_t)(sup->x + sup->w - op_w);
+            if (sub && sub->x + sub->w > op_w + script_w) script_w = (int16_t)(sub->x + sub->w - op_w);
             b->w = (int16_t)(op_w + script_w);
-            b->h = op_h;
-            b->d = (int16_t)(4 * base_scale);
+            b->h = (sup && sup->y + sup->h > op_h) ? (int16_t)(sup->y + sup->h) : op_h;
+            b->d = (sub && -sub->y + sub->d > op_d) ? (int16_t)(-sub->y + sub->d) : op_d;
         }
         break;
     }
@@ -326,33 +340,69 @@ static void draw_line_canvas1(const canvas1_t *c, int x0, int y0, int x1, int y1
     }
 }
 
+static uint32_t math_isqrt32(uint32_t n) {
+    if (n == 0) return 0;
+    uint32_t x = n;
+    uint32_t y = (x + 1u) >> 1;
+    while (y < x) {
+        x = y;
+        y = (x + n / x) >> 1;
+    }
+    return x;
+}
+
 static void draw_line_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
                             int x0, int y0, int x1, int y1, uint8_t fg, int width) {
-    int dx = (x1 >= x0) ? (x1 - x0) : (x0 - x1);
-    int dy = (y1 >= y0) ? (y1 - y0) : (y0 - y1);
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx - dy;
+    if (width < 1) width = 1;
+    int32_t dx = x1 - x0;
+    int32_t dy = y1 - y0;
+    uint32_t len2 = (uint32_t)(dx * dx + dy * dy);
+    if (len2 == 0) {
+        if (x0 >= 0 && x0 < clip_w && y0 >= 0 && y0 < clip_h) {
+            fb[(uint32_t)y0 * stride + x0] = fg;
+        }
+        return;
+    }
+    int32_t len = (int32_t)math_isqrt32(len2);
+    if (len < 1) len = 1;
+    /* Half-width in Q4 (1/16 px); pad bounding box by ceil(width/2) + 1 */
+    int32_t half_q4 = width * 8;
+    int32_t pad = (width + 1) / 2 + 1;
+    int min_x = (x0 < x1 ? x0 : x1) - pad;
+    int max_x = (x0 > x1 ? x0 : x1) + pad;
+    int min_y = (y0 < y1 ? y0 : y1) - pad;
+    int max_y = (y0 > y1 ? y0 : y1) + pad;
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x >= clip_w) max_x = clip_w - 1;
+    if (max_y >= clip_h) max_y = clip_h - 1;
 
-    while (1) {
-        for (int wy = 0; wy < width; wy++) {
-            for (int wx = 0; wx < width; wx++) {
-                int px = x0 + wx;
-                int py = y0 + wy;
-                if (px >= 0 && px < clip_w && py >= 0 && py < clip_h) {
-                    fb[(uint32_t)py * stride + px] = fg;
-                }
+    for (int py = min_y; py <= max_y; py++) {
+        uint8_t *dst = fb + (uint32_t)py * stride;
+        int32_t ry = py - y0;
+        for (int px = min_x; px <= max_x; px++) {
+            int32_t rx = px - x0;
+            int32_t dot = rx * dx + ry * dy;
+            int32_t dist_q4;
+            if (dot <= 0) {
+                dist_q4 = (int32_t)math_isqrt32((uint32_t)(rx * rx + ry * ry) * 256u);
+            } else if ((uint32_t)dot >= len2) {
+                int32_t ex = px - x1;
+                int32_t ey = py - y1;
+                dist_q4 = (int32_t)math_isqrt32((uint32_t)(ex * ex + ey * ey) * 256u);
+            } else {
+                int32_t cross = rx * dy - ry * dx;
+                if (cross < 0) cross = -cross;
+                dist_q4 = (cross * 16 + len / 2) / len;
             }
-        }
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 > -dy) {
-            err -= dy;
-            x0 += sx;
-        }
-        if (e2 < dx) {
-            err += dx;
-            y0 += sy;
+            int32_t cov = half_q4 + 8 - dist_q4;
+            if (cov <= 0) continue;
+            if (cov >= 16) {
+                dst[px] = fg;
+            } else {
+                uint32_t bg = dst[px];
+                dst[px] = (uint8_t)((fg * (uint32_t)cov + bg * (16u - (uint32_t)cov) + 8u) >> 4);
+            }
         }
     }
 }
@@ -430,6 +480,53 @@ static void render_serif_scaled_canvas1(const canvas1_t *c, int abs_x, int abs_y
     }
 }
 
+#if MATH_USE_HIDPI
+static void render_noto_serif_scaled_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
+                                           int abs_x, int abs_y, char ch, uint8_t fg,
+                                           int dst_w, int dst_h, int ascent, bool italic) {
+    int src_w = (int)font_noto_serif_char_width(ch);
+    int top_y = abs_y - ascent;
+    const uint8_t *g = font_noto_serif_get_aa_glyph(ch);
+    if (src_w <= 0 || dst_w <= 0 || dst_h <= 0) return;
+
+    for (int dy = 0; dy < dst_h; dy++) {
+        int py = top_y + dy;
+        if (py < 0 || py >= clip_h) continue;
+        uint8_t *dst = fb + (uint32_t)py * stride;
+        int slant = italic ? ((dst_h - 1 - dy) / 5) : 0;
+        uint32_t sy_q8 = (uint32_t)(dy * 32 * 256) / (uint32_t)dst_h;
+        int sy0 = (int)(sy_q8 >> 8);
+        int sy1 = (sy0 + 1 < 32) ? sy0 + 1 : sy0;
+        uint32_t fy = sy_q8 & 0xFFu;
+        for (int dx = 0; dx < dst_w; dx++) {
+            int px = abs_x + dx + slant;
+            if (px < 0 || px >= clip_w) continue;
+            uint32_t sx_q8 = (uint32_t)(dx * src_w * 256) / (uint32_t)dst_w;
+            int sx0 = (int)(sx_q8 >> 8);
+            int sx1 = (sx0 + 1 < src_w) ? sx0 + 1 : sx0;
+            uint32_t fx = sx_q8 & 0xFFu;
+            uint8_t p00 = g[(sy0 * 16) + (sx0 >> 1)];
+            uint8_t p10 = g[(sy0 * 16) + (sx1 >> 1)];
+            uint8_t p01 = g[(sy1 * 16) + (sx0 >> 1)];
+            uint8_t p11 = g[(sy1 * 16) + (sx1 >> 1)];
+            uint32_t a00 = (sx0 & 1) ? (p00 >> 4) : (p00 & 0x0Fu);
+            uint32_t a10 = (sx1 & 1) ? (p10 >> 4) : (p10 & 0x0Fu);
+            uint32_t a01 = (sx0 & 1) ? (p01 >> 4) : (p01 & 0x0Fu);
+            uint32_t a11 = (sx1 & 1) ? (p11 >> 4) : (p11 & 0x0Fu);
+            uint32_t a_top = a00 * (256u - fx) + a10 * fx;
+            uint32_t a_bot = a01 * (256u - fx) + a11 * fx;
+            uint32_t cov = (a_top * (256u - fy) + a_bot * fy + 15u * 128u) / (15u * 256u);
+            if (cov >= 255u) {
+                dst[px] = fg;
+            } else if (cov > 0u) {
+                uint32_t bg = dst[px];
+                dst[px] = (uint8_t)((fg * cov + bg * (255u - cov) + 127u) / 255u);
+            }
+        }
+    }
+}
+#endif
+
 static void render_serif_scaled_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
                                       int abs_x, int abs_y, char ch, uint8_t fg, uint8_t bg,
                                       int dst_w, int dst_h, int base_offset, bool italic) {
@@ -457,14 +554,17 @@ static void render_serif_scaled_gray8(uint8_t *fb, uint32_t stride, int clip_w, 
             if (sx1 > (int)src_w) sx1 = (int)src_w;
             if (sx1 <= sx0) sx1 = sx0 + 1;
 
-            uint8_t max_a = 0;
+            uint32_t sum_a = 0;
+            uint32_t cnt = 0;
             for (int sy = sy0; sy < sy1; sy++) {
                 const uint8_t *src_row = g_aa + sy * 8;
                 for (int sc = sx0; sc < sx1 && sc < 16; sc++) {
                     uint8_t a = (sc & 1) ? (src_row[sc >> 1] >> 4) : (src_row[sc >> 1] & 0x0f);
-                    if (a > max_a) max_a = a;
+                    sum_a += a;
+                    cnt++;
                 }
             }
+            uint8_t max_a = cnt ? (uint8_t)((sum_a + cnt / 2u) / cnt) : 0;
 
             if (max_a == 15) {
                 fb[(uint32_t)py * stride + px] = fg;
@@ -513,14 +613,17 @@ static void render_serif_scaled_rgb565(uint16_t *fb, uint32_t stride_pixels, int
             if (sx1 > (int)src_w) sx1 = (int)src_w;
             if (sx1 <= sx0) sx1 = sx0 + 1;
 
-            uint8_t max_a = 0;
+            uint32_t sum_a = 0;
+            uint32_t cnt = 0;
             for (int sy = sy0; sy < sy1; sy++) {
                 const uint8_t *src_row = g_aa + sy * 8;
                 for (int sc = sx0; sc < sx1 && sc < 16; sc++) {
                     uint8_t a = (sc & 1) ? (src_row[sc >> 1] >> 4) : (src_row[sc >> 1] & 0x0f);
-                    if (a > max_a) max_a = a;
+                    sum_a += a;
+                    cnt++;
                 }
             }
+            uint8_t max_a = cnt ? (uint8_t)((sum_a + cnt / 2u) / cnt) : 0;
 
             if (max_a == 15) {
                 fb[(uint32_t)py * stride_pixels + px] = fg;
@@ -568,6 +671,48 @@ static void render_glyph_scaled_1bpp(const canvas1_t *c, int abs_x, int abs_y,
             }
             if (lit) {
                 canvas1_put_pixel(c, px, py);
+            }
+        }
+    }
+}
+
+static void render_1bpp_bilinear_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
+                                       int abs_x, int gy, const uint16_t *rows,
+                                       int src_w, int src_h, int scale, uint8_t fg) {
+    int dst_w = src_w * scale;
+    int dst_h = src_h * scale;
+    for (int dy = 0; dy < dst_h; dy++) {
+        int py = gy + dy;
+        if (py < 0 || py >= clip_h) continue;
+        uint8_t *dst = fb + (uint32_t)py * stride;
+        /* Center-aligned fixed-point Q8 source coordinate */
+        int sy_q8 = ((dy * 2 + 1) * src_h * 128) / dst_h - 128;
+        if (sy_q8 < 0) sy_q8 = 0;
+        int sy0 = sy_q8 >> 8;
+        int sy1 = (sy0 + 1 < src_h) ? sy0 + 1 : sy0;
+        uint32_t fy = (uint32_t)(sy_q8 & 0xFF);
+        uint16_t r0 = rows[sy0];
+        uint16_t r1 = rows[sy1];
+        for (int dx = 0; dx < dst_w; dx++) {
+            int px = abs_x + dx;
+            if (px < 0 || px >= clip_w) continue;
+            int sx_q8 = ((dx * 2 + 1) * src_w * 128) / dst_w - 128;
+            if (sx_q8 < 0) sx_q8 = 0;
+            int sx0 = sx_q8 >> 8;
+            int sx1 = (sx0 + 1 < src_w) ? sx0 + 1 : sx0;
+            uint32_t fx = (uint32_t)(sx_q8 & 0xFF);
+            uint32_t p00 = (r0 & (0x8000u >> sx0)) ? 255u : 0u;
+            uint32_t p10 = (r0 & (0x8000u >> sx1)) ? 255u : 0u;
+            uint32_t p01 = (r1 & (0x8000u >> sx0)) ? 255u : 0u;
+            uint32_t p11 = (r1 & (0x8000u >> sx1)) ? 255u : 0u;
+            uint32_t top = p00 * (256u - fx) + p10 * fx;
+            uint32_t bot = p01 * (256u - fx) + p11 * fx;
+            uint32_t cov = (top * (256u - fy) + bot * fy + 32768u) >> 16;
+            if (cov >= 255u) {
+                dst[px] = fg;
+            } else if (cov > 0u) {
+                uint32_t bg = dst[px];
+                dst[px] = (uint8_t)((fg * cov + bg * (255u - cov) + 127u) / 255u);
             }
         }
     }
@@ -854,15 +999,17 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
             if (scale > 1) {
                 int glyph_scale = (b->style == STYLE_SCRIPT || b->style == STYLE_SCRIPTSCRIPT) ? 1 : scale;
                 int gy = abs_y - g->bearing_y * glyph_scale;
-                for (int r = 0; r < g->h; r++) {
-                    uint16_t bits = g->rows[r];
-                    for (int col = 0; col < g->w; col++) {
-                        if (bits & (0x8000 >> col)) {
-                            for (int dy = 0; dy < glyph_scale; dy++) {
-                                int py = gy + r * glyph_scale + dy;
-                                if (py < 0 || py >= clip_h) continue;
-                                for (int dx = 0; dx < glyph_scale; dx++) {
-                                    int px = abs_x + col * glyph_scale + dx;
+                if (glyph_scale > 1) {
+                    render_1bpp_bilinear_gray8(fb, stride, clip_w, clip_h, abs_x, gy,
+                                               g->rows, g->w, g->h, glyph_scale, fg);
+                } else {
+                    for (int r = 0; r < g->h; r++) {
+                        uint16_t bits = g->rows[r];
+                        for (int col = 0; col < g->w; col++) {
+                            if (bits & (0x8000 >> col)) {
+                                int py = gy + r;
+                                if (py >= 0 && py < clip_h) {
+                                    int px = abs_x + col;
                                     if (px >= 0 && px < clip_w) {
                                         fb[(uint32_t)py * stride + px] = fg;
                                     }
@@ -902,12 +1049,28 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
 #if MATH_USE_HIDPI
             if (scale > 1) {
                 if (b->style == STYLE_SCRIPT) {
-                    font_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
-                                              abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false, italic);
+                    int dst_h = (32 * scale * 7 + 10) / 20;
+                    int dst_w = (font_noto_serif_char_width((char)b->u.ch.codepoint) * dst_h + 16) / 32;
+                    render_noto_serif_scaled_gray8(fb, stride, clip_w, clip_h,
+                                                   abs_x, abs_y, (char)b->u.ch.codepoint, fg,
+                                                   dst_w, dst_h, (24 * dst_h + 16) / 32, italic);
                 } else if (b->style == STYLE_SCRIPTSCRIPT) {
-                    render_serif_scaled_gray8(fb, stride, clip_w, clip_h,
-                                              abs_x, abs_y, (char)b->u.ch.codepoint, fg, bg,
-                                              b->w, 10, 8, italic);
+                    if (scale > 2) {
+                        int dst_h = (16 * scale + 1) / 2;
+                        int dst_w = (font_serif_char_width((char)b->u.ch.codepoint) * scale + 1) / 2;
+                        render_serif_scaled_gray8(fb, stride, clip_w, clip_h,
+                                                  abs_x, abs_y, (char)b->u.ch.codepoint, fg, bg,
+                                                  dst_w, dst_h, (12 * scale + 1) / 2, italic);
+                    } else {
+                        font_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
+                                                  abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false, italic);
+                    }
+                } else if (scale > 2) {
+                    int dst_h = (32 * scale + 1) / 2;
+                    int dst_w = (font_noto_serif_char_width((char)b->u.ch.codepoint) * scale + 1) / 2;
+                    render_noto_serif_scaled_gray8(fb, stride, clip_w, clip_h,
+                                                   abs_x, abs_y, (char)b->u.ch.codepoint, fg,
+                                                   dst_w, dst_h, (24 * scale + 1) / 2, italic);
                 } else {
                     font_noto_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
                                                    abs_x, abs_y - 24, (char)b->u.ch.codepoint, fg, bg, false, italic);
@@ -916,13 +1079,19 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
 #endif
             {
                 if (b->style == STYLE_SCRIPT) {
+                    int sw = (int)font_serif_char_width((char)b->u.ch.codepoint);
+                    int dst_w = (sw * 7 + 5) / 10;
+                    if (dst_w < 3) dst_w = 3;
                     render_serif_scaled_gray8(fb, stride, clip_w, clip_h,
                                               abs_x, abs_y, (char)b->u.ch.codepoint, fg, bg,
-                                              b->w, 10, 8, italic);
+                                              dst_w, 10, 8, italic);
                 } else if (b->style == STYLE_SCRIPTSCRIPT) {
+                    int sw = (int)font_serif_char_width((char)b->u.ch.codepoint);
+                    int dst_w = (sw * 5 + 5) / 10;
+                    if (dst_w < 2) dst_w = 2;
                     render_serif_scaled_gray8(fb, stride, clip_w, clip_h,
                                               abs_x, abs_y, (char)b->u.ch.codepoint, fg, bg,
-                                              b->w, 7, 5, italic);
+                                              dst_w, 7, 5, italic);
                 } else {
                     font_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
                                               abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false, italic);
@@ -1005,16 +1174,22 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
                          (b->u.bigop.op == BIGOP_PROD) ? 0x220F : 0x222B;
         const math_glyph_t *g = font_math_lookup(op_cp, (math_style_t)b->style);
         if (g && g->rows) {
+            int op_w = (int)g->advance * scale;
+            int op_x = (b->style == STYLE_DISPLAY && b->u.bigop.op != BIGOP_INT && b->w > op_w)
+                       ? abs_x + (b->w - op_w) / 2
+                       : abs_x;
             int gy = abs_y - g->bearing_y * scale;
-            for (int r = 0; r < g->h; r++) {
-                uint16_t bits = g->rows[r];
-                for (int col = 0; col < g->w; col++) {
-                    if (bits & (0x8000 >> col)) {
-                        for (int dy = 0; dy < scale; dy++) {
-                            int py = gy + r * scale + dy;
-                            if (py < 0 || py >= clip_h) continue;
-                            for (int dx = 0; dx < scale; dx++) {
-                                int px = abs_x + col * scale + dx;
+            if (scale > 1) {
+                render_1bpp_bilinear_gray8(fb, stride, clip_w, clip_h, op_x, gy,
+                                           g->rows, g->w, g->h, scale, fg);
+            } else {
+                for (int r = 0; r < g->h; r++) {
+                    uint16_t bits = g->rows[r];
+                    for (int col = 0; col < g->w; col++) {
+                        if (bits & (0x8000 >> col)) {
+                            int py = gy + r;
+                            if (py >= 0 && py < clip_h) {
+                                int px = op_x + col;
                                 if (px >= 0 && px < clip_w) {
                                     fb[(uint32_t)py * stride + px] = fg;
                                 }

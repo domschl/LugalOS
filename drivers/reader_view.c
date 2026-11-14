@@ -458,8 +458,12 @@ static bool reader_open_epub(reader_state_t *r, const char *path) {
     r->epub_md = md;
     r->epub_md_pages = md_pages;
     r->epub_md_len = out_len;
-    r->fullscreen = true; /* epub opens directly in distraction-free fullscreen */
+#if defined(TOUCH_PRESENT)
+    r->fullscreen = true; /* epub opens directly in distraction-free fullscreen on touch devices */
     if (!lcdterm_fullscreen()) console_hotkey(CONSOLE_HOTKEY_FULLSCREEN);
+#else
+    r->fullscreen = false;
+#endif
     if (book->title[0]) {
         strncpy(r->title, book->title, sizeof(r->title) - 1);
         r->title[sizeof(r->title) - 1] = '\0';
@@ -467,6 +471,8 @@ static bool reader_open_epub(reader_state_t *r, const char *path) {
     return true;
 }
 #endif
+
+static canvas1_t *get_reader_canvas(uint8_t rid);
 
 static bool reader_open_internal(uint8_t rid, const char *resource, bool push_history) {
     if (!resource || !*resource || rid >= READER_MAX_INSTANCES) return false;
@@ -533,8 +539,9 @@ static bool reader_open_internal(uint8_t rid, const char *resource, bool push_hi
 #endif
 
     if (!r->aa_buf) {
-        uint32_t aa_w = 1280u;
-        uint32_t aa_h = 1280u;
+        canvas1_t *c = get_reader_canvas(rid);
+        uint32_t aa_w = (c && c->w > 1280u) ? c->w : 1280u;
+        uint32_t aa_h = (c && c->h > 1280u) ? c->h : 1280u;
         uint32_t pages = (aa_w * aa_h + 4095u) / 4096u;
         r->aa_buf = (uint8_t *)palloc_pages_bulk(pages);
         if (r->aa_buf) {
@@ -1506,9 +1513,75 @@ static int rdraw_serif_text(const ugui_surface_t *rd, int x, int y, const char *
     return ugui_face_text(rd, READER_FACE, x, y, s, len, bold, italic, false);
 }
 
+static int rdraw_mono_cell_w(const ugui_surface_t *rd) {
+    if (READER_FACE && rd && rd->aa_fb) {
+        int cw = (READER_FACE->h + 1) / 2;
+        return cw > 0 ? cw : (READER_IS_HIDPI ? 16 : 8);
+    }
+    return READER_IS_HIDPI ? 16 : 8;
+}
+
+static int reader_math_scale(void) {
+#if defined(UGUI_TEXT_SIZES)
+    if (READER_FACE) {
+        int s = (READER_FACE->h + 8) / 16;
+        return s > 1 ? s : 1;
+    }
+#endif
+    return READER_IS_HIDPI ? 2 : 1;
+}
+
+static uint8_t noto_mono_aa_sample(const uint8_t *g, int sx, int sy) {
+    uint8_t pair = g[(sy * 8) + (sx >> 1)];
+    return (sx & 1) ? (uint8_t)(pair >> 4) : (uint8_t)(pair & 0x0Fu);
+}
+
 static void rdraw_mono_text(const ugui_surface_t *rd, int x, int y, const char *s, uint32_t len, int max_chars) {
     uint32_t n = 0;
     while (n < len && s[n] && (int)n < max_chars) n++;
+    if (READER_FACE && rd && rd->aa_fb) {
+        int ch = READER_FACE->h;
+        int cw = rdraw_mono_cell_w(rd);
+        uint32_t stride = rd->aa_stride;
+        for (uint32_t i = 0; i < n; i++) {
+            uint8_t code = (uint8_t)s[i];
+            if (code == ' ') continue;
+            const uint8_t *g = font_noto_mono_get_aa_glyph(code);
+            int gx = x + (int)i * cw;
+            for (int dy = 0; dy < ch; dy++) {
+                int py = y + dy;
+                if (py < 0 || py >= rd->h) continue;
+                uint8_t *dst = rd->aa_fb + (uint32_t)py * stride;
+                uint32_t sy_q8 = (uint32_t)(dy * FONT_NOTO_MONO_H * 256) / (uint32_t)ch;
+                int sy0 = (int)(sy_q8 >> 8);
+                uint32_t fy = sy_q8 & 0xFFu;
+                int sy1 = (sy0 + 1 < FONT_NOTO_MONO_H) ? sy0 + 1 : sy0;
+                for (int dx = 0; dx < cw; dx++) {
+                    int px = gx + dx;
+                    if (px < 0 || px >= rd->w) continue;
+                    uint32_t sx_q8 = (uint32_t)(dx * FONT_NOTO_MONO_W * 256) / (uint32_t)cw;
+                    int sx0 = (int)(sx_q8 >> 8);
+                    uint32_t fx = sx_q8 & 0xFFu;
+                    int sx1 = (sx0 + 1 < FONT_NOTO_MONO_W) ? sx0 + 1 : sx0;
+                    uint32_t a00 = noto_mono_aa_sample(g, sx0, sy0);
+                    uint32_t a10 = noto_mono_aa_sample(g, sx1, sy0);
+                    uint32_t a01 = noto_mono_aa_sample(g, sx0, sy1);
+                    uint32_t a11 = noto_mono_aa_sample(g, sx1, sy1);
+                    uint32_t a_top = a00 * (256u - fx) + a10 * fx;
+                    uint32_t a_bot = a01 * (256u - fx) + a11 * fx;
+                    uint32_t a_q16 = a_top * (256u - fy) + a_bot * fy;
+                    uint32_t cov = (a_q16 + 15u * 128u) / (15u * 256u);
+                    if (cov >= 255u) {
+                        dst[px] = READER_FG_GRAY8;
+                    } else if (cov > 0u) {
+                        uint32_t bg = dst[px];
+                        dst[px] = (uint8_t)((READER_FG_GRAY8 * cov + bg * (255u - cov) + 127u) / 255u);
+                    }
+                }
+            }
+        }
+        return;
+    }
     (void)ugui_text_mono(rd, x, y, s, n, false, false);
 }
 
@@ -1556,7 +1629,7 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
             math_arena_init(&arena, arena_buf, sizeof(arena_buf));
             math_box_t *box = latex_parse(mbuf, STYLE_TEXT, &arena);
             if (box) {
-                int base_scale = READER_IS_HIDPI ? 2 : 1;
+                int base_scale = reader_math_scale();
                 latex_layout(box, base_scale);
                 int math_w = box->w;
 
@@ -1622,13 +1695,9 @@ static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, i
             bool is_code_mono = ((span.style & MD_STYLE_CODE) != 0) &&
                                 !(READER_FACE && span_has_non_ascii(word_start, word_len));
             if (is_code_mono) {
-#if READER_IS_HIDPI
-                word_w = (unsigned)word_len * 16;
-                space_w = 16;
-#else
-                word_w = (unsigned)word_len * 8;
-                space_w = 8;
-#endif
+                unsigned cw = (unsigned)rdraw_mono_cell_w(rd);
+                word_w = (unsigned)word_len * cw;
+                space_w = cw;
             } else if (READER_FACE) {
                 word_w = (unsigned)ugui_face_width(rd, READER_FACE, word_start, (uint32_t)word_len);
                 space_w = (unsigned)ugui_face_width(rd, READER_FACE, " ", 1);
@@ -2219,7 +2288,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                         math_arena_t arena;
                         math_arena_init(&arena, arena_buf, sizeof(arena_buf));
                         math_box_t *box = latex_parse(md.text, STYLE_DISPLAY, &arena);
-                        int base_scale = READER_IS_HIDPI ? 2 : 1;
+                        int base_scale = reader_math_scale();
                         if (box) {
                             latex_layout(box, base_scale);
                             int math_w = box->w;
@@ -2240,12 +2309,13 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                             doc_y += total_h;
                         } else {
                             int line_len = strlen(md.text);
-                            int txt_w = line_len * (READER_IS_HIDPI ? 16 : 8);
+                            int cw = rdraw_mono_cell_w(&rd);
+                            int txt_w = line_len * cw;
                             int cx = margin_x + (max_w - txt_w) / 2;
                             if (cx < margin_x) cx = margin_x;
                             if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
                                 rdraw_fill(&rd, cx - 8, screen_y - 2, cx + txt_w + 8, screen_y + READER_LINE_H, 244, CANVAS1_GREY);
-                                rdraw_mono_text(&rd, cx, screen_y, md.text, line_len, max_w / (READER_IS_HIDPI ? 16 : 8));
+                                rdraw_mono_text(&rd, cx, screen_y, md.text, line_len, max_w / cw);
                             }
                             doc_y += READER_LINE_H + 8;
                         }
@@ -2253,26 +2323,19 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                     break;
 
                 case MD_LINE_CODE_TOGGLE:
-#if READER_IS_HIDPI
-                    doc_y += 16;
-#else
-                    doc_y += 8;
-#endif
+                    doc_y += (READER_FACE && rd.aa_fb) ? (READER_LINE_H / 2) : (READER_IS_HIDPI ? 16 : 8);
                     break;
 
-                case MD_LINE_CODE_TEXT:
-#if READER_IS_HIDPI
-                    if (screen_y + 32 >= 0 && screen_y < h) {
-                        rdraw_mono_text(&rd, margin_x + 16, screen_y, md.text, strlen(md.text), (max_w - 16) / 16);
+                case MD_LINE_CODE_TEXT: {
+                    int cw = rdraw_mono_cell_w(&rd);
+                    int pad_x = READER_IS_HIDPI ? 16 : 12;
+                    int code_h = (READER_FACE && rd.aa_fb) ? READER_LINE_H : (READER_IS_HIDPI ? 34 : 16);
+                    if (screen_y + code_h >= 0 && screen_y < h) {
+                        rdraw_mono_text(&rd, margin_x + pad_x, screen_y, md.text, strlen(md.text), (max_w - pad_x) / cw);
                     }
-                    doc_y += 34;
-#else
-                    if (screen_y + 16 >= 0 && screen_y < h) {
-                        rdraw_mono_text(&rd, margin_x + 12, screen_y, md.text, strlen(md.text), (max_w - 12) / 8);
-                    }
-                    doc_y += 16;
-#endif
+                    doc_y += code_h;
                     break;
+                }
 
                 case MD_LINE_GEM_LINK:
                     link_idx++;

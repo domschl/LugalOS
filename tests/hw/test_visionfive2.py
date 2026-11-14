@@ -97,11 +97,12 @@ def boot_board(
     with open(bin_path, "rb") as f:
         file_bytes = f.read()
 
+    sd_part = vf2run.detect_sd_part(ser)
     loaded_from_sd = False
     if method in ("auto", "sd"):
         out = vf2run.uboot_cmd(
             ser,
-            f"fatload mmc 1:1 0x{vf2run.LOAD_ADDR:08x} lugalos.bin",
+            f"fatload mmc 1:{sd_part} 0x{vf2run.LOAD_ADDR:08x} lugalos.bin",
             timeout_s=10.0,
             echo=echo,
         )
@@ -115,7 +116,7 @@ def boot_board(
         vf2run.load_via_ymodem(ser, file_bytes, vf2run.LOAD_ADDR)
         vf2run.uboot_cmd(
             ser,
-            f"fatwrite mmc 1:1 0x{vf2run.LOAD_ADDR:08x} lugalos.bin {len(file_bytes):x}",
+            f"fatwrite mmc 1:{sd_part} 0x{vf2run.LOAD_ADDR:08x} lugalos.bin {len(file_bytes):x}",
             timeout_s=20.0,
             echo=echo,
         )

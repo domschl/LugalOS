@@ -1321,20 +1321,25 @@ int fat32_init_quiet(fat32_fs_t *fs, block_dev_t *dev, bool quiet) {
 
     /* Check if LBA 0 is an MBR Master Boot Record with partition table at offset 0x1BE */
     if (sector[510] == 0x55 && sector[511] == 0xAA) {
-        uint8_t *part1 = &sector[0x01BE];
-        uint8_t part_type = part1[4];
-        uint32_t start_lba = (uint32_t)part1[8] | ((uint32_t)part1[9] << 8) |
-                             ((uint32_t)part1[10] << 16) | ((uint32_t)part1[11] << 24);
+        for (int i = 0; i < 4; i++) {
+            uint8_t *pe = &sector[0x01BE + i * 16];
+            uint8_t part_type = pe[4];
+            uint32_t start_lba = (uint32_t)pe[8] | ((uint32_t)pe[9] << 8) |
+                                 ((uint32_t)pe[10] << 16) | ((uint32_t)pe[11] << 24);
 
-        if ((part_type == 0x0B || part_type == 0x0C || part_type == 0x07 || part_type == 0x0E) && start_lba > 0 && start_lba < 0x0FFFFFFF) {
-            partition_lba = start_lba;
-            if (dev->read_blocks(dev, sector, partition_lba, 1) != 0) {
-                if (!quiet) printk("[FAT32] Device '%s': partition boot sector unreadable\n",
-                                   dev->name ? dev->name : "unknown");
-                return -1;
+            if ((part_type == 0x0B || part_type == 0x0C || part_type == 0x07 || part_type == 0x0E) &&
+                start_lba > 0 && start_lba < 0x0FFFFFFF) {
+                partition_lba = start_lba;
+                if (dev->read_blocks(dev, sector, partition_lba, 1) != 0) {
+                    if (!quiet) printk("[FAT32] Device '%s': partition boot sector unreadable\n",
+                                       dev->name ? dev->name : "unknown");
+                    return -1;
+                }
+                printk("[FAT32] Device '%s': Parsed MBR Partition %d at LBA %u (Type 0x%02X)\n",
+                       dev->name ? dev->name : "unknown", i + 1,
+                       (unsigned int)partition_lba, part_type);
+                break;
             }
-            printk("[FAT32] Device '%s': Parsed MBR Partition 1 at LBA %u (Type 0x%02X)\n",
-                   dev->name ? dev->name : "unknown", (unsigned int)partition_lba, part_type);
         }
     }
 

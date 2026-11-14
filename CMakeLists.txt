@@ -385,6 +385,15 @@ foreach(uprog ${USER_PROG_STAGED})
                 ${SD_STAGE}/system/bin/${uprog}.elf)
 endforeach()
 
+list(APPEND SD_STAGE_COMMANDS
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SD_STAGE}/fonts
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/NotoSerif-Regular.ttf
+            ${SD_STAGE}/fonts/NotoSerif-Regular.ttf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/Jomolhari-Regular.ttf
+            ${SD_STAGE}/fonts/Jomolhari-Regular.ttf)
+
 # Symbolic Computer Algebra System (CAS) library
 list(APPEND SD_STAGE_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/cas ${SD_STAGE}/cas)
@@ -468,6 +477,8 @@ add_custom_command(
             ${SD_ROOT_FILES}
             ${CAS_FILES}
             ${STORY_FILES}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/NotoSerif-Regular.ttf
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/fonts/Jomolhari-Regular.ttf
             uhello.elf uisolate.elf uspin.elf uargs.elf uchan.elf ubig.elf uwx.elf
     COMMENT "${FLASH_FS_COMMENT}"
 )

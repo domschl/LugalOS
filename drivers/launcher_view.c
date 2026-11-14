@@ -1006,11 +1006,16 @@ void launcher_update(void) {
 }
 
 bool launcher_open(void) {
-    /* Allocate AA buffer on PSRAM-equipped P4 boards if not yet allocated */
-#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_PSRAM_BYTES)
+    /* Allocate AA buffer on PSRAM-equipped P4 boards and VisionFive 2 if not yet allocated */
+#if (defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_PSRAM_BYTES)) || defined(CONFIG_BOARD_VISIONFIVE2)
     if (!s_launcher.aa_buf) {
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+        int max_w = 1920;
+        int max_h = 1280;
+#else
         int max_w = 1280;
         int max_h = 1280;
+#endif
         uint32_t bytes = (uint32_t)(max_w * max_h);
         uint32_t pages = (bytes + 4095u) / 4096u;
         uint8_t *buf = (uint8_t *)palloc_pages_bulk(pages);

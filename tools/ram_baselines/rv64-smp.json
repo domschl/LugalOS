@@ -26,6 +26,7 @@
     "drivers/flashdisk.c": 48,
     "drivers/font8x16.c": 3680,
     "drivers/font_math.c": 1920,
+    "drivers/font_noto_mono.c": 71776,
     "drivers/font_serif.c": 15328,
     "drivers/font_serif_faces.c": 36195,
     "drivers/gpio.c": 128,
@@ -190,7 +191,7 @@
     "chess": 46906,
     "clock-app": 616,
     "crypto": 4818,
-    "display": 180354,
+    "display": 252130,
     "drivers": 126515,
     "fs": 853,
     "httpd": 184,
@@ -209,6 +210,6 @@
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1444506,
-  "total": 8077471
+  "ram_code": 1448296,
+  "total": 8153037
 }

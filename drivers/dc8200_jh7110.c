@@ -1,5 +1,6 @@
 #include "drivers/dc8200_jh7110.h"
 #include "drivers/include/drivers/lcdterm.h"
+#include "drivers/view.h"
 #include "drivers/xhci.h"
 #include "drivers/hdmi_jh7110.h"
 #include "arch/jh7110_cache.h"
@@ -102,9 +103,21 @@ static uint8_t *g_t1;
 static uint8_t *g_t1_shadow[2];
 static uint32_t g_t1_bytes;
 static uint16_t g_lut565[256][8];
+static uint16_t g_gray565[256];
 static lcdterm_backend_t g_backend;
 static bool g_term_task_running = false;
 static bool g_term_dirty = false;
+/* Per-back-buffer tracking of composited GRAY8 view surfaces. guarded by: g_dc_lock */
+static int g_srf_nr[2];
+static uint8_t g_srf_tag[2][4];
+static uint32_t g_srf_seq[2][4];
+static int g_srf_x0[2][4], g_srf_y0[2][4], g_srf_x1[2][4], g_srf_y1[2][4];
+/* Per-back-buffer tracking of the screen overlay (title-bar menu, full-screen hint). guarded by: g_dc_lock */
+static bool g_ov_on[2];
+static int g_ov_x0[2], g_ov_y0[2], g_ov_x1[2], g_ov_y1[2];
+/* Cursor footprint restored on the back buffer by dc8200_cursor_restore(). guarded by: g_dc_lock */
+static int g_cur_restored_x0 = -1, g_cur_restored_x1 = -1;
+static int g_cur_restored_y0 = -1, g_cur_restored_y1 = -1;
 /* accepted: set by the console's pointer hook (any task), taken by the
  * pacer; a move seen a frame late is drawn a frame late. */
 static volatile bool g_cursor_moved;
@@ -136,6 +149,11 @@ static inline void dc_set_clear(uint32_t offset, uint32_t set_bits, uint32_t clr
 /* The pair the LUT maps to (drivers/paper.h). guarded by: g_dc_lock */
 static uint16_t g_fg = 0x0000, g_bg = 0xFFFF;
 
+static unsigned dc8200_ch8(uint16_t c, unsigned shift, unsigned bits) {
+    unsigned v = (c >> shift) & ((1u << bits) - 1u);
+    return bits == 5u ? (v << 3) | (v >> 2) : (v << 2) | (v >> 4);
+}
+
 static void dc8200_build_lut(uint16_t fg, uint16_t bg) {
     g_fg = fg;
     g_bg = bg;
@@ -143,6 +161,15 @@ static void dc8200_build_lut(uint16_t fg, uint16_t bg) {
         for (unsigned bit = 0; bit < 8u; bit++) {
             g_lut565[v][bit] = ((v >> bit) & 1u) ? fg : bg;
         }
+    }
+    unsigned ir = dc8200_ch8(fg, 11, 5), ig = dc8200_ch8(fg, 5, 6), ib = dc8200_ch8(fg, 0, 5);
+    unsigned pr = dc8200_ch8(bg, 11, 5), pg = dc8200_ch8(bg, 5, 6), pb = dc8200_ch8(bg, 0, 5);
+    if (ir + ig + ib > pr + pg + pb) { ir = ig = ib = 0; pr = pg = pb = 255; }
+    for (unsigned g = 0; g < 256u; g++) {
+        unsigned r = (ir * (255u - g) + pr * g) / 255u;
+        unsigned gr = (ig * (255u - g) + pg * g) / 255u;
+        unsigned b = (ib * (255u - g) + pb * g) / 255u;
+        g_gray565[g] = (uint16_t)(((r >> 3) << 11) | ((gr >> 2) << 5) | (b >> 3));
     }
 }
 
@@ -442,11 +469,21 @@ void jh7110_dc8200_test_pattern(void) {
 /* Ground-truth cursor erase: re-render 16x16 footprint directly from 1-bpp g_t1 */
 static void dc8200_cursor_restore(uint16_t *fb, unsigned fb_w, unsigned fb_h, int x, int y) {
     if (!g_t1 || !fb) return;
+    if (x + 15 < 0 || x >= (int)fb_w || y + 15 < 0 || y >= (int)fb_h) return;
     unsigned bytes_per_row = fb_w / 8u;
     int b_start = x < 0 ? 0 : x / 8;
     int b_end = (x + 15) / 8;
     if (b_end < 0) return;
     if ((unsigned)b_end >= bytes_per_row) b_end = (int)bytes_per_row - 1;
+    if (b_start > b_end) return;
+
+    /* Record the full byte-aligned horizontal span overwritten from g_t1 so
+     * jh7110_dc8200_flush() re-blits GRAY8 surfaces across all restored pixels. */
+    g_cur_restored_x0 = b_start * 8;
+    g_cur_restored_x1 = b_end * 8 + 7;
+    if (g_cur_restored_x1 >= (int)fb_w) g_cur_restored_x1 = (int)fb_w - 1;
+    g_cur_restored_y0 = y < 0 ? 0 : y;
+    g_cur_restored_y1 = (y + 15 >= (int)fb_h) ? (int)fb_h - 1 : y + 15;
 
     for (int r = 0; r < 16; r++) {
         int py = y + r;
@@ -475,6 +512,10 @@ static void jh7110_dc8200_flush(unsigned y0, unsigned y1) {
     ylock_acquire(&g_dc_lock);
 
     /* Restore background under cursor on back buffer before modifying lines */
+    g_cur_restored_x0 = -1;
+    g_cur_restored_x1 = -1;
+    g_cur_restored_y0 = -1;
+    g_cur_restored_y1 = -1;
     cursor_restore(g_state.back_fb, g_state.width, g_state.height);
 
     unsigned bytes_per_row = g_state.width / 8u;
@@ -484,6 +525,7 @@ static void jh7110_dc8200_flush(unsigned y0, unsigned y1) {
     bool force = g_force[b_idx];
     g_force[b_idx] = false;
     bool dirty = false;
+    unsigned t1_dy0 = g_state.height, t1_dy1 = 0;
 
     if (force) {
         g_dirty_y0[b_idx] = 0;
@@ -498,6 +540,8 @@ static void jh7110_dc8200_flush(unsigned y0, unsigned y1) {
         if (!force && memcmp(src, sh, bytes_per_row) == 0) continue;
         memcpy(sh, src, bytes_per_row);
         dirty = true;
+        if (y < t1_dy0) t1_dy0 = y;
+        if (y + 1 > t1_dy1) t1_dy1 = y + 1;
         if (y < g_dirty_y0[b_idx]) g_dirty_y0[b_idx] = y;
         if (y + 1 > g_dirty_y1[b_idx]) g_dirty_y1[b_idx] = y + 1;
 
@@ -511,6 +555,155 @@ static void jh7110_dc8200_flush(unsigned y0, unsigned y1) {
             d64_b[1] = s64[1];
         }
     }
+
+    /* Query current screen overlay (title-bar menu, full-screen hint/bars) */
+    int ox0 = 0, oy0 = 0, ox1 = -1, oy1 = -1;
+    bool ov = lcdterm_overlay_rect(&ox0, &oy0, &ox1, &oy1) &&
+              ox0 <= ox1 && oy0 <= oy1 &&
+              ox1 >= 0 && oy1 >= 0 &&
+              ox0 < (int)g_state.width && oy0 < (int)g_state.height;
+    if (ov) {
+        if (ox0 < 0) ox0 = 0;
+        if (oy0 < 0) oy0 = 0;
+        if (ox1 >= (int)g_state.width) ox1 = (int)g_state.width - 1;
+        if (oy1 >= (int)g_state.height) oy1 = (int)g_state.height - 1;
+    }
+    bool ov_changed = (ov != g_ov_on[b_idx]) ||
+                      (ov && (ox0 != g_ov_x0[b_idx] || oy0 != g_ov_y0[b_idx] ||
+                              ox1 != g_ov_x1[b_idx] || oy1 != g_ov_y1[b_idx]));
+    bool ov_gone = g_ov_on[b_idx] && (!ov || ov_changed);
+    bool srf_overlaps_ov = false;
+
+    /* Composite anti-aliased GRAY8 view surfaces (Reader, Launcher) over 1-bpp backing */
+    uint8_t rids[4];
+    int rx0[4], ry0[4], rx1[4], ry1[4];
+    int nr = lcdterm_get_visible_readers(rids, rx0, ry0, rx1, ry1, 4);
+    for (int i = 0; i < nr; i++) {
+        const view_ops_t *v = view_for_window(LCDTERM_VIEW_TYPE(rids[i]));
+        if (!v || !v->surface || !v->seq) continue;
+        uint32_t aa_stride = 0;
+        int aa_w = 0, aa_h = 0;
+        const uint8_t *aa_buf = v->surface(LCDTERM_VIEW_INST(rids[i]), &aa_stride, &aa_w, &aa_h);
+        uint32_t seq = v->seq(LCDTERM_VIEW_INST(rids[i]));
+        if (!aa_buf || aa_w <= 0 || aa_h <= 0) continue;
+
+        int sx0 = rx0[i], sy0 = ry0[i], sx1 = rx1[i], sy1 = ry1[i];
+        if (sx0 + aa_w - 1 < sx1) sx1 = sx0 + aa_w - 1;
+        if (sy0 + aa_h - 1 < sy1) sy1 = sy0 + aa_h - 1;
+        int cl_x0 = sx0 < 0 ? 0 : sx0;
+        int cl_y0 = sy0 < 0 ? 0 : sy0;
+        int cl_x1 = sx1 >= (int)g_state.width ? (int)g_state.width - 1 : sx1;
+        int cl_y1 = sy1 >= (int)g_state.height ? (int)g_state.height - 1 : sy1;
+        if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
+
+        bool srf_changed = force || i >= g_srf_nr[b_idx] ||
+                           g_srf_tag[b_idx][i] != rids[i] ||
+                           g_srf_seq[b_idx][i] != seq ||
+                           g_srf_x0[b_idx][i] != cl_x0 || g_srf_y0[b_idx][i] != cl_y0 ||
+                           g_srf_x1[b_idx][i] != cl_x1 || g_srf_y1[b_idx][i] != cl_y1;
+        bool t1_overlaps = (t1_dy0 < t1_dy1) &&
+                           ((int)t1_dy0 <= cl_y1) && ((int)t1_dy1 > cl_y0);
+        bool cur_overlaps = (g_cur_restored_y0 >= 0) &&
+                            (g_cur_restored_y0 <= cl_y1) && (g_cur_restored_y1 >= cl_y0) &&
+                            (g_cur_restored_x0 <= cl_x1) && (g_cur_restored_x1 >= cl_x0);
+        bool ov_gone_overlaps = ov_gone &&
+                                (g_ov_y0[b_idx] <= cl_y1) && (g_ov_y1[b_idx] >= cl_y0) &&
+                                (g_ov_x0[b_idx] <= cl_x1) && (g_ov_x1[b_idx] >= cl_x0);
+
+        if (srf_changed || t1_overlaps || cur_overlaps || ov_gone_overlaps) {
+            int blit_x0 = cl_x0, blit_x1 = cl_x1;
+            int blit_y0 = cl_y0, blit_y1 = cl_y1;
+            if (!srf_changed) {
+                int lo = cl_y1 + 1, hi = cl_y0 - 1;
+                if (t1_overlaps) {
+                    if ((int)t1_dy0 < lo) lo = (int)t1_dy0;
+                    if ((int)t1_dy1 - 1 > hi) hi = (int)t1_dy1 - 1;
+                }
+                if (cur_overlaps) {
+                    if (g_cur_restored_y0 < lo) lo = g_cur_restored_y0;
+                    if (g_cur_restored_y1 > hi) hi = g_cur_restored_y1;
+                }
+                if (ov_gone_overlaps) {
+                    if (g_ov_y0[b_idx] < lo) lo = g_ov_y0[b_idx];
+                    if (g_ov_y1[b_idx] > hi) hi = g_ov_y1[b_idx];
+                }
+                if (!t1_overlaps) {
+                    int xlo = cl_x1 + 1, xhi = cl_x0 - 1;
+                    if (cur_overlaps) {
+                        if (g_cur_restored_x0 < xlo) xlo = g_cur_restored_x0;
+                        if (g_cur_restored_x1 > xhi) xhi = g_cur_restored_x1;
+                    }
+                    if (ov_gone_overlaps) {
+                        if (g_ov_x0[b_idx] < xlo) xlo = g_ov_x0[b_idx];
+                        if (g_ov_x1[b_idx] > xhi) xhi = g_ov_x1[b_idx];
+                    }
+                    if (xlo > blit_x0) blit_x0 = xlo;
+                    if (xhi < blit_x1) blit_x1 = xhi;
+                }
+                if (lo > blit_y0) blit_y0 = lo;
+                if (hi < blit_y1) blit_y1 = hi;
+            }
+            int src_x_off = blit_x0 - sx0;
+            int blit_w = blit_x1 - blit_x0 + 1;
+            for (int y = blit_y0; y <= blit_y1; y++) {
+                const uint8_t *src_line = aa_buf + (uint32_t)(y - sy0) * aa_stride + src_x_off;
+                uint16_t *dst_line = &back[(uint32_t)y * g_state.width + (uint32_t)blit_x0];
+                int x = 0;
+                while (x + 4 <= blit_w && (((uintptr_t)(dst_line + x) & 7u) == 0)) {
+                    uint64_t p = (uint64_t)g_gray565[src_line[x]] |
+                                 ((uint64_t)g_gray565[src_line[x + 1]] << 16) |
+                                 ((uint64_t)g_gray565[src_line[x + 2]] << 32) |
+                                 ((uint64_t)g_gray565[src_line[x + 3]] << 48);
+                    *(uint64_t *)(dst_line + x) = p;
+                    x += 4;
+                }
+                for (; x < blit_w; x++) {
+                    dst_line[x] = g_gray565[src_line[x]];
+                }
+            }
+            if ((unsigned)blit_y0 < g_dirty_y0[b_idx]) g_dirty_y0[b_idx] = (unsigned)blit_y0;
+            if ((unsigned)(blit_y1 + 1) > g_dirty_y1[b_idx]) g_dirty_y1[b_idx] = (unsigned)(blit_y1 + 1);
+            if (srf_changed || t1_overlaps || ov_gone_overlaps) dirty = true;
+            if (ov && blit_x0 <= ox1 && blit_x1 >= ox0 && blit_y0 <= oy1 && blit_y1 >= oy0) {
+                srf_overlaps_ov = true;
+            }
+        }
+        g_srf_tag[b_idx][i] = rids[i];
+        g_srf_seq[b_idx][i] = seq;
+        g_srf_x0[b_idx][i] = cl_x0;
+        g_srf_y0[b_idx][i] = cl_y0;
+        g_srf_x1[b_idx][i] = cl_x1;
+        g_srf_y1[b_idx][i] = cl_y1;
+    }
+    g_srf_nr[b_idx] = nr;
+
+    /* Draw the screen overlay (title-bar menu, full-screen hint/bars) on top of surfaces */
+    if (ov) {
+        bool t1_overlaps_ov = (t1_dy0 < t1_dy1) && ((int)t1_dy0 <= oy1) && ((int)t1_dy1 > oy0);
+        bool cur_overlaps_ov = (g_cur_restored_y0 >= 0) &&
+                               (g_cur_restored_y0 <= oy1) && (g_cur_restored_y1 >= oy0) &&
+                               (g_cur_restored_x0 <= ox1) && (g_cur_restored_x1 >= ox0);
+        if (force || ov_changed || t1_overlaps_ov || cur_overlaps_ov || srf_overlaps_ov) {
+            for (int y = oy0; y <= oy1; y++) {
+                const uint8_t *src = &g_t1[(uint32_t)y * bytes_per_row];
+                uint16_t *dst_line = &back[(uint32_t)y * g_state.width];
+                for (int x = ox0; x <= ox1; x++) {
+                    dst_line[x] = g_lut565[src[x >> 3]][x & 7];
+                }
+            }
+            if ((unsigned)oy0 < g_dirty_y0[b_idx]) g_dirty_y0[b_idx] = (unsigned)oy0;
+            if ((unsigned)(oy1 + 1) > g_dirty_y1[b_idx]) g_dirty_y1[b_idx] = (unsigned)(oy1 + 1);
+            if (force || ov_changed || t1_overlaps_ov) dirty = true;
+        }
+    } else if (ov_gone) {
+        dirty = true;
+    }
+    g_ov_on[b_idx] = ov;
+    g_ov_x0[b_idx] = ox0;
+    g_ov_y0[b_idx] = oy0;
+    g_ov_x1[b_idx] = ox1;
+    g_ov_y1[b_idx] = oy1;
+
     if (dirty) {
         g_term_dirty = true;
     }
@@ -519,6 +712,9 @@ static void jh7110_dc8200_flush(unsigned y0, unsigned y1) {
 }
 
 static void jh7110_dc8200_sync_post(void) {
+    /* Let the 60 Hz pacer task flush and flip so callers on the views task
+     * never stall xhci_poll() or block on vblank via g_dc_lock. */
+    if (g_term_task_running) return;
     jh7110_dc8200_flush(0, g_state.height);
     if (g_term_dirty) {
         jh7110_dc8200_flip();
