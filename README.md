@@ -166,7 +166,7 @@ LugalOS maintains structured, in-depth documentation under [`doc/`](doc/):
 This project was implemented with the help of AI agents:
 
 - Anthropic Claude Code (mostly Opus 5.5)
-- Google Antigravity (mostly Gemini 3.8 Flash)
+- Google Antigravity (mostly Gemini 3.8 Flash, Gemini 4.0 Hydrogen)
 - Pi (Qwen3.8 Flash Next)
 
 ## License & Acknowledgments
