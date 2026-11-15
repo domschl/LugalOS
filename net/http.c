@@ -11,6 +11,8 @@
 #include "kernel/crypto.h"
 #include "kernel/identity.h"
 #include "kernel/palloc.h"
+#include "kernel/lock.h"
+#include "fs/vfs.h"
 #endif
 
 static bool has_ci_prefix(const char *s, const char *prefix) {
@@ -99,12 +101,55 @@ bool http_parse_url(const char *url, char *host, size_t host_sz,
 #if defined(CONFIG_TLS_CLIENT)
 typedef struct {
     tls_t   tls;
-    uint8_t rx[TLS_CLIENT_RX_MAX];
+    uint8_t rx[TLS_RECORD_MAX];
     uint8_t tx[TLS_TX_CAP];
     uint8_t ca[NODE_TLS_CA_LEN];
 } http_tls_conn_t;
 
 #define HTTP_TLS_PAGES ((sizeof(http_tls_conn_t) + 4095u) / 4096u)
+
+/* guarded by: g_roots_lock */
+static ylock_t g_roots_lock;
+static tls_trust_store_t g_roots_store;
+static bool g_roots_loaded;
+static bool g_roots_ok;
+
+static const tls_trust_store_t *http_default_trust_store(void) {
+    ylock_acquire(&g_roots_lock);
+    if (!g_roots_loaded) {
+        g_roots_loaded = true;
+        static const char *const paths[] = {
+            "/sd0/system/etc/ssl/roots.bin",
+            "/flash0/system/etc/ssl/roots.bin",
+        };
+        for (size_t i = 0; i < 2; i++) {
+            vfs_stat_t st;
+            if (vfs_stat(paths[i], &st) != 0 || st.is_dir || st.size < 8u || st.size > 262144u) {
+                continue;
+            }
+            uint32_t pages = (st.size + 4095u) / 4096u;
+            uint8_t *buf = (uint8_t *)palloc_pages_bulk(pages);
+            if (!buf) continue;
+            int fd = vfs_open(paths[i], VFS_O_READ);
+            uint32_t off = 0;
+            bool rd_ok = (fd >= 0);
+            while (rd_ok && off < st.size) {
+                int n = vfs_pread(fd, buf + off, st.size - off, off);
+                if (n <= 0) { rd_ok = false; break; }
+                off += (uint32_t)n;
+            }
+            if (fd >= 0) vfs_close(fd);
+            if (rd_ok && off == st.size && tls_trust_store_init(&g_roots_store, buf, st.size)) {
+                g_roots_ok = true;
+                break;
+            }
+            palloc_free(buf, pages);
+        }
+    }
+    const tls_trust_store_t *res = g_roots_ok ? &g_roots_store : NULL;
+    ylock_release(&g_roots_lock);
+    return res;
+}
 
 static int http_tls_recv(void *ctx, uint8_t *buf, uint32_t len) {
     tcp_stream_t *s = (tcp_stream_t *)ctx;
@@ -245,15 +290,19 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
             return -11;
         }
         const uint8_t *ca_ptr = NULL;
+        const tls_trust_store_t *store = NULL;
         if (req->tls_ca_pub) {
             memcpy(conn.tls_mem->ca, req->tls_ca_pub, NODE_TLS_CA_LEN);
             ca_ptr = conn.tls_mem->ca;
         } else if (node_tls_ca(conn.tls_mem->ca)) {
             ca_ptr = conn.tls_mem->ca;
-        } else if (!req->tls_insecure) {
-            conn_close(&conn);
-            if (err_out && err_sz > 0) strncpy(err_out, "No TLS CA installed (/dev/tlsca)", err_sz - 1);
-            return -11;
+        } else {
+            store = http_default_trust_store();
+            if (!store && !req->tls_insecure) {
+                conn_close(&conn);
+                if (err_out && err_sz > 0) strncpy(err_out, "No TLS CA installed (/dev/tlsca or roots.bin)", err_sz - 1);
+                return -11;
+            }
         }
         if (!tls_client_init(&conn.tls_mem->tls, host, ca_ptr, http_tls_recv, http_tls_send,
                              &conn.stream, conn.tls_mem->rx, sizeof(conn.tls_mem->rx),
@@ -262,7 +311,8 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
             if (err_out && err_sz > 0) strncpy(err_out, "TLS init failed", err_sz - 1);
             return -11;
         }
-        if (!ca_ptr && req->tls_insecure) tls_client_set_insecure(&conn.tls_mem->tls, true);
+        if (store) tls_client_set_trust_store(&conn.tls_mem->tls, store);
+        if (!ca_ptr && !store && req->tls_insecure) tls_client_set_insecure(&conn.tls_mem->tls, true);
         conn.tls_on = true;
         while (!tls_established(&conn.tls_mem->tls)) {
             uint8_t none[1];

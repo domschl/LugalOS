@@ -28,6 +28,9 @@ Guides for operating LugalOS interactively via terminals and serial consoles:
 * Computer Algebra System (CAS): Exact symbolic mathematics, canonical polynomial simplification, equation solving, series expansion, and plotting.
 * Environmental Sensors & Telemetry: Autonomous sensor node operation, I2C environmental telemetry (BME280/BMP280), and MQTT 3.1.1 publishing.
 * Z-Machine & Interactive Fiction: Playing Infocom and v3 stories, split-screen canvas auto-mapper, and save slot persistence.
+* Ribbon Reader & Spartan / Gemtext: Typographic Markdown/Gemtext viewer and spartand hypermedia server.
+* SSH-2 & Git Clients: Ed25519 keys, interactive SSH sessions, and Git over HTTP(S)/SSH.
+* MicroPython (mpy / python): Interactive REPL, soft-float math/json, uasyncio, urequests (HTTPS), mip, and lugal.* demos.
 
 ## 2. Administrator Manual
 
@@ -41,7 +44,7 @@ Guides for hardware provisioning, flashing, networking, and storage:
 * Storage & Filesystems: MicroSD FAT32 formatting, flashfs ROM disks, and RAM disks.
 * Updating Nodes over 9P: A/B partition updates, trial booting, and rollback.
 * HTTPS Certificates: Your own certificate authority (host/ca), a node's key and certificate, and trusting the root on each system.
-* Target Hardware & Board Reference Guides: Operational guides for ESP32-P4-LCD-7B, M5Stack Tab5, ESP32-C6, and RP2350.
+* Target Hardware & Board Reference Guides: Operational guides for VisionFive 2, ESP32-P4-LCD-7B, M5Stack Tab5, ESP32-C6, and RP2350.
 
 ## 3. System Programmer Manual
 
@@ -50,6 +53,7 @@ Guides for developing user-space applications and extending the LugalOS kernel:
 ### Part A: On-Device Application Development
 * C Programming on LugalOS: On-device compilation with chibicc, freestanding C subset (lugal.h), system call ABI, and ELF execution under PMP domains.
 * Lisp Scripting & Extensions: LugalOS Scheme/Lisp dialect, zero-SRAM builtins in Flash .rodata, standard library modules, macros, and CAS extensions.
+* Python Scripting (mpy): MicroPython v1.24.1 U-mode runtime, soft-float ABI, and API reference for lugal.*, machine, and socket.
 
 ### Part B: Kernel & Driver Architecture
 * Microkernel Architecture: Capability-style memory domains (PMP on NOMMU, Sv39 page tables on MMU), copy-always message channels (chan_t), and U-mode task isolation.
@@ -94,6 +98,6 @@ On a running LugalOS terminal or serial console:
 => cas.gmi Computer Algebra System (CAS)
 => sensors.gmi Environmental Sensors & Telemetry
 => zmachine.gmi Z-Machine & Interactive Fiction
-=> admin.gmi Administrator Manual
-=> presets.gmi Hardware Presets Matrix
-=> flashing.gmi Firmware Flashing Guide
+=> reader.gmi Ribbon Reader
+=> spartan.gmi Spartan / Gemtext
+=> ssh_and_git.gmi SSH-2 & Git Clients

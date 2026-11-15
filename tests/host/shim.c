@@ -129,6 +129,11 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     return 0;
 }
 
+__attribute__((weak)) bool vfs_volume_mounted(const char *path) {
+    (void)path;
+    return false;
+}
+
 __attribute__((weak)) int vfs_open(const char *path, int flags) {
     (void)flags;
     for (int i = 0; i < HOST_FILES; i++) {

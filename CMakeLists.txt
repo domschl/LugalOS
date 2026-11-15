@@ -391,6 +391,20 @@ set(MPY_GENHDR_OUT ${CMAKE_CURRENT_BINARY_DIR}/mpy_genhdr)
 file(GLOB MPY_PY_SOURCES CONFIGURE_DEPENDS "${MPY_DIR}/py/*.c")
 file(GLOB MPY_LIBM_SOURCES CONFIGURE_DEPENDS "${MPY_DIR}/lib/libm/*.c")
 list(REMOVE_ITEM MPY_LIBM_SOURCES "${MPY_DIR}/lib/libm/thumb_vfp_sqrtf.c")
+set(MPY_FROZEN_C ${MPY_GENHDR_OUT}/mpy_frozen_content.c)
+file(GLOB MPY_FROZEN_PY CONFIGURE_DEPENDS
+    "${MPY_DIR}/extmod/asyncio/*.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/frozen/*.py")
+add_custom_command(
+    OUTPUT ${MPY_FROZEN_C}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_mpy_frozen.py
+            --mpy-dir=${MPY_DIR}
+            --frozen-dir=${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/frozen
+            --out=${MPY_FROZEN_C}
+    DEPENDS ${MPY_FROZEN_PY}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_mpy_frozen.py
+    COMMENT "Generating MicroPython frozen stdlib")
+
 set(MPY_SOURCES
     ${MPY_PY_SOURCES}
     ${MPY_LIBM_SOURCES}
@@ -398,10 +412,12 @@ set(MPY_SOURCES
     ${MPY_DIR}/shared/runtime/pyexec.c
     ${MPY_DIR}/shared/runtime/stdout_helpers.c
     ${MPY_DIR}/shared/readline/readline.c
+    ${MPY_DIR}/extmod/modasyncio.c
     ${MPY_DIR}/extmod/modbinascii.c
     ${MPY_DIR}/extmod/modheapq.c
     ${MPY_DIR}/extmod/modjson.c
     ${MPY_DIR}/extmod/modrandom.c
+    ${MPY_DIR}/extmod/modselect.c
     ${MPY_DIR}/extmod/modtime.c
     ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/mphalport.c
     ${CMAKE_CURRENT_SOURCE_DIR}/user/mpy/modlugal.c
@@ -450,7 +466,7 @@ add_custom_command(
     COMMENT "Generating MicroPython headers (qstr/moduledefs/root_pointers)")
 add_custom_target(mpy_genhdr DEPENDS ${MPY_GENHDR_FILES})
 
-add_executable(mpy.elf ${MPY_SOURCES} ${ULIBC_SOURCES})
+add_executable(mpy.elf ${MPY_SOURCES} ${MPY_FROZEN_C} ${ULIBC_SOURCES})
 add_dependencies(mpy.elf mpy_genhdr)
 set(MPY_NOFP_FLAGS "")
 if(ARCH_MARCH MATCHES "^rv64gc")
@@ -867,6 +883,8 @@ set(SOURCES
     kernel/status_led.c
     kernel/svchost.c
     kernel/der.c
+    kernel/sha512.c
+    kernel/rsa.c
     kernel/x509.c
     kernel/tls_cert.c
     kernel/status_led_pattern.c

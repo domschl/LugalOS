@@ -204,6 +204,34 @@ def test_user_elf(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_micropython(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """MicroPython U-mode ELF: soft-float arithmetic and lugal.sensor."""
+    name = "MicroPython U-mode (mpy.elf)"
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            out = ""
+            for cmd, quiet in ((b"mpy -c print(1+2,1/2)\n", 1.5),
+                               (b"mpy -c exec(\"import\\x20lugal;print(lugal.sensor.list())\")\n", 1.5)):
+                ser.write(cmd)
+                ser.flush()
+                out += rp2350.drain(ser, quiet=quiet, deadline=30.0).decode("utf-8", "replace")
+
+        checks = [
+            ("soft-float print", "3 0.5" in out),
+            ("lugal.sensor.list", "['" in out),
+            ("mpy exited 0",     "mpy.elf' returned 0" in out),
+        ]
+        failed = [label for label, ok in checks if not ok]
+        if failed:
+            return (name, False, f"failed: {', '.join(failed)}\n{out[-600:]}")
+        return (name, True, "; ".join(label for label, _ in checks))
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def _io(ports: rp2350.Rp2350Ports):
     """(with_9p, console) for longnames.py and hello_ugui.py: 9P on ACM1,
     one shell line on ACM0 read until its prompt comes back."""
@@ -2515,7 +2543,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_long_names, test_hello_ugui, test_stacks_fullscreen, test_titlebar_menu, test_settings_app, test_launcher_faces, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_long_names, test_hello_ugui, test_stacks_fullscreen, test_titlebar_menu, test_settings_app, test_launcher_faces, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_micropython, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

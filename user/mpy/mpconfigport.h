@@ -44,6 +44,8 @@
 #define MICROPY_BANNER_MACHINE                  "LugalOS " MICROPY_HW_MCU_NAME
 
 /* Selected MIT extmod modules. */
+#define MICROPY_PY_ASYNCIO                      (1)
+#define MICROPY_PY_SELECT                       (1)
 #define MICROPY_PY_JSON                         (1)
 #define MICROPY_PY_RE                           (0)
 #define MICROPY_PY_BINASCII                     (1)
@@ -52,6 +54,8 @@
 #define MICROPY_PY_TIME                         (1)
 #define MICROPY_PY_TIME_TIME_NS                 (1)
 #define MICROPY_PY_TIME_GMTIME_LOCALTIME_MKTIME (0)
+
+#define MICROPY_MODULE_FROZEN_STR               (1)
 
 /* Minimal lexer file reader backed by LugalOS U-mode VFS syscalls. */
 #define MICROPY_READER_POSIX                    (0)

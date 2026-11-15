@@ -347,3 +347,72 @@ def launcher_by_mouse(session: Session) -> Result:
 
 GROUPS["launcher"] = ("the launcher's faces, shortcuts and files (drivers/launcher_view.c, drivers/shortcuts.c)",
                       [launcher_files_by_keys, launcher_rename_shortcut, launcher_500_entries, launcher_by_mouse])
+
+
+def python_smoke_and_repl(session):
+    name = "MicroPython: -c arithmetic/soft-float, python alias, and interactive REPL"
+    ok, log = session.send_and_expect('mpy -c print(1+2,1/2)', r"3 0\.5", timeout=10.0)
+    if not ok:
+        return name, False, log
+    ok, log = session.send_and_expect('python -c print(2**10)', r"1024", timeout=10.0)
+    if not ok:
+        return name, False, log
+    ok, log = session.send_and_expect("mpy", r">>>", timeout=10.0)
+    if not ok:
+        return name, False, log
+    ok, log = session.send_and_expect("print(6*7)", r"42", timeout=10.0)
+    if not ok:
+        return name, False, log
+    ok, log = session.send_and_expect("import sys; sys.exit(0)", r"returned 0", timeout=10.0)
+    if not ok:
+        return name, False, log
+    return name, True, ""
+
+
+def python_vfs_import_and_gc(session):
+    name = "MicroPython: VFS open/read/write, import from /sd0/lib/python, and GC stress"
+    cmd1 = (
+        'mpy -c exec("import\\x20os\\ntry:\\n\\tos.mkdir(\'/sd0/lib\')\\nexcept\\x20OSError:\\n\\tpass\\n'
+        'try:\\n\\tos.mkdir(\'/sd0/lib/python\')\\nexcept\\x20OSError:\\n\\tpass\\n'
+        'open(\'/sd0/lib/python/qmod.py\',\'w\').write(\'VAL=99\\\\n\')")'
+    )
+    ok, log = session.send_and_expect(cmd1, r"returned 0", timeout=12.0)
+    if not ok:
+        return name, False, log
+    cmd2 = (
+        'mpy -c exec("import\\x20gc,qmod\\n'
+        'b=[bytearray(512)\\x20for\\x20_\\x20in\\x20range(60)]\\ndel\\x20b\\ngc.collect()\\n'
+        'print(\'QMOD\',qmod.VAL)")'
+    )
+    ok, log = session.send_and_expect(cmd2, r"QMOD 99", timeout=12.0)
+    if not ok:
+        return name, False, log
+    return name, True, ""
+
+
+def python_lugal_and_asyncio(session):
+    name = "MicroPython: uasyncio, json, mip, urequests, lugal.sensor, lugal.canvas"
+    cmd1 = (
+        'mpy -c exec("import\\x20uasyncio,json,urequests,mip\\n'
+        'async\\x20def\\x20c():\\n\\tawait\\x20uasyncio.sleep_ms(5)\\n\\treturn\\x2077\\n'
+        'print(\'PY1\',uasyncio.run(c()),json.dumps([1,2]))")'
+    )
+    ok, log = session.send_and_expect(cmd1, r"PY1 77 \[1, 2\]", timeout=12.0)
+    if not ok:
+        return name, False, log
+    cmd2 = (
+        'mpy -c exec("import\\x20lugal\\ns=lugal.sensor.list()\\n'
+        'lugal.canvas.open()\\nlugal.canvas.fill(0)\\n'
+        'lugal.canvas.swap()\\nlugal.canvas.close()\\nprint(\'PY2\',len(s))")'
+    )
+    ok, log = session.send_and_expect(cmd2, r"PY2 \d+", timeout=12.0)
+    if not ok:
+        return name, False, log
+    ok, log = session.send_and_expect("mpy /sd0/demos/sensor_log.py", r'"seq": 4.*returned 0', timeout=15.0)
+    if not ok:
+        return name, False, log
+    return name, True, ""
+
+
+GROUPS["python"] = ("MicroPython U-mode ELF, frozen stdlib, VFS, GC, lugal.* (user/mpy/)",
+                    [python_smoke_and_repl, python_vfs_import_and_gc, python_lugal_and_asyncio])

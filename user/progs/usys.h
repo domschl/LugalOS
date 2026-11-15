@@ -37,6 +37,7 @@
 #define SYS_DELAY_US         24
 #define SYS_CHAN_SERVE_WAIT  25
 #define SYS_CHAN_SERVE_REPLY 26
+#define SYS_SLEEP_MS         28
 
 #define SYS_OPEN             100
 #define SYS_CLOSE            101
@@ -150,6 +151,12 @@ static inline void uyield(void) {
  * task's own pacing -- e.g. the heartbeat LED's on/off timing. */
 static inline long utime_ms(void) {
     return usyscall(SYS_TIME_MS, 0, 0, 0);
+}
+
+/* Sleep the calling task for `ms` milliseconds (capped at 60000 ms per call
+ * in arch/riscv/common/trap.c). */
+static inline void usleep_ms(long ms) {
+    (void)usyscall(SYS_SLEEP_MS, ms, 0, 0);
 }
 
 /* Busy-delays the calling task for `us` microseconds, run inside the

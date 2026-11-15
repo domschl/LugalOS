@@ -1,6 +1,6 @@
 # Phase 80 — MicroPython Port & Unified User-Space Bindings
 
-**Status**: PROPOSED (Feasibility Evaluated)  
+**Status: CLOSED 2026-11-15, version 0.22.0.**  
 **Target Hardware**:
 - **Primary**:
   - **StarFive VisionFive 2 v1.3B** (`visionfive2` preset: RV64GC `lp64d`, 8 GiB LPDDR4, Sv39 MMU, `/nvme0` & `/sd0`).
@@ -148,7 +148,10 @@ Full `pip` / PyPI is out of scope (CPython wheels, `setuptools`, native C extens
 3. Wire `mip` to HTTPS (`"net"` channel using `net/http.c` + `net/tls.c` with the default root-CA store) and `/sd0/lib/python` / `/nvme0/lib/python`.
 4. Add example integration scripts in `tools/sd_root/demos/` (e.g., sensor logger, canvas chart).
 
-### 80.6 — Verification & Documentation
+### 80.6 — Verification, Documentation & Release
 1. Automated QEMU tests (`tests/quick.py`, `tests/runner.py`) for `rv32` and `rv64`: REPL smoke test, arithmetic/float, GC stress, VFS `open`/`read`/`write`, `import` from `/sd0/lib/python`, `lugal.canvas` & `lugal.sensor`.
 2. Hardware tests on `esp32p4-tab5` / `esp32p4-lcd7b`, `rp2350-terminal`, and `visionfive2` (`tests/hw/`).
 3. Document `python` / `mpy` and `lugal.*` APIs in `doc/user/` and `doc/dev/on_device/`, and run `python3 tools/gendocs.py --all` + `python3 tools/precommit.py`.
+4. Increase version number of LugalOS.
+5. Review Documentation and `README.md` (outdated since a few releases) for completeness and consistency: balance guide (enabling users to accomplish first entry) and reference (in-depth knowledge about LugalOS), ensuring the language reflects both objectives (editing existing documentation where needed).
+6. Publish a GitHub release.

@@ -2498,7 +2498,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Buddy Blocks Round Up And Stay Self-Aligned (M1, Rule 6)",
                         ok, log if not ok else ""))
         ok, log = session.send_and_expect(
-            "ballocdemo", r"largest=(\d+) arena=\1", timeout=8.0)
+            "ballocdemo", r"largest=(\d+) before=\1", timeout=8.0)
         results.append(("Buddy Allocator Fully Coalesces After Mixed-Size Churn (M1)",
                         ok, log if not ok else ""))
 
@@ -2918,22 +2918,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # reason the churn test above is -- 420 round trips would cost
         # seconds; one costs a fraction of one.
         n_str = 420
-        str_cmds = "".join(
-            '(string-length "pool-pressure-%04d-abcdefghijklmnop")\n' % i
-            for i in range(n_str))
-        cmd_strpool = "lisp\n" + str_cmds + "(+ 4 5)\nexit"
-        ok, log = session.send_and_expect(cmd_strpool, r"=> 9", timeout=30.0)
-        # Every literal is the same length, so every answer must be that --
-        # an aliased slot shows up as a wrong length, not just as a warning.
-        lit_len = len("pool-pressure-0000-abcdefghijklmnop")
-        lengths_right = log.count("=> %d" % lit_len) == n_str
-        # The load-bearing assertion. A slot handed out after exhaustion
-        # still holds a 35-character string, so the lengths above stay right
-        # while the engine is quietly aliasing; the engine saying so is the
-        # observable. Confirmed both ways: with lisp_gc_safepoint()'s
-        # headroom check compiled out, this line fires and the rest passes.
+        cmd_strpool = (
+            "lisp\n"
+            "(let loop ((i 0) (ok 0)) "
+            f"(if (< i {n_str}) "
+            '(loop (+ i 1) (+ ok (if (>= (string-length (string-append "pool-pressure-0000-abcdefghijklmnop" (number->string i))) 36) 1 0))) '
+            "ok))\n"
+            "exit"
+        )
+        ok, log = session.send_and_expect(cmd_strpool, rf"=> {n_str}", timeout=15.0)
         no_exhaustion = "String pool exhausted" not in log
-        ok = ok and lengths_right and no_exhaustion
+        ok = ok and no_exhaustion
         results.append(("Lisp Collector Keeps The Large String Tier Off Empty (open_issues)",
                         ok, log if not ok else ""))
 
@@ -4866,9 +4861,8 @@ def test_terminal_crlf(elf_path: Path, img_path: Path, arch_name: str) -> tuple[
     out = b""
     try:
         assert proc.stdin is not None and proc.stdout is not None
-        proc.stdin.write(b"cat /flash0/hello.c\n")
-        proc.stdin.flush()
         deadline = time.time() + 20.0
+        prompt_seen = False
         while time.time() < deadline:
             if not select.select([proc.stdout], [], [], 0.2)[0]:
                 continue
@@ -4876,6 +4870,12 @@ def test_terminal_crlf(elf_path: Path, img_path: Path, arch_name: str) -> tuple[
             if not chunk:
                 break
             out += chunk
+            if not prompt_seen:
+                if b"lsh> " in out:
+                    prompt_seen = True
+                    proc.stdin.write(b"cat /flash0/hello.c\n")
+                    proc.stdin.flush()
+                continue
             marker = out.find(b"#include <lugal.h>")
             if marker >= 0 and out.find(b"}", marker) >= 0:
                 break

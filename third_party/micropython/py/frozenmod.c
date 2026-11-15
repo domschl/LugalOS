@@ -74,7 +74,7 @@ mp_import_stat_t mp_find_frozen_module(const char *str, int *frozen_type, void *
 
     // Count the number of str lengths we have to find how many str entries.
     size_t num_str = 0;
-    #if MICROPY_MODULE_FROZEN_STR && MICROPY_MODULE_FROZEN_MPY
+    #if MICROPY_MODULE_FROZEN_STR
     for (const uint32_t *s = mp_frozen_str_sizes; *s != 0; ++s) {
         ++num_str;
     }

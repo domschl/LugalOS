@@ -276,6 +276,7 @@ DOC_MAPPINGS: dict[str, str] = {
     "doc/user/reader.md": "tools/sd_root/help/reader.gmi",
     "doc/user/spartan.md": "tools/sd_root/help/spartan.gmi",
     "doc/user/ssh_and_git.md": "tools/sd_root/help/ssh_and_git.gmi",
+    "doc/user/python.md": "tools/sd_root/help/python.gmi",
 
     # Administrator Manual Chapters
     "doc/admin/presets.md": "tools/sd_root/help/presets.gmi",
@@ -298,6 +299,7 @@ DOC_MAPPINGS: dict[str, str] = {
     # On-Device System Programming Chapters
     "doc/dev/on_device/c_programming.md": "tools/sd_root/help/c_programming.gmi",
     "doc/dev/on_device/lisp_scripting.md": "tools/sd_root/help/lisp.gmi",
+    "doc/dev/on_device/python_scripting.md": "tools/sd_root/help/python_scripting.gmi",
 }
 
 

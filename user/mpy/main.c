@@ -18,12 +18,15 @@ static uint8_t g_gc_heap[MPY_GC_HEAP_BYTES] __attribute__((aligned(16)));
 static void init_sys_paths_and_argv(int argc, char **argv) {
 #if MICROPY_PY_SYS_PATH
     mp_obj_list_t *path = MP_OBJ_TO_PTR(mp_sys_path);
+    mp_obj_list_append(MP_OBJ_FROM_PTR(path), MP_OBJ_NEW_QSTR(MP_QSTR__dot_frozen));
+    mp_obj_list_append(MP_OBJ_FROM_PTR(path), MP_OBJ_NEW_QSTR(MP_QSTR__slash_nvme0_slash_lib_slash_python));
     mp_obj_list_append(MP_OBJ_FROM_PTR(path), MP_OBJ_NEW_QSTR(MP_QSTR__slash_sd0_slash_lib_slash_python));
     mp_obj_list_append(MP_OBJ_FROM_PTR(path), MP_OBJ_NEW_QSTR(MP_QSTR__slash_flash0_slash_lib_slash_python));
 #endif
 #if MICROPY_PY_SYS_ARGV
     mp_obj_list_t *argv_list = MP_OBJ_TO_PTR(mp_sys_argv);
-    for (int i = 0; i < argc; i++) {
+    int start = (argc >= 3 && strcmp(argv[1], "-m") == 0) ? 2 : 0;
+    for (int i = start; i < argc; i++) {
         mp_obj_list_append(MP_OBJ_FROM_PTR(argv_list), mp_obj_new_str(argv[i], strlen(argv[i])));
     }
 #else
@@ -60,11 +63,17 @@ int main(int argc, char **argv) {
     int rc = 0;
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
         rc = run_str(argv[2]);
+    } else if (argc >= 3 && strcmp(argv[1], "-m") == 0) {
+        char code[192];
+        snprintf(code, sizeof(code),
+                 "import %s as _m\nif hasattr(_m, 'main'): _m.main()\n",
+                 argv[2]);
+        rc = run_str(code);
     } else if (argc >= 2 && argv[1][0] != '-') {
         int ok = pyexec_file(argv[1]);
         rc = ok ? 0 : 1;
     } else if (argc >= 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
-        printf("usage: mpy [-c \"code\" | script.py [args...]]\n");
+        printf("usage: mpy [-c \"code\" | -m module [args...] | script.py [args...]]\n");
     } else {
         pyexec_friendly_repl();
     }

@@ -5,6 +5,8 @@
 #include "kernel/crypto.h"
 #include "kernel/der.h"
 #include "kernel/random.h"
+#include "kernel/rsa.h"
+#include "kernel/sha512.h"
 #include "kernel/tls_cert.h"
 #include <string.h>
 
@@ -46,9 +48,12 @@ enum { ST_HELLO, ST_WAIT_FIN, ST_OPEN, ST_CLOSED, ST_FAILED, ST_C_EE, ST_C_CERT,
 #define AL_PROTOCOL_VER    70
 #define AL_INTERNAL        80
 
-#define SUITE_CHACHA   0x1303u
-#define GROUP_X25519   0x001du
-#define SIG_ECDSA_P256 0x0403u
+#define SUITE_CHACHA            0x1303u
+#define GROUP_X25519            0x001du
+#define SIG_ECDSA_P256          0x0403u
+#define SIG_RSA_PSS_RSAE_SHA256 0x0804u
+#define SIG_RSA_PSS_RSAE_SHA384 0x0805u
+#define SIG_RSA_PSS_RSAE_SHA512 0x0806u
 
 /* §4.1.3: the random of a HelloRetryRequest, SHA-256("HelloRetryRequest"). */
 static const uint8_t HRR_RANDOM[32] = {
@@ -639,7 +644,12 @@ static uint32_t client_hello_msg(tls_t *t, uint8_t *out, uint32_t cap, const uin
     put_u16(out + o, EXT_MAX_FRAGMENT_LEN); put_u16(out + o + 2, 1); out[o + 4] = 4; o += 5;   /* 2^12 */
     put_u16(out + o, EXT_SUPPORTED_VERSIONS); put_u16(out + o + 2, 3); out[o + 4] = 2; put_u16(out + o + 5, 0x0304); o += 7;
     put_u16(out + o, EXT_SUPPORTED_GROUPS); put_u16(out + o + 2, 4); put_u16(out + o + 4, 2); put_u16(out + o + 6, GROUP_X25519); o += 8;
-    put_u16(out + o, EXT_SIG_ALGS); put_u16(out + o + 2, 4); put_u16(out + o + 4, 2); put_u16(out + o + 6, SIG_ECDSA_P256); o += 8;
+    put_u16(out + o, EXT_SIG_ALGS); put_u16(out + o + 2, 10); put_u16(out + o + 4, 8);
+    put_u16(out + o + 6, SIG_ECDSA_P256);
+    put_u16(out + o + 8, SIG_RSA_PSS_RSAE_SHA256);
+    put_u16(out + o + 10, SIG_RSA_PSS_RSAE_SHA384);
+    put_u16(out + o + 12, SIG_RSA_PSS_RSAE_SHA512);
+    o += 14;
     put_u16(out + o, EXT_KEY_SHARE); put_u16(out + o + 2, 38); put_u16(out + o + 4, 36);
     put_u16(out + o + 6, GROUP_X25519); put_u16(out + o + 8, 32); memcpy(out + o + 10, pub, 32); o += 42;
     put_u16(out + ext_at, o - ext_at - 2);
@@ -667,6 +677,10 @@ bool tls_client_init(tls_t *t, const char *host, const uint8_t ca_pub[64],
 
 void tls_client_set_insecure(tls_t *t, bool allow) {
     if (t) t->allow_unverified = allow;
+}
+
+void tls_client_set_trust_store(tls_t *t, const tls_trust_store_t *store) {
+    if (t) t->trust_store = store;
 }
 
 /* §4.1.3. Derives the handshake secrets and keys, and keeps the master secret for after the server's
@@ -738,8 +752,7 @@ static int enc_ext_in(tls_t *t, const uint8_t *m, uint32_t n) {
     return 0;
 }
 
-/* §4.4.2: the leaf is the first entry; it must come from our CA and name the host. The rest of the
- * chain is not needed: the CA issues leaves directly. */
+/* §4.4.2: leaf is first, intermediates follow; verify chain against ca_pub or trust_store. */
 static int certificate_in(tls_t *t, const uint8_t *m, uint32_t n) {
     span_t r = { m + 4, n - 4 }, ctx, list;
     uint32_t l;
@@ -747,19 +760,44 @@ static int certificate_in(tls_t *t, const uint8_t *m, uint32_t n) {
     l = (uint32_t)r.p[0] << 16 | (uint32_t)r.p[1] << 8 | r.p[2];
     r.p += 3; r.n -= 3;
     if (!rd_bytes(&r, l, &list) || r.n != 0 || list.n < 3) return fail(t, AL_DECODE);
-    uint32_t cl = (uint32_t)list.p[0] << 16 | (uint32_t)list.p[1] << 8 | list.p[2];
-    if (cl == 0 || cl > list.n - 3) return fail(t, AL_DECODE);
+
+    const uint8_t *ders[8];
+    uint32_t lens[8];
+    uint32_t cnt = 0;
+    while (list.n >= 3 && cnt < 8u) {
+        uint32_t cl = (uint32_t)list.p[0] << 16 | (uint32_t)list.p[1] << 8 | list.p[2];
+        list.p += 3; list.n -= 3;
+        if (cl == 0 || cl > list.n) return fail(t, AL_DECODE);
+        ders[cnt] = list.p;
+        lens[cnt] = cl;
+        cnt++;
+        list.p += cl; list.n -= cl;
+        span_t cext;
+        if (!rd_vec16(&list, &cext)) return fail(t, AL_DECODE);
+    }
+    if (cnt == 0) return fail(t, AL_DECODE);
+
     tls_cert_info_t ci;
     int rc;
-    if (t->ca_pub) {
-        rc = tls_cert_check(list.p + 3, cl, t->ca_pub, t->host, &ci);
+    if (t->ca_pub || t->trust_store) {
+        rc = tls_cert_check_chain(ders, lens, cnt, t->ca_pub, t->trust_store, t->host, &ci);
     } else if (t->allow_unverified) {
-        rc = tls_cert_parse(list.p + 3, cl, &ci);
+        rc = tls_cert_parse(ders[0], lens[0], &ci);
     } else {
         rc = TLS_ERR_CERT;
     }
     if (rc != TLS_OK) return fail(t, AL_BAD_CERT);
-    memcpy(t->peer_pub, ci.pub, 64);
+    t->peer_key_type = ci.key_type;
+    if (ci.key_type == TLS_KEY_P256) {
+        memcpy(t->peer_pub, ci.pub, 64);
+    } else if (ci.key_type == TLS_KEY_RSA) {
+        t->peer_rsa_n_len = ci.rsa_n_len;
+        t->peer_rsa_e_len = ci.rsa_e_len;
+        memcpy(t->peer_rsa_n, ci.rsa_n, ci.rsa_n_len);
+        memcpy(t->peer_rsa_e, ci.rsa_e, ci.rsa_e_len);
+    } else {
+        return fail(t, AL_BAD_CERT);
+    }
     sha256_update(&t->transcript, m, n);
     t->st = ST_C_CV;
     return 0;
@@ -770,25 +808,51 @@ static int cert_verify_in(tls_t *t, const uint8_t *m, uint32_t n) {
     span_t r = { m + 4, n - 4 }, sigv;
     uint32_t alg;
     if (!rd_u16(&r, &alg) || !rd_vec16(&r, &sigv) || r.n != 0) return fail(t, AL_DECODE);
-    if (alg != SIG_ECDSA_P256) return fail(t, AL_ILLEGAL_PARAM);
-    der_span_t in = { sigv.p, sigv.n }, seq, ri, si;
-    uint8_t sig[64];
-    if (!der_expect(&in, DER_SEQUENCE, &seq) || !der_expect(&seq, DER_INTEGER, &ri) ||
-        !der_expect(&seq, DER_INTEGER, &si)) return fail(t, AL_DECODE);
-    for (int k = 0; k < 2; k++) {
-        der_span_t v = k ? si : ri;
-        while (v.len > 0 && v.p[0] == 0) { v.p++; v.len--; }
-        if (v.len > 32) return fail(t, AL_DECODE);
-        memset(sig + 32 * k, 0, 32);
-        memcpy(sig + 32 * k + 32 - v.len, v.p, v.len);
-    }
-    uint8_t content[64 + 33 + 1 + 32], h[32];
+
+    uint8_t content[64 + 33 + 1 + 32];
     memset(content, 0x20, 64);
     memcpy(content + 64, "TLS 1.3, server CertificateVerify", 33);
     content[97] = 0;
     transcript_hash(t, content + 98);
-    sha256(content, sizeof content, h);
-    if (p256_verify(sig, t->peer_pub, h, 32) != CRYPTO_OK) return fail(t, AL_DECRYPT);
+
+    if (t->peer_key_type == TLS_KEY_P256) {
+        if (alg != SIG_ECDSA_P256) return fail(t, AL_ILLEGAL_PARAM);
+        der_span_t in = { sigv.p, sigv.n }, seq, ri, si;
+        uint8_t sig[64];
+        if (!der_expect(&in, DER_SEQUENCE, &seq) || !der_expect(&seq, DER_INTEGER, &ri) ||
+            !der_expect(&seq, DER_INTEGER, &si)) return fail(t, AL_DECODE);
+        for (int k = 0; k < 2; k++) {
+            der_span_t v = k ? si : ri;
+            while (v.len > 0 && v.p[0] == 0) { v.p++; v.len--; }
+            if (v.len > 32) return fail(t, AL_DECODE);
+            memset(sig + 32 * k, 0, 32);
+            memcpy(sig + 32 * k + 32 - v.len, v.p, v.len);
+        }
+        uint8_t h[32];
+        sha256(content, sizeof content, h);
+        if (p256_verify(sig, t->peer_pub, h, 32) != CRYPTO_OK) return fail(t, AL_DECRYPT);
+    } else if (t->peer_key_type == TLS_KEY_RSA) {
+        int hash_alg;
+        uint8_t h[64];
+        uint32_t hlen;
+        if (alg == SIG_RSA_PSS_RSAE_SHA256) {
+            hash_alg = RSA_HASH_SHA256; hlen = 32u; sha256(content, sizeof content, h);
+        } else if (alg == SIG_RSA_PSS_RSAE_SHA384) {
+            hash_alg = RSA_HASH_SHA384; hlen = 48u; sha384(content, sizeof content, h);
+        } else if (alg == SIG_RSA_PSS_RSAE_SHA512) {
+            hash_alg = RSA_HASH_SHA512; hlen = 64u; sha512(content, sizeof content, h);
+        } else {
+            return fail(t, AL_ILLEGAL_PARAM);
+        }
+        if (!rsa_verify_pss(t->peer_rsa_n, t->peer_rsa_n_len,
+                            t->peer_rsa_e, t->peer_rsa_e_len,
+                            hash_alg, h, hlen, sigv.p, sigv.n)) {
+            return fail(t, AL_DECRYPT);
+        }
+    } else {
+        return fail(t, AL_INTERNAL);
+    }
+
     sha256_update(&t->transcript, m, n);
     t->st = ST_C_FIN;
     return 0;

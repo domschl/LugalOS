@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "kernel/sha256.h"
+#include "kernel/tls_cert.h"
 
 /* A TLS 1.3 server (RFC 8446), the part a node's HTTPS needs and no more, and a client for the node's
  * own connections out (MQTT to a broker, 66.3b):
@@ -65,9 +66,15 @@ typedef struct {
     bool     mfl_ok;                           /* the server took max_fragment_length */
     bool     allow_unverified;                 /* explicit opt-in when ca_pub is NULL */
     const uint8_t *ca_pub;                     /* 64 bytes: the CA the server's certificate must come from */
+    const tls_trust_store_t *trust_store;      /* optional root-CA bundle when ca_pub is NULL */
     const char *host;                          /* the name or dotted address the certificate must carry */
     uint8_t  eph[32];                          /* our X25519 secret, until the ServerHello */
-    uint8_t  peer_pub[64];                     /* the server's key, from its certificate */
+    uint8_t  peer_key_type;                    /* TLS_KEY_P256 or TLS_KEY_RSA */
+    uint8_t  peer_rsa_e_len;
+    uint16_t peer_rsa_n_len;
+    uint8_t  peer_pub[64];                     /* the server's P-256 key, from its certificate */
+    uint8_t  peer_rsa_n[512];
+    uint8_t  peer_rsa_e[8];
     uint8_t  master[32];                       /* until the server's Finished */
 } tls_t;
 
@@ -81,6 +88,7 @@ void tls_server_init(tls_t *t, const uint8_t *cert, uint32_t cert_len, const uin
 bool tls_client_init(tls_t *t, const char *host, const uint8_t ca_pub[64],
                      tls_recv_fn recv, tls_send_fn send, void *io, uint8_t *rx, uint32_t rx_cap, uint8_t *tx);
 void tls_client_set_insecure(tls_t *t, bool allow);
+void tls_client_set_trust_store(tls_t *t, const tls_trust_store_t *store);
 
 /* Runs the handshake as bytes arrive, then returns application data: bytes copied into `buf`, 0 when
  * none is ready yet, TLS_EOF or TLS_FAIL. */

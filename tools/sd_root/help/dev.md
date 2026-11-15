@@ -14,7 +14,8 @@ Welcome to the **LugalOS System Programmer Manual**. This guide provides compreh
 doc/dev/
 |-- on_device/          # Part A: User-Space Application Development
 |   |-- c_programming.md   # C11 programming with chibicc, lugal.h, syscall ABI, ELF
-|   \-- lisp_scripting.md  # Lisp machine runtime, zero-SRAM builtins, stdlib, CAS
+|   |-- lisp_scripting.md  # Lisp machine runtime, zero-SRAM builtins, stdlib, CAS
+|   \-- python_scripting.md # MicroPython v1.24.1, lugal.*, machine, socket, soft-float ABI
 |-- kernel/             # Part B: LugalOS Kernel & Driver Architecture
 |   |-- architecture.md    # Microkernel model, domains, channels, build layers, memory rules
 |   |-- scheduler.md       # Priority tiers, preemption, lock hand-off, SMP, service host
@@ -38,6 +39,7 @@ doc/dev/
 ## 1. [Part A: On-Device Application Development](c_programming.md)
 * **[C Programming on LugalOS](c_programming.md)**: Writing native C programs compiled either on the host or directly on the device using `chibicc`. Covers `lugal.h`, available standard library functions, process arguments, and U-mode memory confinement.
 * **[Lisp Scripting & Language Extensions](lisp.md)**: LugalOS Lisp language reference, special forms, zero-SRAM builtins in Flash `.rodata`, modular packages (`seq`, `dict`, `matrix`), and scripting the CAS.
+* **[Python Scripting (`mpy`)](python_scripting.md)**: MicroPython v1.24.1 U-mode runtime, soft-float integer ABI, and API reference for `lugal.sensor`, `lugal.canvas`, `lugal.ui`, `lugal.chan`, `lugal.http_request`, `machine`, and `socket`.
 
 ---
 

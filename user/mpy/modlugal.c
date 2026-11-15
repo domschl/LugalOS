@@ -1,5 +1,6 @@
 #include "py/obj.h"
 #include "py/runtime.h"
+#include "py/mperrno.h"
 #include "liblugal.h"
 
 #include <string.h>
@@ -532,14 +533,75 @@ static const mp_obj_module_t mp_module_lugal_ui = {
     .globals = (mp_obj_dict_t *)&ui_module_globals,
 };
 
+static mp_obj_t lugal_http_request(mp_obj_t method_obj, mp_obj_t url_obj) {
+    size_t mlen, ulen;
+    const char *method = mp_obj_str_get_data(method_obj, &mlen);
+    const char *url = mp_obj_str_get_data(url_obj, &ulen);
+    if (mlen == 0 || mlen > 15 || ulen == 0 || ulen > 255 || (4u + mlen + ulen) > 280u) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid method or url"));
+    }
+
+    uint8_t req[280];
+    req[0] = 'H';
+    req[1] = (uint8_t)mlen;
+    memcpy(req + 2, method, mlen);
+    lugal_put16(req + 2 + mlen, (uint16_t)ulen);
+    memcpy(req + 4 + mlen, url, ulen);
+
+    uint8_t resp[8];
+    long n = uchan_call("net", req, (long)(4u + mlen + ulen), resp, sizeof(resp));
+    if (n < 8 || resp[0] == 0) {
+        mp_raise_OSError(MP_EIO);
+    }
+
+    uint8_t handle = resp[1];
+    uint16_t status = (uint16_t)(((uint16_t)resp[2] << 8) | resp[3]);
+    uint32_t total = ((uint32_t)resp[4] << 24) | ((uint32_t)resp[5] << 16) |
+                     ((uint32_t)resp[6] << 8) | (uint32_t)resp[7];
+
+    vstr_t vstr;
+    vstr_init(&vstr, total > 0 ? total : 1);
+    for (;;) {
+        uint8_t greq[4] = { 'g', handle, 0x01, 0x10 }; /* 272 bytes max */
+        uint8_t gresp[280];
+        long gn = uchan_call("net", greq, sizeof(greq), gresp, sizeof(gresp));
+        if (gn < 1 || gresp[0] == 2) {
+            uint8_t creq[2] = { 'c', handle };
+            uint8_t cresp[1];
+            (void)uchan_call("net", creq, sizeof(creq), cresp, sizeof(cresp));
+            vstr_clear(&vstr);
+            mp_raise_OSError(MP_EIO);
+        }
+        if (gresp[0] == 1) {
+            break;
+        }
+        if (gn > 1) {
+            vstr_add_strn(&vstr, (const char *)(gresp + 1), (size_t)(gn - 1));
+        }
+    }
+
+    uint8_t creq[2] = { 'c', handle };
+    uint8_t cresp[1];
+    (void)uchan_call("net", creq, sizeof(creq), cresp, sizeof(cresp));
+
+    mp_obj_t tuple[2] = {
+        mp_obj_new_int(status),
+        mp_obj_new_bytes((const byte *)vstr.buf, vstr.len),
+    };
+    vstr_clear(&vstr);
+    return mp_obj_new_tuple(2, tuple);
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(lugal_http_request_obj, lugal_http_request);
+
 /* ---- lugal package ---- */
 
 static const mp_rom_map_elem_t lugal_module_globals_table[] = {
-    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_lugal) },
-    { MP_ROM_QSTR(MP_QSTR_canvas),   MP_ROM_PTR(&mp_module_lugal_canvas) },
-    { MP_ROM_QSTR(MP_QSTR_sensor),   MP_ROM_PTR(&mp_module_lugal_sensor) },
-    { MP_ROM_QSTR(MP_QSTR_chan),     MP_ROM_PTR(&mp_module_lugal_chan) },
-    { MP_ROM_QSTR(MP_QSTR_ui),       MP_ROM_PTR(&mp_module_lugal_ui) },
+    { MP_ROM_QSTR(MP_QSTR___name__),     MP_ROM_QSTR(MP_QSTR_lugal) },
+    { MP_ROM_QSTR(MP_QSTR_canvas),       MP_ROM_PTR(&mp_module_lugal_canvas) },
+    { MP_ROM_QSTR(MP_QSTR_sensor),       MP_ROM_PTR(&mp_module_lugal_sensor) },
+    { MP_ROM_QSTR(MP_QSTR_chan),         MP_ROM_PTR(&mp_module_lugal_chan) },
+    { MP_ROM_QSTR(MP_QSTR_ui),           MP_ROM_PTR(&mp_module_lugal_ui) },
+    { MP_ROM_QSTR(MP_QSTR_http_request), MP_ROM_PTR(&lugal_http_request_obj) },
 };
 static MP_DEFINE_CONST_DICT(lugal_module_globals, lugal_module_globals_table);
 

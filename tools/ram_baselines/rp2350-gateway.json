@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 339968,
-  "heap_pages": 83,
+  "heap_bytes": 335872,
+  "heap_pages": 82,
   "per_file": {
     "(no line info: .data)": 9,
     "arch/riscv/common/elf.c": 1484,
@@ -93,7 +93,7 @@
     "net/llm.c": 261,
     "net/mqtt.c": 248,
     "net/mqttd.c": 3972,
-    "net/net_chan.c": 32,
+    "net/net_chan.c": 112,
     "net/netif.c": 12,
     "net/ntp.c": 76,
     "net/spartan.c": 15,
@@ -126,7 +126,7 @@
     "lisp": 48395,
     "log": 8322,
     "mqtt": 4220,
-    "net": 3268,
+    "net": 3348,
     "ota": 126,
     "selftest": 1653,
     "sensors": 8890,
@@ -136,5 +136,5 @@
     "vfs": 3727
   },
   "ram_code": 358,
-  "total": 175617
+  "total": 175697
 }

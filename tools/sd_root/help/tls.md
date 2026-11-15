@@ -92,4 +92,24 @@ The client offers what the server does (ChaCha20-Poly1305, X25519, ECDSA P-256) 
 
 ---
 
+## 5. Public Internet Roots vs. Your Private CA (`/dev/tlsca` vs. `roots.bin`)
+
+LugalOS keeps two separate root trust mechanisms so both **private local infrastructure** and **public internet HTTPS** work cleanly:
+
+1. **Private LugalOS CA (`host/ca` -> `/dev/tlsca`):**
+   * Managed with `lugalos-ca` on your host and stored in the node's identity record (`/dev/tlsca`).
+   * Used for **local and private services** where public CAs cannot issue certificates: node `httpd` admin servers (`*.local`), captive portals, local web apps, and private MQTT brokers (`tls://192.168.x.x`).
+   * Install `ca.crt.pem` on your desktop/phone browsers (Section 3) and on nodes that need to trust your private servers (`lugalos-ca trust`).
+
+2. **Public Mozilla Root Store (`/sd0/system/etc/ssl/roots.bin`):**
+   * A compact binary store (`LCRT` v1, 82 public roots, 38,716 bytes) built from `/etc/ssl/certs/ca-certificates.crt` by `tools/gen_roots.py` and synced to `/sd0/system/etc/ssl/roots.bin` (or `/flash0/system/etc/ssl/roots.bin` on QEMU).
+   * Used for **public internet HTTPS** (`http_request()`, MicroPython `urequests`, `mip`), supporting both ECDSA P-256 and RSA (up to 4096-bit with RSA-PSS) chains and single-label wildcard SANs (`*.domain.tld`).
+
+**How they interact:**
+* If `/dev/tlsca` is **configured**, TLS clients trust your private CA (required for private MQTT brokers and `.local` HTTPS endpoints).
+* If `/dev/tlsca` is **unset** (the default on a fresh board, or after `clear` is written to `/dev/tlsca`), `http_request()`, `urequests`, and `mip` lazily load `/sd0/system/etc/ssl/roots.bin` so public HTTPS works out of the box without interfering with `host/ca`.
+* To refresh the public root bundle from your host's CA store, run `python3 tools/gen_roots.py` and sync `sd_root` with `tools/p9sync.py`.
+
+---
+
 **Navigation:** [<- Updating Nodes](updates.md) | [Administrator Manual](admin.md) | [Board Reference Guides ->](boards.md) | [Documentation Index](index.md)

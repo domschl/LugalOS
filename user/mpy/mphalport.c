@@ -25,7 +25,10 @@ void gc_collect(void) {
 int mp_hal_stdin_rx_chr(void) {
     for (;;) {
         int c = ugetchar_nb();
-        if (c >= 0) return c;
+        if (c >= 0) {
+            if (c == '\n') c = '\r';
+            return c;
+        }
         uyield();
     }
 }
@@ -38,9 +41,10 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
 }
 
 void mp_hal_delay_ms(mp_uint_t ms) {
-    long start = utime_ms();
-    while ((unsigned long)(utime_ms() - start) < (unsigned long)ms) {
-        uyield();
+    while (ms > 0) {
+        mp_uint_t chunk = ms > 60000u ? 60000u : ms;
+        usleep_ms((long)chunk);
+        ms -= chunk;
     }
 }
 

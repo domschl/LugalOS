@@ -366,6 +366,18 @@ def test_umode(b: Board) -> tuple[str, bool, str]:
     return name, True, ""
 
 
+def test_micropython(b: Board) -> tuple[str, bool, str]:
+    """MicroPython U-mode ELF: soft-float arithmetic and sensor_log.py demo."""
+    name = "MicroPython U-mode (mpy.elf + sensor_log.py)"
+    out1 = b.console_session.cmd("mpy -c print(1+2,1/2)", deadline=15.0)
+    out2 = b.console_session.cmd("mpy /sd0/demos/sensor_log.py", deadline=15.0)
+    if "3 0.5" not in out1:
+        return name, False, f"print(1+2,1/2) failed: {out1[-300:]!r}"
+    if '"seq": 4' not in out2 or "returned 0" not in out2:
+        return name, False, f"sensor_log.py failed: {out2[-300:]!r}"
+    return name, True, "soft-float + sensor_log.py ok"
+
+
 def test_i2c_bus(b: Board) -> tuple[str, bool, str]:
     """The bus, with a soldered-down control. See the module docstring."""
     name = "I2C scan finds the codec and the sensor (E7)"
@@ -2470,6 +2482,7 @@ TESTS = [
     test_chibicc_compiles,
     test_preemption,
     dev_only(test_umode),
+    test_micropython,
     test_i2c_bus,
     test_i2c_stable,
     test_sensor_selftest,

@@ -51,6 +51,8 @@ Welcome to the **LugalOS User Manual**. This guide covers interactive usage, dai
 13. **[SSH-2 & Git Clients](ssh_and_git.md)**
     * Generating Ed25519 keys (`ssh-keygen`), TOFU `known_hosts`, interactive `xterm-256color` SSH sessions and remote `exec`.
     * Local and remote Git workflows (`init`, `clone`, `add`, `commit`, `status`, `diff`, `log`, `checkout`, `fetch`, `pull`, `push`) over HTTP(S) and SSH.
+14. **[MicroPython (`mpy` / `python`)](python.md)**
+    * Interactive REPL, running `.py` scripts and `-m` modules, soft-float `math`/`json`, `uasyncio`, `urequests` (TLS 1.3 HTTPS), and `mip` package installation.
 
 ---
 

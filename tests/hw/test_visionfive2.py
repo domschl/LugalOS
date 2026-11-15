@@ -200,6 +200,21 @@ def test_mmu_and_umode_isolation(ser: serial.Serial) -> tuple[str, bool, str]:
     return (name, True, "; ".join(label for label, _ in checks))
 
 
+def test_micropython(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "micropython: U-mode mpy.elf soft-float and sensor_log.py"
+    out1 = run_cmd(ser, "mpy -c print(1+2,1/2)", timeout_s=15.0)
+    out2 = run_cmd(ser, "mpy /sd0/demos/sensor_log.py", timeout_s=15.0)
+    checks = [
+        ("soft-float print", "3 0.5" in out1),
+        ("sensor_log seq 4", '"seq": 4' in out2),
+        ("mpy exited 0",     "returned 0" in out2),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "; ".join(label for label, _ in checks))
+
+
 def test_smp_and_locks(ser: serial.Serial) -> tuple[str, bool, str]:
     name = "smp: 4-core scheduling, IPI preemption, and spinlock order verification"
     out_smp = run_cmd(ser, "smptest", timeout_s=20.0)
@@ -692,6 +707,7 @@ def main() -> int:
             ("test_timebase_accuracy", lambda: test_timebase_accuracy(ser)),
             ("test_uart_burst_rx", lambda: test_uart_burst_rx(ser)),
             ("test_mmu_and_umode_isolation", lambda: test_mmu_and_umode_isolation(ser)),
+            ("test_micropython", lambda: test_micropython(ser)),
             ("test_smp_and_locks", lambda: test_smp_and_locks(ser)),
             ("test_sdmmc_and_cas", lambda: test_sdmmc_and_cas(ser)),
             ("test_long_names", lambda: test_long_names(ser, "/sd0")),

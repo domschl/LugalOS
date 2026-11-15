@@ -243,6 +243,7 @@ From `lsh`, you can immediately invoke native applications:
 * `launcher [open|close|status|gallery]`: Opens, focuses, closes, or queries the Touch Launcher (`RIBBON_WIN_LAUNCHER`) window on the ribbon; `status` also lists its widgets' hit-boxes, relative to the window, and their touch areas, an alert's title if one is up, and the close watch: the program windows asked to close and not yet closed, and how many not-responding alerts were shown. `gallery` shows the toolkit's controls in its place -- tab bar, toggle, checkbox, slider, progress bar, path bar, text field, dialog, action sheet -- to try by touch and by keys; its Done button returns. Automatically opened on terminal boards when no USB keyboard is attached at boot or when a keyboard is unplugged ([ribbon](ribbon.md)).
 * `zmachine [story]`: Launches the Z-machine Version 3 interactive fiction interpreter with canvas auto-mapping ([interactive fiction](zmachine.md)).
 * `cc <src> <dst>`: Compiles a C11 source file on-device to a native RISC-V ELF binary using `chibicc` ([C programming](c_programming.md)).
+* `mpy [-c code | -m mod | script.py]` / `python`: Runs the U-mode MicroPython v1.24.1 interpreter (`mpy.elf`) with soft-float math, `uasyncio`, `urequests` (HTTPS), `mip`, and `lugal.*` bindings ([MicroPython](python.md)).
 * `exec <elf>`: Loads and executes a RISC-V ELF binary confined to a U-mode PMP memory domain.
 
 ---

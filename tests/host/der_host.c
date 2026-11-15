@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL line %d: ", __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -214,12 +215,74 @@ static void test_random_inputs(unsigned iters) {
     }
 }
 
+static void test_rsa_chain_and_roots(void) {
+    char dir[] = "/tmp/lugal_x509_XXXXXX";
+    if (!mkdtemp(dir)) { CHECK(false, "mkdtemp"); return; }
+    const char *gen_roots = access("tools/gen_roots.py", F_OK) == 0 ? "tools/gen_roots.py" : "../../tools/gen_roots.py";
+    char cmd[2048];
+    snprintf(cmd, sizeof cmd,
+             "openssl genrsa -out %s/root.key 2048 2>/dev/null && "
+             "openssl req -x509 -new -key %s/root.key -sha256 -days 30 -subj '/CN=TestRoot' -out %s/root.crt 2>/dev/null && "
+             "openssl ecparam -name prime256v1 -genkey -noout -out %s/int.key 2>/dev/null && "
+             "openssl req -new -key %s/int.key -subj '/CN=TestInt' -out %s/int.csr 2>/dev/null && "
+             "printf 'basicConstraints=CA:TRUE\\n' > %s/int.ext && "
+             "openssl x509 -req -in %s/int.csr -CA %s/root.crt -CAkey %s/root.key -CAcreateserial -sha256 -days 30 -extfile %s/int.ext -out %s/int.crt 2>/dev/null && "
+             "openssl genrsa -out %s/leaf.key 2048 2>/dev/null && "
+             "openssl req -new -key %s/leaf.key -subj '/CN=leaf' -out %s/leaf.csr 2>/dev/null && "
+             "printf 'subjectAltName=DNS:*.lugal.test\\n' > %s/leaf.ext && "
+             "openssl x509 -req -in %s/leaf.csr -CA %s/int.crt -CAkey %s/int.key -CAcreateserial -sha256 -days 30 -extfile %s/leaf.ext -out %s/leaf.crt 2>/dev/null && "
+             "python3 %s --in %s/root.crt --out %s/roots.bin >/dev/null",
+             dir, dir, dir, dir, dir, dir, dir, dir, dir, dir, dir, dir,
+             dir, dir, dir, dir, dir, dir, dir, dir, dir, gen_roots, dir, dir);
+    int rc = system(cmd);
+    CHECK(rc == 0, "openssl chain + gen_roots");
+    if (rc != 0) return;
+
+    char path[256];
+    uint8_t leaf_der[4096], int_der[4096], roots_bin[4096];
+    char pem[4096];
+    FILE *f;
+    size_t n;
+
+    snprintf(path, sizeof path, "%s/leaf.crt", dir);
+    f = fopen(path, "rb"); n = f ? fread(pem, 1, sizeof pem, f) : 0; if (f) fclose(f);
+    int leaf_len = pem_decode(pem, (uint32_t)n, "CERTIFICATE", leaf_der, sizeof leaf_der, NULL);
+    CHECK(leaf_len > 0, "leaf pem decode");
+
+    snprintf(path, sizeof path, "%s/int.crt", dir);
+    f = fopen(path, "rb"); n = f ? fread(pem, 1, sizeof pem, f) : 0; if (f) fclose(f);
+    int int_len = pem_decode(pem, (uint32_t)n, "CERTIFICATE", int_der, sizeof int_der, NULL);
+    CHECK(int_len > 0, "int pem decode");
+
+    snprintf(path, sizeof path, "%s/roots.bin", dir);
+    f = fopen(path, "rb"); size_t roots_len = f ? fread(roots_bin, 1, sizeof roots_bin, f) : 0; if (f) fclose(f);
+    tls_trust_store_t store;
+    CHECK(tls_trust_store_init(&store, roots_bin, (uint32_t)roots_len) && store.count == 1, "roots.bin load");
+
+    const uint8_t *ders[2] = { leaf_der, int_der };
+    uint32_t lens[2] = { (uint32_t)leaf_len, (uint32_t)int_len };
+    tls_cert_info_t ci;
+    CHECK(tls_cert_check_chain(ders, lens, 2, NULL, &store, "api.lugal.test", &ci) == TLS_OK,
+          "RSA->P256->RSA chain + wildcard SAN verifies");
+    CHECK(ci.key_type == TLS_KEY_RSA && ci.rsa_n_len == 256, "leaf RSA-2048 key parsed");
+    CHECK(tls_cert_check_chain(ders, lens, 2, NULL, &store, "a.b.lugal.test", &ci) == TLS_ERR_WRONG_KEY,
+          "multi-label wildcard rejected");
+
+    leaf_der[leaf_len - 1] ^= 1;
+    CHECK(tls_cert_check_chain(ders, lens, 2, NULL, &store, "api.lugal.test", &ci) == TLS_ERR_CERT,
+          "tampered leaf signature rejected");
+
+    snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+    (void)system(cmd);
+}
+
 int main(int argc, char **argv) {
     unsigned iters = argc > 1 ? (unsigned)strtoul(argv[1], NULL, 0) : 2000;
     g_state = argc > 2 ? strtoull(argv[2], NULL, 0) : 0x40c0ffee;
     test_base64();
     test_der_lengths();
     test_cert();
+    test_rsa_chain_and_roots();
     for (int i = 0; i < 64; i++) test_csr();     /* r and s both get a 0x00 pad in about one of four */
     test_random_inputs(iters);
     if (fails) { printf("der_host: %d failure(s)\n", fails); return 1; }

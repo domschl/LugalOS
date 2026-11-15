@@ -32,6 +32,9 @@ Guides for operating LugalOS interactively via terminals and serial consoles:
 * **[Computer Algebra System (CAS)](cas.md)**: Exact symbolic mathematics, canonical polynomial simplification, equation solving, series expansion, and plotting.
 * **[Environmental Sensors & Telemetry](sensors.md)**: Autonomous sensor node operation, I2C environmental telemetry (BME280/BMP280), and MQTT 3.1.1 publishing.
 * **[Z-Machine & Interactive Fiction](zmachine.md)**: Playing Infocom and v3 stories, split-screen canvas auto-mapper, and save slot persistence.
+* **[Ribbon Reader](reader.md)** & **[Spartan / Gemtext](spartan.md)**: Typographic Markdown/Gemtext viewer and `spartand` hypermedia server.
+* **[SSH-2 & Git Clients](ssh_and_git.md)**: Ed25519 keys, interactive SSH sessions, and Git over HTTP(S)/SSH.
+* **[MicroPython (`mpy` / `python`)](python.md)**: Interactive REPL, soft-float `math`/`json`, `uasyncio`, `urequests` (HTTPS), `mip`, and `lugal.*` demos.
 
 ---
 
@@ -47,7 +50,7 @@ Guides for hardware provisioning, flashing, networking, and storage:
 * **[Storage & Filesystems](storage.md)**: MicroSD FAT32 formatting, flashfs ROM disks, and RAM disks.
 * **[Updating Nodes over 9P](updates.md)**: A/B partition updates, trial booting, and rollback.
 * **[HTTPS Certificates](tls.md)**: Your own certificate authority (`host/ca`), a node's key and certificate, and trusting the root on each system.
-* **[Target Hardware & Board Reference Guides](boards.md)**: Operational guides for [ESP32-P4-LCD-7B](esp32p4_lcd7b.md), [M5Stack Tab5](esp32p4_tab5.md), [ESP32-C6](esp32c6.md), and [RP2350](rp2350.md).
+* **[Target Hardware & Board Reference Guides](boards.md)**: Operational guides for [VisionFive 2](visionfive2.md), [ESP32-P4-LCD-7B](esp32p4_lcd7b.md), [M5Stack Tab5](esp32p4_tab5.md), [ESP32-C6](esp32c6.md), and [RP2350](rp2350.md).
 
 ---
 
@@ -58,6 +61,7 @@ Guides for developing user-space applications and extending the LugalOS kernel:
 ### Part A: On-Device Application Development
 * **[C Programming on LugalOS](c_programming.md)**: On-device compilation with `chibicc`, freestanding C subset (`lugal.h`), system call ABI, and ELF execution under PMP domains.
 * **[Lisp Scripting & Extensions](lisp.md)**: LugalOS Scheme/Lisp dialect, zero-SRAM builtins in Flash `.rodata`, standard library modules, macros, and CAS extensions.
+* **[Python Scripting (`mpy`)](python_scripting.md)**: MicroPython v1.24.1 U-mode runtime, soft-float ABI, and API reference for `lugal.*`, `machine`, and `socket`.
 
 ### Part B: Kernel & Driver Architecture
 * **[Microkernel Architecture](architecture.md)**: Capability-style memory domains (PMP on NOMMU, Sv39 page tables on MMU), copy-always message channels (`chan_t`), and U-mode task isolation.

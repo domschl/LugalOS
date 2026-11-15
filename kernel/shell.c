@@ -6129,8 +6129,8 @@ static void cmd_ballocdemo(void) {
 
     uint32_t free_after = 0;
     balloc_stats(NULL, &free_after);
-    printk("[BAllocDemo] Done. After churn: largest=%u arena=%u\n",
-           free_after, arena_bytes);
+    printk("[BAllocDemo] Done. After churn: largest=%u before=%u arena=%u\n",
+           free_after, free_before, arena_bytes);
 }
 #endif
 
@@ -8893,8 +8893,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
 
         if (argn > 0 && !name_has_slash) {
+            const char *bin_name = (strcmp(argp[0], "python") == 0) ? "mpy" : argp[0];
             char prog[128];
-            if (path_resolve("bin", argp[0], ".elf", prog, sizeof(prog)) == 0) {
+            if (path_resolve("bin", bin_name, ".elf", prog, sizeof(prog)) == 0) {
                 int ret = elf_load_and_run_argv(prog, argn, (const char *const *)argp);
                 g_shell_last_status = ret;
                 lisp_canvas_reset();
