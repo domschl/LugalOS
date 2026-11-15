@@ -824,12 +824,14 @@ static void dc8200_pacer_task(void *arg) {
         bool mouse_changed = __atomic_exchange_n(&g_cursor_moved, false, __ATOMIC_ACQ_REL);
 
         /* Redraw terminal dirty regions and synchronize back buffer */
-        lcdterm_screen_flush();
-        jh7110_dc8200_flush(0, g_state.height);
+        if (!lcdterm_is_animating()) {
+            lcdterm_screen_flush();
+            jh7110_dc8200_flush(0, g_state.height);
 
-        if (mouse_changed || g_term_dirty) {
-            jh7110_dc8200_flip();
-            g_term_dirty = false;
+            if (mouse_changed || g_term_dirty) {
+                jh7110_dc8200_flip();
+                g_term_dirty = false;
+            }
         }
     }
 }

@@ -384,7 +384,7 @@ static bool lcdterm_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
         }
     }
     if (!sent) screen_canvas_vterm(g_scr, (uint8_t)my_vid, req, n, reply, (int16_t)pid);
-    damage(0, g_be->h);
+    if (!g_scr->redrawing) damage(0, g_be->h);
     screen_report_windows(g_scr);
     console_unlock();
     return true;
@@ -745,7 +745,7 @@ canvas1_t *lcdterm_get_reader_backing(uint8_t rid) {
 }
 
 bool lcdterm_is_animating(void) {
-    return g_scr && g_scr->animating;
+    return g_scr && (g_scr->animating || g_scr->redrawing);
 }
 
 bool lcdterm_is_double_buffered(void) {

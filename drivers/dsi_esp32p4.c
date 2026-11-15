@@ -1138,7 +1138,7 @@ static void gdma_init(void) {
     FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_HS_SEL_SRC, 0);         /* hardware handshake */
     FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_HS_SEL_DST, 0);
     FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_DST_PER, 0);            /* the DSI bridge */
-    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_CH_PRIOR, 1);
+    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_CH_PRIOR, 7);
     FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_SRC_OSR_LMT, 5u - 1u);
     FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_DST_OSR_LMT, 2u - 1u);
     REG(DMAC_CH1_INTSTATUS_ENABLE0_REG) = 0xffffffffu;
@@ -1961,6 +1961,7 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
         sn->cx1[k] = sn->cx1[i]; sn->cy1[k] = sn->cy1[i];
         sn->cbuf[k] = buf; sn->cstride[k] = st; sn->cw[k] = w; sn->ch[k] = h;
     }
+    if (sn->nc > 0) go = TERM_LOCKED;   /* live buf565 backing: drawn under console_lock */
 
     /* Readers and Launcher by their place in the visible list, as s_reader_drawn_seq is. */
     uint8_t rids[4];
@@ -3180,8 +3181,12 @@ static void term_flush_task(void *arg) {
         /* A frame waiting to return to its own format has nothing new to
          * draw, so it is looked at until the snapshot switches it. */
         bool want_fmt = g_fb_pref != FB_NONE && g_fb_fmt != g_fb_pref;
-        if ((!g_t_due && !want_fmt) || lcdterm_is_animating()) continue;
+        if ((!g_t_due && !want_fmt) || lcdterm_is_animating() || g_flip_pending) continue;
         console_lock();
+        if (lcdterm_is_animating() || g_flip_pending) {
+            console_unlock();
+            continue;
+        }
         g_t_due = false;
         ylock_acquire(&g_frame_lock);
         term_go_t go = term_snapshot(0, g_tbe.h);

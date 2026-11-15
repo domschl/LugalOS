@@ -2558,7 +2558,6 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
         int idx = ribbon_insert(&scr->ribbon, insert_idx, RIBBON_WIN_CANVAS, (uint8_t)cid, canvas_cols, ctitle);
         if (idx >= 0) {
             scr->ribbon.wins[idx].owner_pid = caller_pid;
-            int32_t start_xv = scr->ribbon.m_view;
             if (layout == SCREEN_LAYOUT_CANVAS || layout == SCREEN_LAYOUT_FULLSCREEN) {
                 scr->ribbon.active_idx = (uint8_t)idx;
             } else {
@@ -2567,9 +2566,6 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
             ribbon_layout(&scr->ribbon);
             scr->ribbon.m_target = ribbon_compute_viewport(&scr->ribbon, scr->ribbon.active_idx, scr->ribbon.m_view);
             scr->ribbon.m_view = scr->ribbon.m_target;
-            if (start_xv != scr->ribbon.m_target) {
-                screen_animate_ribbon(scr, 255, 0, 0, 255, 0, 0, start_xv);
-            }
         } else {
             screen_free_canvas(scr, (uint8_t)cid);
             return false;
@@ -4095,6 +4091,10 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             screen_canvas_slot_t *slot = &scr->canvases[cid];
             bool is_rgb565 = (slot->format == CANVAS_FMT_RGB565 && slot->buf565 != NULL);
             if (is_rgb565) {
+#if defined(CONFIG_BOARD_ESP32P4)
+                cc_scr = 0;
+                cc_back = 0;
+#endif
                 uint16_t *c565 = slot->buf565;
                 uint32_t c565_stride = slot->stride565;
                 if (op == 'F') {
