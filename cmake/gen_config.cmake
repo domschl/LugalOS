@@ -216,6 +216,8 @@ set(_optional_keys
     # Only for headless boards and appliance-style presets: a board with a screen and a keyboard
     # has its console for that, and a button held by accident would wipe the owner part.
     CONFIG_SETUP_BUTTON_GPIO
+    # The pin a CardKB2 in UART mode has its TX wired to (UART1's RX); absent: the keyboard is read over I2C.
+    CONFIG_CARDKB2_RX_GPIO
     CONFIG_SETUP_BUTTON_BOOTSEL
     # The status LED that shows a headless node's mode (kernel/status_led.c): a GPIO driving an LED
     # (CONFIG_STATUS_LED_ACTIVE_LOW 1 when it lights at a low level), the Pico 2 W's LED behind the Wi-Fi chip

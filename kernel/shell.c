@@ -8336,12 +8336,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*a == ' ') a++;
         if (strcmp(a, "init") == 0) {
             cprintf(cardkb2_start() ? "cardkb: keyboard ready\n" : "cardkb: no keyboard answered at 0x5f\n");
+        } else if (strncmp(a, "scope", 5) == 0) {
+            unsigned long secs = 0;
+            for (const char *q = a + 5; *q; q++) if (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned long)(*q - '0');
+            cardkb2_scope((uint32_t)(secs ? secs : 5u) * 1000u);
         } else if (strcmp(a, "selftest") == 0) {
             cardkb2_selftest(true);
         } else if (*a == '\0') {
             cardkb2_print_status();
         } else {
-            cprintf("usage: cardkb [init | selftest]\n");
+            cprintf("usage: cardkb [init | scope [secs] | selftest]\n");
         }
         return;
     } else if (strcmp(cmd_line, "clcd") == 0 || strncmp(cmd_line, "clcd ", 5) == 0) {

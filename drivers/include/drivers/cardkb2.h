@@ -4,31 +4,69 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* M5Stack CardKB2 (SKU U215) in I2C mode: a 42-key QWERTY keyboard at 0x5F.
+/* M5Stack CardKB2 (SKU U215): a 42-key QWERTY keyboard, Grove connector GND, 5V, G26 (yellow),
+ * G25 (white).
  *
- * A read returns one byte: 0 for no key, else the ASCII of a key press (the unit
- * auto-repeats after 300 ms at 50 ms steps). Register 0xF1 holds the firmware
- * version. The Sym key is a toggle on the unit itself (its blue LED shows it), and
- * Fn+Sym+1 / Fn+Sym+2 select I2C / UART mode: a unit left in UART mode does not answer.
- * No arrow keys exist in I2C mode.
+ * UART mode (Fn+Sym+2, then the RST button; the unit remembers): 115200 8N1, the unit sends
+ * only, one 5-byte packet per key press and release -- {0xAA, 0x03, key_id, state, checksum},
+ * state 1 pressed / 2 released, checksum = (0x03 + key_id + state) & 0xFF -- and repeats the
+ * press packet every 50 ms after 300 ms. On the unit tested here its TX was the yellow wire
+ * (G26), the opposite of M5's page, which labels G26 "RX" (measured: with the host's pull-down
+ * on, only the yellow wire held the pin high; `cardkb scope`). The host gets raw key events, including the Aa,
+ * Fn and Sym keys themselves, so the layout is ours (cardkb2_keys.c).
  *
- * cardkb2_start() probes the unit and, when one answers, registers it as a console
- * input source and starts the task that polls it. A unit plugged in later is found by
- * `cardkb init`, or by the task's retry once it has been started.
+ * I2C mode (Fn+Sym+1, the factory default): 0x5F, a read returns one finished ASCII byte.
+ * The unit sends no cursor keys or Ctrl there. Used on a board without CONFIG_CARDKB2_RX_GPIO.
+ *
+ * Board facts: CONFIG_CARDKB2_RX_GPIO names the pin the unit's TX is wired to (UART1's RX).
+ * Nothing is driven on any pin; the unit's other data wire (white) can stay unconnected.
  */
 
 #define CARDKB2_ADDR  0x5Fu
 
-bool     cardkb2_start(void);           /* probe, then task + console source; false: no unit */
+bool     cardkb2_start(void);
 bool     cardkb2_is_detected(void);
 uint8_t  cardkb2_firmware(void);
 
-/* Maps the unit's byte to the console's: Backspace (0x08) becomes DEL (0x7F) as the USB
- * keyboard sends it; 0 means "drop" (no key, or a value no key produces). */
-uint8_t  cardkb2_translate(uint8_t raw);
+/* --- The key logic, shared by both transports and testable without a unit --- */
 
-/* The escape sequence for a cursor-key byte, else NULL. */
-const char *cardkb2_arrow(uint8_t raw);
+#define CARDKB2_KEY_COUNT  43u
+#define CARDKB2_KEY_AA     22u
+#define CARDKB2_KEY_FN     33u
+#define CARDKB2_KEY_SYM    34u
+
+typedef struct { uint8_t id; bool pressed; } cardkb2_event_t;
+
+typedef struct {
+    /* packet framing */
+    uint8_t  pkt[5];
+    uint8_t  pkt_n;
+    uint32_t bad_packets;
+    /* layout state */
+    bool     fn, sym_held, sym_latch, sym_clean;
+    bool     aa_held, aa_clean, aa_oneshot, aa_lock;
+    uint32_t aa_last_tap_ms;
+    uint64_t down;                  /* keys currently held, one bit per id */
+} cardkb2_keys_t;
+
+void cardkb2_keys_reset(cardkb2_keys_t *k);
+
+/* Feeds one byte of the UART stream; true when it completed a valid packet (in *ev).
+ * A bad checksum or a stray byte resynchronizes on the next 0xAA and counts in bad_packets. */
+bool cardkb2_pkt_feed(cardkb2_keys_t *k, uint8_t b, cardkb2_event_t *ev);
+
+/* Applies a key event; writes the console bytes it produces (at most 4) into out. Layers:
+ *   plain                letters, digits, space, Enter (CR), Backspace (DEL)
+ *   Aa tapped            the next letter is a capital; tapped twice, caps lock; held, shifted
+ *   Sym held or latched  punctuation as printed (a tap toggles the latch)
+ *   Fn + Z X C D         cursor left, down, right, up (VT sequences)
+ *   Fn + 1               ESC           Fn + Backspace   forward delete
+ *   Fn + Sym + letter    Ctrl-letter */
+uint32_t cardkb2_keys_event(cardkb2_keys_t *k, const cardkb2_event_t *ev, uint32_t now_ms,
+                            uint8_t *out, uint32_t cap);
+
+/* Counts level changes on the RX pin for `ms` ms (diagnostic; UART transport only). */
+void     cardkb2_scope(uint32_t ms);
 
 uint32_t cardkb2_selftest(bool report);
 void     cardkb2_print_status(void);

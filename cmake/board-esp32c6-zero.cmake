@@ -50,3 +50,7 @@ set(CONFIG_STATUS_LED_WS2812 1)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-C6-Zero")
+
+# M5Stack CardKB2 in UART mode (Fn+Sym+2): its TX (the Grove YELLOW wire, G26, as measured; M5's page labels it RX) to GPIO2, read by UART1.
+# GPIO3 is kept free for a future TX; nothing is driven on either. GPIO0/1 stay the I2C bus.
+set(CONFIG_CARDKB2_RX_GPIO 2)
