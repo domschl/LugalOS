@@ -31,6 +31,16 @@ uint8_t     lcd2004_address(void);
 /* Frame buffer operations. Each initializes the display on first use. */
 void lcd2004_clear(void);
 void lcd2004_put_at(uint32_t x, uint32_t y, const char *s);
+/* User-defined glyphs: the HD44780 has eight 5x8 cells in CGRAM. They are written with the next
+ * flush, and again after any bus failure or re-init. A glyph is placed with put_at() using the
+ * character codes 1..8; code 8 is slot 0 (a NUL cannot ride in a C string, and the HD44780 reads
+ * codes 8..15 as 0..7). `rows` are the 8 pixel rows, top first, bit 4 the leftmost pixel.
+ * The terminal (console mirror) never emits them. */
+void lcd2004_define_char(uint32_t code, const uint8_t rows[8]);
+
+/* The character code that shows CGRAM slot n (0..7) in a string given to put_at(). */
+#define LCD2004_GLYPH(n)  ((char)(((n) & 7u) ? ((n) & 7u) : 8u))
+
 void lcd2004_term_write(const char *s, size_t len);
 void lcd2004_set_cursor(uint32_t x, uint32_t y);
 void lcd2004_cursor_visible(bool on);

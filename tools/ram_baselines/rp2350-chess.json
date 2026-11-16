@@ -24,7 +24,7 @@
     "drivers/i2c_rtc.c": 18,
     "drivers/idstore_rp2350.c": 28,
     "drivers/ina226.c": 52,
-    "drivers/lcd2004.c": 221,
+    "drivers/lcd2004.c": 285,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
     "drivers/mhz19b.c": 80,
@@ -143,12 +143,12 @@
     "net": 1724,
     "ota": 126,
     "selftest": 1653,
-    "sensors": 8527,
+    "sensors": 8591,
     "shell": 13246,
     "storage": 3133,
     "usb": 16700,
     "vfs": 3727
   },
   "ram_code": 434,
-  "total": 197175
+  "total": 197239
 }

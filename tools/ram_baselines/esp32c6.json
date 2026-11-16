@@ -36,7 +36,7 @@
     "drivers/i2c_rtc.c": 18,
     "drivers/idstore_esp32c6.c": 28,
     "drivers/ina226.c": 52,
-    "drivers/lcd2004.c": 221,
+    "drivers/lcd2004.c": 285,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
     "drivers/mhz19b.c": 80,
@@ -151,12 +151,12 @@
     "ota": 158,
     "radio": 26177,
     "selftest": 2449,
-    "sensors": 8558,
+    "sensors": 8622,
     "shell": 7542,
     "storage": 13,
     "usb": 6481,
     "vfs": 3215
   },
   "ram_code": 16638,
-  "total": 164327
+  "total": 164391
 }

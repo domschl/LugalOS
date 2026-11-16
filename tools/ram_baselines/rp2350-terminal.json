@@ -47,7 +47,7 @@
     "drivers/idstore_rp2350.c": 28,
     "drivers/ina226.c": 52,
     "drivers/launcher_view.c": 4,
-    "drivers/lcd2004.c": 221,
+    "drivers/lcd2004.c": 285,
     "drivers/lcd7_rp2350.c": 254,
     "drivers/lcdterm.c": 4186,
     "drivers/loopback_net.c": 2060,
@@ -181,12 +181,12 @@
     "net": 1732,
     "ota": 126,
     "selftest": 1654,
-    "sensors": 8527,
+    "sensors": 8591,
     "shell": 13248,
     "storage": 3152,
     "usb": 20933,
     "vfs": 3727
   },
   "ram_code": 24484,
-  "total": 204156
+  "total": 204220
 }

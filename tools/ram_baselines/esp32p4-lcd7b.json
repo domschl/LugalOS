@@ -58,7 +58,7 @@
     "drivers/idstore_esp32p4.c": 4137,
     "drivers/ina226.c": 52,
     "drivers/launcher_view.c": 4,
-    "drivers/lcd2004.c": 221,
+    "drivers/lcd2004.c": 285,
     "drivers/lcdterm.c": 1099,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
@@ -209,12 +209,12 @@
     "ota": 120,
     "radio": 12564,
     "selftest": 3962,
-    "sensors": 8526,
+    "sensors": 8590,
     "shell": 13764,
     "storage": 7456,
     "usb": 1217,
     "vfs": 3727
   },
   "ram_code": 1806,
-  "total": 223393
+  "total": 223457
 }

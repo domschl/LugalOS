@@ -5,7 +5,7 @@
   "heap_bytes": 125378560,
   "heap_pages": 30610,
   "per_file": {
-    "(no line info: .rodata)": 10030,
+    "(no line info: .rodata)": 10050,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1500,
     "arch/riscv/common/mem_domain.c": 116,
@@ -38,7 +38,7 @@
     "drivers/icons_data.c": 46300,
     "drivers/ina226.c": 200,
     "drivers/launcher_view.c": 81018,
-    "drivers/lcd2004.c": 271,
+    "drivers/lcd2004.c": 335,
     "drivers/lispui_view.c": 15888,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 164,
@@ -189,7 +189,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 10030,
+    "(no line info: .rodata)": 10050,
     "(no line info: .sdata)": 9,
     "9p": 64107,
     "agent": 3497,
@@ -213,13 +213,13 @@
     "net": 26035,
     "radio": 3104,
     "selftest": 2487,
-    "sensors": 19715,
+    "sensors": 19779,
     "shell": 13709,
     "storage": 20688,
     "tools": 256,
     "usb": 902,
     "vfs": 3894
   },
-  "ram_code": 1548348,
-  "total": 6873250
+  "ram_code": 1548884,
+  "total": 6873870
 }

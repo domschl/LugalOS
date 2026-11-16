@@ -32,6 +32,7 @@
 #define CMD_ENTRY_INC    0x06u
 #define CMD_DISPLAY      0x08u   /* | 0x04 display on, | 0x02 underline, | 0x01 blink */
 #define CMD_FUNCTION_4B  0x28u   /* 4-bit, two line mode (the 4-line glass is two 40-char lines), 5x8 */
+#define CMD_SET_CGRAM    0x40u
 #define CMD_SET_DDRAM    0x80u
 
 /* The C6 controller moves 30 bytes in one write and fails at 34 (its 32-byte FIFO); five characters. */
@@ -61,6 +62,8 @@ static struct {
     bool     backlight;
     bool     hw_cursor_on;         /* what the HD44780 display-control register holds */
     bool     shown_valid;          /* false: what the glass shows is unknown, redraw all */
+    bool     cg_dirty;             /* the glyphs below must be written to CGRAM before the next characters */
+    uint8_t  cg[8][8];             /* user-defined glyphs, by CGRAM slot */
     char     shown[LCD2004_ROWS][LCD2004_COLS];
     bool     mirror_task;
     uint32_t flush_count, fail_count, chars_sent;
@@ -168,6 +171,7 @@ static bool init_locked(uint8_t addr) {         /* g_io_lock held */
     bool cur = t.cursor_on;
     spin_unlock_irqrestore(&g_buf_lock, f);
     memset(g.shown, ' ', sizeof(g.shown));
+    g.cg_dirty = true;
     g.hw_cursor_on = cur;
     if (!hd_cmd(display_ctl(cur))) return false;
     g.shown_valid = true;
@@ -301,9 +305,19 @@ void lcd2004_clear(void) {
 void lcd2004_put_at(uint32_t x, uint32_t y, const char *s) {
     if (!s || y >= LCD2004_ROWS) return;
     uintptr_t f = spin_lock_irqsave(&g_buf_lock);
-    for (; *s && x < LCD2004_COLS; s++, x++) t.want[y][x] = printable(*s);
+    for (; *s && x < LCD2004_COLS; s++, x++)
+        t.want[y][x] = ((uint8_t)*s >= 1u && (uint8_t)*s <= 8u) ? *s : printable(*s);   /* 1..8: user glyphs */
     t.dirty = true;
     spin_unlock_irqrestore(&g_buf_lock, f);
+}
+
+void lcd2004_define_char(uint32_t code, const uint8_t rows[8]) {
+    if (!rows) return;
+    ylock_acquire(&g_io_lock);
+    uint8_t *glyph = g.cg[code & 7u];
+    for (uint32_t r = 0; r < 8u; r++) glyph[r] = rows[r] & 0x1Fu;
+    g.cg_dirty = true;
+    ylock_release(&g_io_lock);
 }
 
 void lcd2004_term_write(const char *s, size_t len) {
@@ -362,6 +376,14 @@ static bool flush_locked(void) {                /* g_io_lock held */
         memset(g.shown, ' ', sizeof(g.shown));
         g.shown_valid = true;
         g.hw_cursor_on = !cursor_on;       /* force the display-control write below */
+        g.cg_dirty = true;
+    }
+    if (g.cg_dirty) {
+        for (uint32_t s = 0; s < 8u; s++) {
+            wr_byte(&w, (uint8_t)(CMD_SET_CGRAM | (s << 3)), false);
+            for (uint32_t r = 0; r < 8u; r++) wr_byte(&w, g.cg[s][r], true);
+        }
+        g.cg_dirty = false;                /* cleared again below if the transfer fails */
     }
     if (g.hw_cursor_on != cursor_on) {
         wr_byte(&w, display_ctl(cursor_on), false);
@@ -381,6 +403,7 @@ static bool flush_locked(void) {                /* g_io_lock held */
     if (cursor_on) wr_byte(&w, (uint8_t)(CMD_SET_DDRAM | (k_row_base[cy] + cx)), false);
     if (!wr_xfer(&w)) {
         g.shown_valid = false;
+        g.cg_dirty = true;
         g.fail_count++;
         f = spin_lock_irqsave(&g_buf_lock);
         t.dirty = true;                    /* try again */

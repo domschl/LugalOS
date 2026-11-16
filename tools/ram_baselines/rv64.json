@@ -5,7 +5,7 @@
   "heap_bytes": 123768832,
   "heap_pages": 30217,
   "per_file": {
-    "(no line info: .rodata)": 15372,
+    "(no line info: .rodata)": 15392,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 8,
@@ -13,7 +13,7 @@
     "arch/riscv/rv64_mmu/vmm.c": 9,
     "build/rv64/admin_page.c": 9338,
     "build/rv64/clcd_dash_lisp.c": 1990,
-    "build/rv64/flash_fs.c": 1572868,
+    "build/rv64/flash_fs.c": 1048580,
     "build/rv64/setup_page.c": 16038,
     "drivers/at24c32.c": 4097,
     "drivers/battery.c": 124,
@@ -40,7 +40,7 @@
     "drivers/icons_data.c": 46516,
     "drivers/ina226.c": 232,
     "drivers/launcher_view.c": 81362,
-    "drivers/lcd2004.c": 271,
+    "drivers/lcd2004.c": 335,
     "drivers/lispui_view.c": 16212,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 228,
@@ -191,14 +191,14 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 15372,
+    "(no line info: .rodata)": 15392,
     "(no line info: .sdata)": 9,
     "9p": 65727,
     "agent": 3501,
     "app:cc": 598,
     "app:ed": 119,
     "app:zmachine": 78,
-    "build": 1600234,
+    "build": 1075946,
     "chess": 46906,
     "clock-app": 616,
     "crypto": 4890,
@@ -215,12 +215,12 @@
     "net": 26383,
     "radio": 3464,
     "selftest": 10607,
-    "sensors": 21343,
+    "sensors": 21407,
     "shell": 14813,
     "storage": 20768,
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1511952,
-  "total": 8746728
+  "ram_code": 1512468,
+  "total": 8223040
 }

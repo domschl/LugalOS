@@ -156,6 +156,44 @@ static char         g_lcd_title[LCD_COLS + 1];
 static uint64_t     g_lcd_hist_key;        /* position the rows show */
 static bool         g_lcd_hist_valid;
 
+/* Piece, mate and check glyphs, in CGRAM slots 1..7 and 0. The driver knows nothing of chess:
+ * the bitmaps live here and are handed to lcd2004_define_char(). */
+enum {
+    LCD_G_K = LCD2004_GLYPH(1), LCD_G_Q = LCD2004_GLYPH(2), LCD_G_R = LCD2004_GLYPH(3),
+    LCD_G_B = LCD2004_GLYPH(4), LCD_G_N = LCD2004_GLYPH(5), LCD_G_P = LCD2004_GLYPH(6),
+    LCD_G_MATE = LCD2004_GLYPH(7), LCD_G_CHECK = LCD2004_GLYPH(0),
+};
+
+/* Seven pixel rows each: the HD44780 letters occupy rows 0-6 and row 7 is the descender/cursor
+ * row, so the pieces stand on the baseline of the letters beside them. */
+static const struct { char code; uint8_t rows[8]; } k_lcd_glyphs[] = {
+    { LCD_G_K,     { 0x04, 0x1F, 0x04, 0x0E, 0x0E, 0x0E, 0x1F, 0x00 } },   /* cross on a body */
+    { LCD_G_Q,     { 0x15, 0x15, 0x15, 0x0E, 0x04, 0x0E, 0x1F, 0x00 } },   /* three spikes, waist */
+    { LCD_G_R,     { 0x15, 0x1F, 0x0E, 0x0E, 0x0E, 0x0E, 0x1F, 0x00 } },   /* battlements, straight tower */
+    { LCD_G_B,     { 0x04, 0x0E, 0x1B, 0x0E, 0x04, 0x0E, 0x1F, 0x00 } },   /* mitre with a slit */
+    { LCD_G_N,     { 0x06, 0x0F, 0x17, 0x1E, 0x07, 0x0E, 0x1F, 0x00 } },   /* horse head facing left */
+    { LCD_G_P,     { 0x04, 0x0E, 0x0E, 0x04, 0x0E, 0x0E, 0x1F, 0x00 } },
+    { LCD_G_MATE,  { 0x0A, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x0A, 0x00 } },   /* a heavy # */
+    { LCD_G_CHECK, { 0x04, 0x04, 0x1F, 0x04, 0x04, 0x04, 0x04, 0x00 } },   /* dagger */
+};
+
+/* SAN with its piece letters, '#' and '+' replaced by glyphs, in place; the length is unchanged.
+ * Uppercase letters occur in SAN only as pieces (files are lowercase), promotion pieces included. */
+static void chess_lcd_glyphs(char *san) {
+    for (; *san; san++) {
+        switch (*san) {
+        case 'K': *san = LCD_G_K; break;
+        case 'Q': *san = LCD_G_Q; break;
+        case 'R': *san = LCD_G_R; break;
+        case 'B': *san = LCD_G_B; break;
+        case 'N': *san = LCD_G_N; break;
+        case '#': *san = LCD_G_MATE; break;
+        case '+': *san = LCD_G_CHECK; break;
+        default: break;
+        }
+    }
+}
+
 static void chess_lcd_row(uint32_t y, const char *s) {
     char line[LCD_COLS + 1];
     uint32_t i = 0;
@@ -198,6 +236,7 @@ static void chess_lcd_history(void) {
         Move m = g_chess_pos.history[i].move;
         char san[SAN_MAX], unit[SAN_MAX + 8];
         format_move_san(p, m, san);
+        chess_lcd_glyphs(san);
         if (p->side == WHITE)
             ksnprintf(unit, sizeof(unit), "%d. %s", p->fullmove, san);
         else if (i == 0)
@@ -225,6 +264,8 @@ static void chess_lcd_history(void) {
 static void chess_lcd_begin(void) {
     g_lcd_on = lcd2004_is_ready();
     if (!g_lcd_on) return;
+    for (unsigned i = 0; i < sizeof(k_lcd_glyphs) / sizeof(k_lcd_glyphs[0]); i++)
+        lcd2004_define_char(k_lcd_glyphs[i].code, k_lcd_glyphs[i].rows);
     g_lcd_was_mirroring = lcd2004_mirror_active();
     (void)lcd2004_mirror(false);
     lcd2004_cursor_visible(false);
