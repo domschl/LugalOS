@@ -6496,7 +6496,14 @@ bool lisp_run_eeprom_script(void) {
     bool ran = false;
     if (n > 0) {
         printk("[Lisp Boot] Running the EEPROM script (%d bytes)\n", n);
+        /* A script that takes the display over (a dashboard) turns the console mirror off; a Ctrl-C ends
+         * it before it can turn it back on, and the shell would start on a blank mirror. */
+        bool mirror = lcd2004_mirror_active();
         lisp_eval_string(buf);
+        if (mirror && !lcd2004_mirror_active()) {
+            lcd2004_clear();
+            (void)lcd2004_mirror(true);
+        }
         ran = true;
     } else if (n == EEPROM_SCRIPT_BADCRC) {
         printk("[Lisp Boot] The EEPROM script does not match its checksum; not run\n");
