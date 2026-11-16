@@ -37,7 +37,7 @@ Sensors are searched for at their usual addresses, but never at a board part's a
 
 | Board / Preset | Bus | Pins | Notes |
 | :--- | :--- | :--- | :--- |
-| **RP2350 (`rp2350-sensor`, `rp2350`, `rp2350-wifi`, `rp2350-chess`, `rp2350-gateway`)** | I2C0 | `GP4` (SDA, pin 6), `GP5` (SCL, pin 7) | `3V3` (pin 36), `GND` (pin 38); internal pull-ups enabled |
+| **RP2350 (`rp2350-sensor`, `rp2350-wifi`, `rp2350-chess`, `rp2350-gateway`)** | I2C0 | `GP4` (SDA, pin 6), `GP5` (SCL, pin 7) | `3V3` (pin 36), `GND` (pin 38); internal pull-ups enabled |
 | **RP2350 (`rp2350-sensor` MH-Z19B CO2)** | UART1 | `GP8` (TX), `GP9` (RX) | 9600 baud (cross TX/RX to sensor) |
 | **RP2350-LCD-7 (`rp2350-terminal`) / Clock (`rp2350-clock`)** | I2C1 | `GP6` (SDA), `GP7` (SCL) | Shared with touch / RTC |
 | **ESP32-C6-Zero (`esp32c6`)** | I2C0 | `GPIO0` (SDA), `GPIO1` (SCL) | 100 kHz |

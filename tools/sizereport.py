@@ -6,9 +6,9 @@ The link-time floor in linker/rp2350.ld catches a heap regression. This says
 `nm -S --size-sort` and guesswork every time it came up (three times so far:
 phase 9's H4, phase 13's STRING_POOL_SIZE follow-up, and phase 15).
 
-    python3 tools/sizereport.py build/rp2350/lugalos.elf
-    python3 tools/sizereport.py build/rp2350/lugalos.elf --check tools/ram_baselines/rp2350.json
-    python3 tools/sizereport.py build/rp2350/lugalos.elf --update tools/ram_baselines/rp2350.json
+    python3 tools/sizereport.py build/rp2350-chess/lugalos.elf
+    python3 tools/sizereport.py build/rp2350-chess/lugalos.elf --check tools/ram_baselines/rp2350-chess.json
+    python3 tools/sizereport.py build/rp2350-chess/lugalos.elf --update tools/ram_baselines/rp2350-chess.json
     python3 tools/sizereport.py --all --check     # every preset built here
     python3 tools/sizereport.py --all --update    # re-baseline every preset built here
 

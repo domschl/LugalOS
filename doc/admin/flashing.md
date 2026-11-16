@@ -42,7 +42,7 @@ picotool load -v build/rp2350-terminal/flashfs.uf2
 `picotool` reads the partition table: `lugalos.uf2` goes to the A/B slot the bootrom would not boot, and `-x` makes a flash-update boot of it. That boot **erases the other slot's first sector** (datasheet 5.1.16), so a `picotool` load leaves one image and no fallback; it is the developer flow. Updates that keep the old image until the new one has proven itself are `tools/lota.py push` (`doc/admin/updates.md`). Without the udev rule in `tools/udev/60-rp2350-bootsel.rules` (copy it to `/etc/udev/rules.d/`), `picotool` cannot open the board.
 
 > [!CAUTION]
-> Always flash `build/rp2350-terminal/lugalos.uf2` for the 7" LCD terminal. Flashing the generic `rp2350` build will leave the LCD uninitialized (blank/black).
+> Always flash `build/rp2350-terminal/lugalos.uf2` for the 7" LCD terminal. Flashing another preset (such as `rp2350-chess`) will leave the LCD uninitialized (blank/black).
 
 ---
 

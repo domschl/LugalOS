@@ -58,7 +58,7 @@
       "displayName": "RP2350 (Pico 2) \u2014 chess-computer persona",
       "description": "Raspberry Pi Pico 2, default board persona: SD card via SPI1, ST7735 TFT + TM1638 keypad + chess engine all built in.",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/rp2350",
+      "binaryDir": "${sourceDir}/build/rp2350-chess",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
         "LUGALOS_PROFILE": "chess"
@@ -175,11 +175,11 @@
       }
     },
     {
-      "name": "rp2350-smp",
+      "name": "rp2350-chess-smp",
       "displayName": "RP2350 (Pico 2) \u2014 chess persona, both cores",
       "description": "Raspberry Pi Pico 2 dual-core SMP build with SIO-FIFO launch for core 1.",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/rp2350-smp",
+      "binaryDir": "${sourceDir}/build/rp2350-chess-smp",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
         "LUGALOS_ENABLE_SMP": "ON",
@@ -278,8 +278,8 @@
       "configurePreset": "rv64-smp"
     },
     {
-      "name": "rp2350-smp",
-      "configurePreset": "rp2350-smp"
+      "name": "rp2350-chess-smp",
+      "configurePreset": "rp2350-chess-smp"
     },
     {
       "name": "esp32c6",

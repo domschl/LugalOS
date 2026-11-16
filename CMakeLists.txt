@@ -1652,8 +1652,8 @@ endif()
 # linker floor catches a regression; this one attributes it. Not part of `all`
 # -- it is a question you ask, not a step every build pays for.
 #
-#     cmake --build build/rp2350 --target sizereport
-#     cmake --build build/rp2350 --target sizecheck    # fails if it grew
+#     cmake --build build/rp2350-chess --target sizereport
+#     cmake --build build/rp2350-chess --target sizecheck    # fails if it grew
 #
 # `sizecheck` compares against tools/ram_baselines/<build dir>.json; re-baseline
 # with `python3 tools/sizereport.py <elf> --update <baseline>` (or `--all

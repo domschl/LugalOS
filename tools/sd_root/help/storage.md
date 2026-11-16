@@ -103,7 +103,7 @@ A standard LugalOS installation adheres to the following directory hierarchy:
 
 On headless appliances or boards without an SD card, LugalOS boots from `/flash0/`:
 * Generated at build time by packing [`tools/sd_root/`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root) via `tools/create_flash_fs.py`.
-* On RP2350, it is compiled into `build/rp2350/flashfs.uf2` and flashed to an independent flash offset.
+* On RP2350, it is compiled into `build/rp2350-<preset>/flashfs.uf2` (e.g. `build/rp2350-chess/flashfs.uf2`) and flashed to an independent flash offset.
 * On ESP32-P4 and ESP32-C6, it is mapped into the XIP flash address space.
 
 ---

@@ -9,7 +9,7 @@ Usage:
     uv run test_rp2350.py --console /dev/tty.usbmodemXXXX1 --net /dev/tty.usbmodemXXXX3
     uv run test_rp2350.py --skip-qemu-bridge
 
-Wiring assumed: RP2350 flashed with the current build/rp2350/lugalos.uf2,
+Wiring assumed: RP2350 flashed with the current build/rp2350-chess/lugalos.uf2,
 connected over USB (enumerates two CDC-ACM ports: console + link_usb_cdc's
 net port), optionally also wired to a host CP2101/CP2102 UART adapter for
 the p9share test (see README.md's "CP2101 -> RP2350 Wiring" section).
@@ -440,7 +440,7 @@ def test_firmware_freshness(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             node = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", errors="replace")
 
         # Compare against the build of the persona the board runs, not
-        # build/rp2350: an rp2350-terminal board checked against build/rp2350
+        # build/rp2350-chess: an rp2350-terminal board checked against build/rp2350-chess
         # warned "reflash" whenever the two build dirs were built at different
         # commits, though the board was running exactly the terminal build.
         pm = re.search(r"^persona: (\S+)", node, re.M)
@@ -815,7 +815,7 @@ def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             if "Unbound symbol: pmpinfo" in text or "Unknown command" in text:
                 return (name, False,
                         "board firmware predates the `pmpinfo` command -- reflash it with the "
-                        "current build/rp2350/lugalos.uf2 and re-run. (LugalOS does not implement "
+                        "current build/rp2350-chess/lugalos.uf2 and re-run. (LugalOS does not implement "
                         "the 1200-baud BOOTSEL touch, so this flash is manual: hold BOOTSEL while "
                         "connecting, then copy the .uf2 to the mounted volume.)")
             if "PMP: unavailable" in text:
@@ -1262,7 +1262,7 @@ def test_priostress(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             if "Unbound symbol: priostress" in text or "Unknown command" in text:
                 return (name, False,
                         "board firmware predates the `priostress` command -- reflash it with the "
-                        "current build/rp2350/lugalos.uf2 and re-run.")
+                        "current build/rp2350-chess/lugalos.uf2 and re-run.")
             return (name, False, f"no PrioStress report in console output:\n{text[:300]}")
 
         ticks_a, ticks_b, verdict = int(m.group(1)), int(m.group(2)), m.group(3)
@@ -1399,7 +1399,7 @@ def test_blk_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             if "Unbound symbol: blkstats" in out_before or "Unknown command" in out_before:
                 return (name, False,
                         "board firmware predates the `blkstats` command -- reflash it with the "
-                        "current build/rp2350/lugalos.uf2 and re-run.")
+                        "current build/rp2350-chess/lugalos.uf2 and re-run.")
             return (name, False, f"no BlkStats report in console output:\n{out_before[:200]} / {out_after[:200]}")
 
         before, after = int(m_before.group(1)), int(m_after.group(1))
@@ -1453,7 +1453,7 @@ def test_i2c_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             if "Unbound symbol: i2cstats" in out_before or "Unknown command" in out_before:
                 return (name, False,
                         "board firmware predates the `i2cstats` command -- reflash it with the "
-                        "current build/rp2350/lugalos.uf2 and re-run.")
+                        "current build/rp2350-chess/lugalos.uf2 and re-run.")
             return (name, False, f"no I2cStats report in console output:\n{out_before[:200]} / {out_after[:200]}")
 
         before, after = int(m_before.group(1)), int(m_after.group(1))
@@ -1505,7 +1505,7 @@ def test_st7735_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             if "Unbound symbol: st7735stats" in out_before or "Unknown command" in out_before:
                 return (name, False,
                         "board firmware predates the `st7735stats` command -- reflash it with the "
-                        "current build/rp2350/lugalos.uf2 and re-run.")
+                        "current build/rp2350-chess/lugalos.uf2 and re-run.")
             return (name, False, f"no St7735Stats report in console output:\n{out_before[:200]} / {out_after[:200]}")
 
         before, after = int(m_before.group(1)), int(m_after.group(1))
@@ -1555,7 +1555,7 @@ def test_tm1638_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             if "Unbound symbol: tm1638stats" in out_before or "Unknown command" in out_before:
                 return (name, False,
                         "board firmware predates the `tm1638stats` command -- reflash it with the "
-                        "current build/rp2350/lugalos.uf2 and re-run.")
+                        "current build/rp2350-chess/lugalos.uf2 and re-run.")
             return (name, False, f"no Tm1638Stats report in console output:\n{out_before[:200]} / {out_after[:200]}")
 
         before, after = int(m_before.group(1)), int(m_after.group(1))

@@ -469,17 +469,18 @@ def local_build_id(build_dir: "Path | None" = None) -> str | None:
     test was missing, which costs a whole flash-and-measure cycle to work out.
 
     `build_dir` should be the directory the image being flashed came from.
-    Without it this falls back to build/rp2350, which is only right when that
-    is the preset in play -- and there are five RP2350 presets now
-    (rp2350, -wifi, -gateway, -clock, -chess). Flashing build/rp2350-wifi's
-    UF2 while this read build/rp2350's stale header reported a build-id
-    mismatch on a board that had just been flashed correctly, which is worse
-    than not checking: it accuses the thing that worked. Seen 2026-09-01.
+    Without it this falls back to build/rp2350-chess, which is only right when
+    that is the preset in play -- and there are multiple RP2350 presets now
+    (-chess, -chess-smp, -wifi, -gateway, -clock, -terminal, -sensor). Flashing
+    build/rp2350-wifi's UF2 while this read build/rp2350-chess's stale header
+    reported a build-id mismatch on a board that had just been flashed
+    correctly, which is worse than not checking: it accuses the thing that
+    worked. Seen 2026-09-01.
     """
     candidates = []
     if build_dir is not None:
         candidates.append(Path(build_dir) / "lugalos_build_id.h")
-    candidates.append(REPO_ROOT / "build" / "rp2350" / "lugalos_build_id.h")
+    candidates.append(REPO_ROOT / "build" / "rp2350-chess" / "lugalos_build_id.h")
     for candidate in candidates:
         if candidate.exists():
             m = re.search(r'#define\s+LUGALOS_BUILD_ID\s+"([^"]+)"', candidate.read_text())

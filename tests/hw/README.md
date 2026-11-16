@@ -25,7 +25,7 @@ is attached, so it's safe to run speculatively and safe to leave out of CI.
 ## Setup
 
 Requires [`uv`](https://docs.astral.sh/uv/) and a board already flashed with
-the current `build/rp2350/lugalos.uf2` **and** `build/rp2350/flashfs.uf2`
+the current `build/rp2350-chess/lugalos.uf2` **and** `build/rp2350-chess/flashfs.uf2`
 (the `/flash0` filesystem is its own flash image since I7a; see the root
 `README.md`'s "Two images, flashed independently") and connected over USB. The `p9share` test
 also needs a CP2101/CP2102 UART adapter wired up; it's skipped otherwise.
@@ -91,7 +91,7 @@ There is no automatic path: LugalOS implements its own USB CDC stack, which
 receives `SET_LINE_CODING` but ignores the baud rate, so the Arduino-style
 "1200-baud touch" that reboots Pico-SDK firmware into BOOTSEL does nothing
 here. Flash manually -- hold BOOTSEL while connecting, then copy
-`build/rp2350/lugalos.uf2` to the mounted volume (and `flashfs.uf2` too, on
+`build/rp2350-chess/lugalos.uf2` to the mounted volume (and `flashfs.uf2` too, on
 a board that has never had it -- holding BOOTSEL again in between, since
 each copy reboots out of it). If the board is running
 firmware older than the feature under test, `test_pmp_probe` says so

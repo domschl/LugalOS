@@ -6,7 +6,7 @@ the console CDC port at 1200 baud, drop DTR, and the device reboots itself
 into BOOTSEL via the bootrom. The board then enumerates as a USB mass-storage
 volume, the UF2 is copied onto it, and it reboots into the new firmware.
 
-    uv run flash.py                      # flash build/rp2350/lugalos.uf2
+    uv run flash.py                      # flash build/rp2350-chess/lugalos.uf2
     uv run flash.py --uf2 path/to.uf2
     uv run flash.py --verify             # also check /proc/buildid afterwards
     uv run flash.py --uf2 build/rp2350-wifi/lugalos.uf2 --ptable
@@ -47,7 +47,7 @@ import serial
 import rp2350
 
 REPO_ROOT = rp2350.REPO_ROOT
-DEFAULT_UF2 = REPO_ROOT / "build" / "rp2350" / "lugalos.uf2"
+DEFAULT_UF2 = REPO_ROOT / "build" / "rp2350-chess" / "lugalos.uf2"
 
 
 def bootsel_volumes() -> list[str]:
