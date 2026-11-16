@@ -60,7 +60,7 @@ typedef struct {
 static ylock_t        s_hub_lock;
 static sensor_dev_t  *s_drivers[SENSOR_HUB_MAX_DEVS];
 static uint32_t       s_driver_count = 0;
-static dev_cache_t    s_caches[SENSOR_HUB_MAX_DEVS];
+static dev_cache_t    s_caches[SENSOR_HUB_MAX_ACTIVE];
 static uint32_t       s_active_count = 0;
 static derived_chan_t s_derived[SENSOR_CHAN_MAX];
 static int32_t        s_bme680_r_base = 0;
@@ -141,7 +141,10 @@ static void sensor_hub_init_locked(void) {
         i2c_probe_begin(dev->name);
         bool found = dev->ops->init(dev);
         i2c_probe_end();
-        if (found) {
+        if (found && s_active_count >= SENSOR_HUB_MAX_ACTIVE) {
+            printk("[Sensor Hub] %s found, but %u devices are already active; not sampled.\n",
+                   dev->name, (unsigned)SENSOR_HUB_MAX_ACTIVE);
+        } else if (found) {
             s_caches[s_active_count].dev = dev;
             s_active_count++;
         }

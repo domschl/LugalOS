@@ -23,8 +23,13 @@ static struct {
     uint32_t i2c_filtered, i2c_read_fail;
 } g;   /* single task: cardkb2 (display counters are read racily by `cardkb`, accepted) */
 
+/* accepted: a single-producer single-consumer ring. Only the cardkb2 task writes g_kq and g_kq_head;
+ * only the console pump writes g_kq_tail, and it runs one at a time under the console's input
+ * lock, whichever task is pumping. Each side only reads the other's index, and a stale read
+ * errs toward "empty" or "full", never toward a torn byte. */
 static uint8_t g_kq[KQ_SIZE];
-static volatile uint32_t g_kq_head, g_kq_tail;   /* single producer (the task), single consumer (the console pump); each index is written by its owner only */
+/* accepted: as g_kq above. */
+static volatile uint32_t g_kq_head, g_kq_tail;
 
 bool    cardkb2_is_detected(void) { return g.detected; }
 uint8_t cardkb2_firmware(void)    { return g.firmware; }

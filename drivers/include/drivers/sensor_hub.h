@@ -14,7 +14,8 @@
  * - Feed for /proc/sensors, shell 'sensor' command, and mqttd
  */
 
-#define SENSOR_HUB_MAX_DEVS     16u
+#define SENSOR_HUB_MAX_DEVS     16u   /* drivers the hub can know */
+#define SENSOR_HUB_MAX_ACTIVE   12u   /* detected at once: a cache (~340 bytes) each; the rest are not sampled */
 #define SENSOR_HUB_DEFAULT_PERIOD_S 60u
 
 /* Registers a sensor driver instance with the hub */
