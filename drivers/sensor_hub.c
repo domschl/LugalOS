@@ -5,6 +5,7 @@
 #include "drivers/bme680.h"
 #include "drivers/ccs811.h"
 #include "drivers/sgp30.h"
+#include "drivers/scd4x.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
@@ -121,6 +122,7 @@ static void sensor_hub_init_locked(void) {
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
+    sensor_hub_register(&scd4x_sensor_dev);
     sensor_hub_register(&ina226_sensor_dev);
     sensor_hub_register(&bmi270_sensor_dev);
 
@@ -205,6 +207,13 @@ static void hub_derive(void) {
             sgp30_set_absolute_humidity(t, h);
         }
     }
+    /* The SCD4x corrects its CO2 reading for the air pressure it is given. */
+    if (scd4x_is_detected()) {
+        int32_t pa = 0;
+        if (sensor_hub_get(SENSOR_CHAN_PRESSURE, &pa, NULL)) {
+            scd4x_set_ambient_pressure(pa);
+        }
+    }
     /* The CCS811 wants the air at the sensor, not the room's. An HDC1080
      * shares the CCS811's daughterboard and reads that air -- several degrees
      * above the room from the CCS811's own heater, which is why it is the
@@ -271,7 +280,8 @@ static void hub_derive(void) {
     int32_t co2_ndir = 0;
     int32_t eco2 = 0;
     int32_t tvoc = 0;
-    bool have_ndir = sensor_hub_get_dev(&mhz19b_sensor_dev, SENSOR_CHAN_CO2, &co2_ndir, NULL);
+    bool have_ndir = sensor_hub_get_dev(&mhz19b_sensor_dev, SENSOR_CHAN_CO2, &co2_ndir, NULL) ||
+                     sensor_hub_get_dev(&scd4x_sensor_dev, SENSOR_CHAN_CO2, &co2_ndir, NULL);
     bool have_eco2 = sensor_hub_get(SENSOR_CHAN_ECO2, &eco2, NULL);
     bool have_tvoc = sensor_hub_get(SENSOR_CHAN_TVOC, &tvoc, NULL);
 
@@ -415,9 +425,13 @@ static bool sensor_hub_get_locked(sensor_chan_t chan, int32_t *out_val, uint32_t
         }
     }
 
-    /* 3. For CO2: Prioritize true physical NDIR optical absorption (mhz19b) */
+    /* 3. For CO2: Prioritize true physical NDIR optical absorption (mhz19b),
+     * then the SCD4x's photoacoustic measurement */
     if (chan == SENSOR_CHAN_CO2) {
         if (sensor_hub_get_dev(&mhz19b_sensor_dev, SENSOR_CHAN_CO2, out_val, age_s)) {
+            return true;
+        }
+        if (sensor_hub_get_dev(&scd4x_sensor_dev, SENSOR_CHAN_CO2, out_val, age_s)) {
             return true;
         }
         /* Fallback to eCO2 if NDIR is absent */
@@ -523,6 +537,13 @@ static bool sensor_hub_get_origin_locked(sensor_chan_t chan, sensor_origin_t *ou
             out->desc = "NDIR infrared optical absorption";
             return true;
         }
+        if (sensor_hub_get_dev(&scd4x_sensor_dev, SENSOR_CHAN_CO2, &val, NULL)) {
+            out->tier = SENSOR_TIER_HW;
+            out->source_dev = "scd4x";
+            out->model_name = "photoacoustic-ndir";
+            out->desc = "photoacoustic NDIR absorption";
+            return true;
+        }
         if (sensor_hub_get(SENSOR_CHAN_ECO2, &val, NULL)) {
             out->tier = SENSOR_TIER_FUSED;
             out->source_dev = ccs811_is_detected() ? "ccs811" : (sgp30_is_detected() ? "sgp30" : "unknown");
@@ -575,6 +596,7 @@ uint32_t sensor_hub_selftest(bool report) {
     sensor_hub_register(&bme680_sensor_dev);
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
+    sensor_hub_register(&scd4x_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&ina226_sensor_dev);

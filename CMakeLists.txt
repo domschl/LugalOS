@@ -1112,6 +1112,7 @@ set(SOURCES
     drivers/bme680.c
     drivers/ccs811.c
     drivers/sgp30.c
+    drivers/scd4x.c
     drivers/tsl2561.c
     drivers/tsl2591.c
     drivers/mics6814.c
