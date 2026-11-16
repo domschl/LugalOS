@@ -39,6 +39,7 @@
 #include "net/llm.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/lcd2004.h"
+#include "drivers/eeprom_script.h"
 #include <limits.h>
 #include "kernel/identity.h"
 #include "drivers/lispui.h"
@@ -6482,8 +6483,68 @@ static lisp_val_t *prim_eeprom_read(lisp_val_t *args, lisp_val_t *env) {
     return make_str(eeprom_buf);
 }
 
+/* The Lisp program kept in the EEPROM (drivers/eeprom_script.h), for a node with no filesystem.
+ * `lisp_run_eeprom_script()` is what the boot sequence and `(eeprom-script-run)` and the shell's
+ * `script run` all use. The text sits in a scratch buffer while it runs: the reader copies what it
+ * keeps, as the boot scripts rely on. */
+bool lisp_run_eeprom_script(void) {
+    if (!eeprom_script_present()) return false;
+    scratch_t sc;
+    if (!scratch_acquire(&sc, EEPROM_SCRIPT_MAX + 1u)) return false;
+    char *buf = (char *)sc.base;
+    int n = eeprom_script_read(buf, EEPROM_SCRIPT_MAX + 1u);
+    bool ran = false;
+    if (n > 0) {
+        printk("[Lisp Boot] Running the EEPROM script (%d bytes)\n", n);
+        lisp_eval_string(buf);
+        ran = true;
+    } else if (n == EEPROM_SCRIPT_BADCRC) {
+        printk("[Lisp Boot] The EEPROM script does not match its checksum; not run\n");
+    }
+    scratch_release(&sc);
+    return ran;
+}
+
+/* `(eeprom-script?)` a script is stored; `(eeprom-script)` its text, or ""; `(eeprom-script-run)`
+ * runs it (#t if one ran); `(eeprom-script-set "text")` and `(eeprom-script-clear)` change it. */
+static lisp_val_t *prim_eeprom_script_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return eeprom_script_present() ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_eeprom_script(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    if (!eeprom_script_present()) return make_str("");
+    scratch_t sc;
+    if (!scratch_acquire(&sc, EEPROM_SCRIPT_MAX + 1u)) return make_str("");
+    int n = eeprom_script_read((char *)sc.base, EEPROM_SCRIPT_MAX + 1u);
+    lisp_val_t *r = make_str(n > 0 ? (const char *)sc.base : "");
+    scratch_release(&sc);
+    return r;
+}
+
+static lisp_val_t *prim_eeprom_script_run(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return lisp_run_eeprom_script() ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_eeprom_script_set(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (privileged_refused("eeprom-script-set")) return &false_val;
+    const char *t = get_str_val(lisp_list_ref(args, 0));
+    if (!t) return &false_val;
+    return eeprom_script_write(t, (uint32_t)strlen(t)) == 0 ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_eeprom_script_clear(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    if (privileged_refused("eeprom-script-clear")) return &false_val;
+    return eeprom_script_clear() ? &true_val : &false_val;
+}
+
 static lisp_val_t *prim_eeprom_write(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("eeprom-write")) return &false_val;      /* it can write the boot script */
     if (!args || args->type != LISP_PAIR) return &false_val;
     lisp_val_t *a1 = args->u.pair.car;
     lisp_val_t *rest = args->u.pair.cdr;
@@ -8261,6 +8322,10 @@ void lisp_init(void) {
     }
 
     scratch_release(&boot_sc);
+
+    /* A node with no filesystem has no init.lisp; its EEPROM script (drivers/eeprom_script.h) is the
+     * boot program. A board that does run init.lisp checks for it there, after usr_init.lisp. */
+    if (len <= 0) (void)lisp_run_eeprom_script();
 }
 
 

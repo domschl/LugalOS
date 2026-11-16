@@ -52,6 +52,7 @@
 #include "drivers/tlv493d.h"
 #include "drivers/lcd2004.h"
 #include "drivers/cardkb2.h"
+#include "drivers/eeprom_script.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
@@ -3533,6 +3534,82 @@ static void cmd_mqtt(const char *arg) {
  * targets. */
 /* clcd: the 20x4 character LCD. `clcd at X Y TEXT` is the dashboard use (no scrolling, only
  * changed characters are sent), `clcd print|type` the terminal use. */
+/* `script`: the Lisp program kept in the EEPROM and run at boot (drivers/eeprom_script.h). */
+/* accepted: where `script put` appends; one staging session at a time, a command's own state */
+static uint32_t g_script_put;
+
+static const char *script_err(int r) {
+    switch (r) {
+    case EEPROM_SCRIPT_NONE:   return "no script stored";
+    case EEPROM_SCRIPT_BADCRC: return "the text does not match its checksum";
+    case EEPROM_SCRIPT_TOOBIG: return "empty, or too big for the EEPROM";
+    case EEPROM_SCRIPT_BADTXT: return "not text (a NUL or control character)";
+    default:                   return "the EEPROM did not answer";
+    }
+}
+
+static void cmd_script(const char *arg) {
+    while (*arg == ' ') arg++;
+    if (*arg == '\0') {
+        int n = eeprom_script_check();
+        if (n > 0) cprintf("script: %d bytes stored (of %u), checksum ok; runs at boot\n", n, (unsigned)EEPROM_SCRIPT_MAX);
+        else cprintf("script: %s\n", script_err(n));
+    } else if (strcmp(arg, "show") == 0) {
+        scratch_t sc;
+        if (!scratch_acquire(&sc, EEPROM_SCRIPT_MAX + 1u)) { cprintf("script: no memory\n"); return; }
+        int n = eeprom_script_read((char *)sc.base, EEPROM_SCRIPT_MAX + 1u);
+        if (n > 0) { console_puts((const char *)sc.base); if (((char *)sc.base)[n - 1] != '\n') cprintf("\n"); }
+        else cprintf("script: %s\n", script_err(n));
+        scratch_release(&sc);
+    } else if (strcmp(arg, "run") == 0) {
+        lisp_lock();
+        if (!lisp_run_eeprom_script()) cprintf("script: nothing to run (%s)\n", script_err(eeprom_script_check()));
+        lisp_unlock();
+    } else if (strcmp(arg, "clear") == 0) {
+        cprintf(eeprom_script_clear() ? "script: cleared\n" : "script: the EEPROM did not answer\n");
+    } else if (strcmp(arg, "begin") == 0) {
+        g_script_put = 0;
+        cprintf(eeprom_script_clear() ? "script: ready for `script put HEX`, then `script commit`\n" : "script: the EEPROM did not answer\n");
+    } else if (strncmp(arg, "put ", 4) == 0) {
+        uint8_t b[64];
+        uint32_t n = 0;
+        for (const char *p = arg + 4; *p && n < sizeof(b); ) {
+            while (*p == ' ') p++;
+            if (!p[0] || !p[1]) break;
+            int hi = (p[0] >= '0' && p[0] <= '9') ? p[0] - '0' : (p[0] >= 'a' && p[0] <= 'f') ? p[0] - 'a' + 10 : -1;
+            int lo = (p[1] >= '0' && p[1] <= '9') ? p[1] - '0' : (p[1] >= 'a' && p[1] <= 'f') ? p[1] - 'a' + 10 : -1;
+            if (hi < 0 || lo < 0) { cprintf("script: bad hex\n"); return; }
+            b[n++] = (uint8_t)(hi * 16 + lo);
+            p += 2;
+        }
+        int r = eeprom_script_put(g_script_put, b, n);
+        if (r < 0) { cprintf("script: put failed: %s\n", script_err(r)); return; }
+        g_script_put += n;
+    } else if (strcmp(arg, "commit") == 0) {
+        int r = eeprom_script_commit(g_script_put);
+        if (r == 0) cprintf("script: committed %lu bytes\n", (unsigned long)g_script_put);
+        else cprintf("script: commit failed: %s\n", script_err(r));
+    } else if (strncmp(arg, "save ", 5) == 0) {
+        const char *path = arg + 5;
+        while (*path == ' ') path++;
+        scratch_t sc;
+        if (!scratch_acquire(&sc, EEPROM_SCRIPT_MAX + 1u)) { cprintf("script: no memory\n"); return; }
+        int n = vfs_read(path, sc.base, EEPROM_SCRIPT_MAX + 1u);
+        if (n <= 0) cprintf("script: cannot read %s\n", path);
+        else if ((uint32_t)n > EEPROM_SCRIPT_MAX) cprintf("script: %s is %d bytes; the most is %u\n", path, n, (unsigned)EEPROM_SCRIPT_MAX);
+        else {
+            int r = eeprom_script_write((const char *)sc.base, (uint32_t)n);
+            if (r == 0) cprintf("script: stored %d bytes from %s\n", n, path);
+            else cprintf("script: not stored: %s\n", script_err(r));
+        }
+        scratch_release(&sc);
+    } else if (strcmp(arg, "selftest") == 0) {
+        eeprom_script_selftest(true);
+    } else {
+        cprintf("usage: script [show | run | clear | save PATH | begin | put HEX | commit | selftest]\n");
+    }
+}
+
 /* The dashboard program (tools/sd_root/demos/clcd_dash.lisp), embedded in the image. */
 extern const char g_clcd_dash_lisp[];
 
@@ -6851,7 +6928,7 @@ static void shell_run_editor(const char *filename) {
  * they change keys, identity or network configuration, write arbitrary memory
  * or install firmware. See kernel/include/kernel/privilege.h. */
 static const char *const g_privileged[] = {
-    "httpd", "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "sdio", "setup", "tls", "wlan",
+    "httpd", "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "script", "sdio", "setup", "tls", "wlan",
 };
 
 static bool privileged_cmd_refused(const char *cmd_line) {
@@ -8365,6 +8442,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
         cmd_sensor(&cmd_line[7]);
+        return;
+    } else if (strcmp(cmd_line, "script") == 0 || strncmp(cmd_line, "script ", 7) == 0) {
+        cmd_script(cmd_line + 6);
         return;
     } else if (strcmp(cmd_line, "cardkb") == 0 || strncmp(cmd_line, "cardkb ", 7) == 0) {
         const char *a = cmd_line + 6;

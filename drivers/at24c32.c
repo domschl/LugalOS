@@ -25,6 +25,14 @@ static bool g_at24c32_detected = false;
  * I2C_HAVE_CONTROLLER (drivers/i2c_rtc.h), not a board name. */
 #if I2C_HAVE_CONTROLLER
 
+/* Bytes a single transfer may carry: the ESP controllers move 30 (drivers/i2c_bus.c refuses more),
+ * so a page write is cut to 28 data bytes after the two address bytes and a read to 30. */
+#if defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_ESP32P4)
+#define AT24_XFER_LIMIT 30u
+#else
+#define AT24_XFER_LIMIT I2C_XFER_RMAX
+#endif
+
 /* Reads are chunked to what one transfer carries; writes are already chunked
  * to the part's 32-byte page by at24c32_hw_write() below, which is a smaller
  * bound and for a different reason (a page write that crosses a boundary
@@ -34,6 +42,7 @@ static bool i2c_read_at24(uint16_t mem_addr, uint8_t *dst, size_t len) {
     while (done < len) {
         size_t chunk = len - done;
         if (chunk > I2C_XFER_RMAX) chunk = I2C_XFER_RMAX;
+        if (chunk > AT24_XFER_LIMIT) chunk = AT24_XFER_LIMIT;
         uint16_t a = (uint16_t)(mem_addr + done);
         uint8_t addr_bytes[2] = { (uint8_t)(a >> 8), (uint8_t)(a & 0xFF) };
         if (!i2c_xfer(AT24C32_I2C_ADDR, addr_bytes, 2, &dst[done], (uint32_t)chunk))
@@ -121,6 +130,9 @@ int at24c32_hw_write(uint16_t addr, const uint8_t *buf, size_t len) {
         size_t page_offset = curr_addr % AT24C32_PAGE_SIZE;
         size_t chunk = AT24C32_PAGE_SIZE - page_offset;
         if (chunk > (len - written)) chunk = len - written;
+#if I2C_HAVE_CONTROLLER
+        if (chunk + 2u > AT24_XFER_LIMIT) chunk = AT24_XFER_LIMIT - 2u;   /* the address bytes ride along */
+#endif
 
         if (!i2c_write_at24(curr_addr, &buf[written], chunk)) {
             return written > 0 ? (int)written : -1;

@@ -80,6 +80,10 @@ typedef struct lisp_val {
 
 void lisp_init(void);
 
+/* Runs the Lisp program stored in the EEPROM, if there is a valid one; true when one ran.
+ * Called at boot on a board with no init.lisp, and by `(eeprom-script-run)` and `script run`. */
+bool lisp_run_eeprom_script(void);
+
 /* at a prompt, call
  * the program's (canvas-on-redraw f) if the canvas was lost since it last
  * drew; and put the screen back to text (after an `exec`'d program or a

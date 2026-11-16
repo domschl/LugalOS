@@ -120,6 +120,12 @@
 ;;       chess there is no "interactive, non-dedicated" use of this
 ;;       board to preserve.
 ;;
+;;    b') A Lisp program stored in the I2C EEPROM (`script` in the shell
+;;       manual; a "LUS1" header, then the text), for a node with no card.
+;;       It runs the way usr_init.lisp does: when it returns the shell
+;;       starts, and Ctrl-C ends it. A board with no init.lisp at all (the
+;;       C6 with no filesystem) runs it from lisp_init() instead.
+;;
 ;;    c) Otherwise, the interactive shell.
 ;;    (clock) is followed by (lsh) rather than being the true last form the
 ;;    way usr_init.lisp's own choice of persona is (comment (a) above) --
@@ -129,6 +135,8 @@
 ;;    (lsh) alone, same as always.
 (if (not (= (read-file "/sd0/system/etc/usr_init.lisp") ""))
     (load "/sd0/system/etc/usr_init.lisp")
-    (if (= (boot-program) "clock")
-        (begin (clock) (lsh))
-        (lsh)))
+    (if (eeprom-script?)
+        (eeprom-script-run)
+        (if (= (boot-program) "clock")
+            (begin (clock) (lsh))
+            (lsh))))

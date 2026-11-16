@@ -70,6 +70,13 @@ Readings come from the sensor hub's cache, so no call waits on the I2C bus. Valu
 * Channel names: temp, pressure, humidity, lux, eco2, tvoc, gas-res, co, no2, nh3, co2, pressure-msl, abs-humidity, dew-point, iaq, voltage (mV), current (mA), power (mW), battery (0.1 %), accel-x/y/z (mg), gyro-x/y/z (0.1 deg/s), mag-x/y/z (uT).
 * (sensor-cal ['save | 'restore | 'clear]): Gas-sensor calibration baselines.
 
+### The EEPROM Script
+A Lisp program kept in the I2C EEPROM runs at boot on a node with no filesystem (script in the shell manual). init.lisp runs it after usr_init.lisp.
+* (eeprom-script?): #t when a script is stored.
+* (eeprom-script): Its text, or "".
+* (eeprom-script-run): Runs it; #t if one ran.
+* (eeprom-script-set "text"), (eeprom-script-clear): Store or remove it (up to 3828 bytes of text). Refused for an agent's tool call, like eeprom-write.
+
 ### Character LCD
 A 20x4 HD44780 display on a PCF8574 backpack (clcd in the shell manual). Writes go to a frame buffer and nothing moves until (lcd-flush), which sends only the characters that changed.
 * (lcd-clear): Blank the buffer.

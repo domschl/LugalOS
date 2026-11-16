@@ -1020,6 +1020,7 @@ set(SOURCES
     drivers/i2c_bus.c
     drivers/i2c_rtc.c
     drivers/at24c32.c
+    drivers/eeprom_script.c
     drivers/gpio.c
     drivers/adc.c
     drivers/loopback_net.c
