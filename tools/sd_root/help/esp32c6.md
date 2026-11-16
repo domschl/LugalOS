@@ -121,4 +121,18 @@ If firmware fails to boot and UART is inaccessible:
 
 ---
 
+## 7. Pinouts & External Wiring
+
+* **ESP32-C6-Zero (`esp32c6`, `cmake/board-esp32c6-zero.cmake`):**
+  * **I2C0 (Sensors / 20x4 HD44780 CLCD):** `GPIO0` (SDA), `GPIO1` (SCL), 100 kHz.
+  * **UART1 (M5Stack CardKB2 in UART mode):** `GPIO2` (RX, connected to CardKB2 Grove yellow wire TX).
+  * **RGB Status LED:** `GPIO8` (WS2812).
+  * **BOOT / Owner Reset Button:** `GPIO9` (active low, internal pull-up).
+  * **UART0 (Console Mirror / LLP):** `GPIO16` (TX), `GPIO17` (RX).
+* **ESP32-C6-MINI (`esp32c6-mini`, `cmake/board-esp32c6-mini.cmake`):**
+  * **UART0:** `GPIO16` (TX), `GPIO17` (RX) -- wired to P4 header (`C6-UART`).
+  * **SDIO1 Slave (to ESP32-P4):** `GPIO18`-`GPIO23` (fixed IO_MUX function 0).
+
+---
+
 **Navigation:** [<- Board Reference Guides](boards.md) | [Administrator Manual](admin.md) | [Documentation Index](index.md)

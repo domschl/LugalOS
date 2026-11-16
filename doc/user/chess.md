@@ -17,6 +17,15 @@ A standalone physical chess computer built with:
 * **Keypad & Status**: TM1638 module featuring 8 pushbuttons, 8 dual-color LEDs, and an 8-digit 7-segment display (eval score and move counter).
 * **Storage**: MicroSD card over SPI (`/sd0/CHESS/`) holding opening books and game history.
 
+| Peripheral | Bus / Interface | Pico 2 GPIO Pins |
+| :--- | :--- | :--- |
+| **ST7735 TFT** | SPI0 | `GP18` (SCK), `GP19` (MOSI), `GP17` (CS), `GP20` (DC), `GP21` (RST) |
+| **TM1638 Keypad** | 3-wire | `GP6` (STB), `GP7` (CLK), `GP8` (DIO) |
+| **MicroSD Card** | SPI1 | `GP10` (SCK), `GP11` (MOSI), `GP12` (MISO), `GP13` (CS) |
+| **UART0 Console** | UART0 | `GP0` (TX), `GP1` (RX) |
+
+For the full RP2350 pinout table (including I2C0 and status LEDs), see the [RP2350 Hardware Reference Guide](../admin/boards/rp2350.md#7-pinouts--hardware-wiring).
+
 ![LugalOS Chess Appliance](../assets/images/LugalOS_chess.jpg)
 *LugalOS running isolated driver tasks for TFT, TM1638 keypad, and chess engine on RP2350.*
 

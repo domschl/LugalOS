@@ -23,7 +23,7 @@ def generate_flash_fs_c(output_c_path: str, src_dir: str) -> None:
     while True:
         try:
             build_fat32_image(temp_img_path, src_dir, num_sectors=sectors,
-                              exclude=frozenset({"mpy.elf"}))
+                              exclude=frozenset({"mpy.elf", "pub/help"}))
             break
         except ValueError:
             if sectors >= 8 * NUM_SECTORS:
@@ -59,9 +59,10 @@ def generate_flash_fs_bin(output_bin_path: str, src_dir: str) -> None:
     the C-array form -- they have no flash map to place a segment in, and
     embedding is exactly right for a ROMdisk in a hosted image.
     """
-    # Exclude optional large SD-only userlands (e.g. mpy.elf, roots.bin) from the fixed 1 MB
+    # Exclude optional large SD-only userlands (e.g. mpy.elf, roots.bin) and redundant
+    # Gemtext help mirrors (pub/help, already present as help/*.md) from the fixed 1 MB
     # hardware /flash0 partition; they are synced to /sd0 via p9sync.py.
-    build_fat32_image(output_bin_path, src_dir, exclude=frozenset({"mpy.elf", "roots.bin"}))
+    build_fat32_image(output_bin_path, src_dir, exclude=frozenset({"mpy.elf", "roots.bin", "pub/help"}))
     size = os.path.getsize(output_bin_path)
     print(f"[FlashFS] Wrote {size} bytes of FAT32 image to '{output_bin_path}'")
 

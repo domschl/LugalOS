@@ -44,10 +44,17 @@ LugalOS itself is licensed under the MIT License. Everything below came from els
 * Monocypher 4.0.3 by Loup Vaillant, Michael Savage and Fabio Scotoni: X25519, ChaCha20 and Poly1305 for TLS and protected 9P sessions, from Monocypher (dual CC0-1.0 / BSD 2-Clause; used under BSD 2-Clause). Unmodified in third_party/crypto/monocypher/, with LICENCE.md and ORIGIN.md.
 * p256-m by Manuel Pegourie-Gonnard: P-256 ECDSA and ECDH for TLS certificates and update-image signatures, from p256-m (Apache License 2.0). Unmodified in third_party/crypto/p256-m/, with LICENSE, apache-2.0.txt and ORIGIN.md.
 
+### Userland runtimes & game data
+
+* MicroPython (user/mpy/, thirdparty/micropython/): the MicroPython VM, compiler, runtime, extmod, and shared modules, built into the isolated U-mode /sd0/system/bin/mpy.elf binary (MIT License, Copyright (c) 2013-2024 Damien P. George and contributors; thirdparty/micropython/LICENSE).
+* MicroPython libm (third_party/micropython/lib/libm/): single-precision software math library compiled into mpy.elf, adapted from newlib-nano-2 / Sun fdlibm and musl-0.9.15 (permissive MIT/BSD-style notices in the file headers).
+* Zork I, II, and III ZIL sources (user/zmachine/games/zork1-zork3/): MIT-licensed ZIL game sources released by Microsoft (historicalsource/zork1, zork2, zork3; Copyright (c) 2025 Microsoft, user/zmachine/LICENSE), compiled into zork1.z3, zork2.z3, and zork3.z3. (The Z-machine v3 interpreter in user/zmachine/ is written for this tree; user/zmachine/pkgbuild/zilf-hg/ is a build-time-only GPL AUR PKGBUILD for the ZILF/ZAPF compiler.)
+
 ### Fonts
 
 * Frederic Cambus's Spleen: the 8x16 terminal font (drivers/font8x16.c) is generated from Spleen (BSD 2-Clause License, copied in full to tools/fonts/LICENSE.spleen) by tools/genfontbdf.py. The chess figurines and the replacement glyph are drawn in the generator for this tree.
-* Google Noto Sans Mono and Noto Serif: the multi-density font tables (drivers/fontnotomono.c, drivers/fontnotoserif.c) are rendered from the system's Noto fonts by tools/gennotofonts.py (SIL Open Font License 1.1).
+* Google Noto Sans Mono, Noto Serif, and Noto Sans Math: the multi-density font tables (drivers/fontnotomono.c, drivers/fontnotoserif.c) are rendered from the system's Noto fonts by tools/gennotofonts.py, and tools/fonts/NotoSerif-Regular.ttf and tools/fonts/NotoSansMath-Regular.ttf are staged to /sd0/fonts/ for on-device TrueType rendering (SIL Open Font License 1.1).
+* Jomolhari: tools/fonts/Jomolhari-Regular.ttf is staged to /sd0/fonts/ for Tibetan script TrueType rendering and GSUB stacking (SIL Open Font License 1.1).
 * Liberation Serif / Noto Serif: the reader's proportional serif tables (drivers/fontserif.c) are rendered by tools/genserif_font.py from whichever of the two is installed (both SIL Open Font License 1.1).
 
 ### Host tools

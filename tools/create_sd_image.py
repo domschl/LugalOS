@@ -213,11 +213,12 @@ def build_fat32_image(
             slots += dir_entry(b"..         ", 0x10, 0, parent if parent != 2 else 0, 0)
         subdirs: list[tuple[str, int]] = []
         for name in sorted(os.listdir(dir_path)):
+            full_path = os.path.join(dir_path, name)
+            rel_path = os.path.relpath(full_path, src_dir).replace(os.sep, "/")
             # TrueType fonts (~2.9 MB) are staged in sd_root/fonts/ for hardware
             # p9sync, but exceed the 1 MB flashfs and 2 MB QEMU SD image budgets.
-            if (first == 2 and name == "fonts") or name in exclude:
+            if (first == 2 and name == "fonts") or name in exclude or rel_path in exclude:
                 continue
-            full_path = os.path.join(dir_path, name)
             if os.path.isdir(full_path):
                 sub = alloc(1)[0]
                 subdirs.append((full_path, sub))

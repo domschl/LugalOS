@@ -33,6 +33,19 @@ Sensors are searched for at their usual addresses, but never at a board part's a
 
 **M5Stack Tab5:** connect external sensors to **Grove port A** (bus 1, GPIO53 SDA / GPIO54 SCL), not to the internal bus. The sensor hub searches both buses. The port's 5 V supply is switched on at boot. Sensors are searched for at boot; one plugged in later is found by `sensor init`.
 
+### Board Sensor Wiring
+
+| Board / Preset | Bus | Pins | Notes |
+| :--- | :--- | :--- | :--- |
+| **RP2350 (`rp2350-sensor`, `rp2350`, `rp2350-wifi`, `rp2350-chess`, `rp2350-gateway`)** | I2C0 | `GP4` (SDA, pin 6), `GP5` (SCL, pin 7) | `3V3` (pin 36), `GND` (pin 38); internal pull-ups enabled |
+| **RP2350 (`rp2350-sensor` MH-Z19B CO2)** | UART1 | `GP8` (TX), `GP9` (RX) | 9600 baud (cross TX/RX to sensor) |
+| **RP2350-LCD-7 (`rp2350-terminal`) / Clock (`rp2350-clock`)** | I2C1 | `GP6` (SDA), `GP7` (SCL) | Shared with touch / RTC |
+| **ESP32-C6-Zero (`esp32c6`)** | I2C0 | `GPIO0` (SDA), `GPIO1` (SCL) | 100 kHz |
+| **M5Stack Tab5 (`esp32p4-tab5`)** | I2C1 (Grove A) | `GPIO53` (SDA), `GPIO54` (SCL) | 5 V supplied on Grove A; avoid `I2C0` internal bus |
+| **ESP32-P4-LCD-7B / NANO (`esp32p4-lcd7b`, `esp32p4`)** | I2C0 | `GPIO7` (SDA), `GPIO8` (SCL) | Avoid addresses of soldered board parts (see `i2c scan`) |
+
+For complete board pinouts, see the [RP2350 Guide](rp2350.md#7-pinouts--hardware-wiring) and [ESP32-C6 Guide](esp32c6.md#7-pinouts--external-wiring).
+
 ### Sampling Period
 `sensor period N` samples the environmental sensors every N seconds, from the next round on; `sensor period` alone shows the current period. It lasts until the next boot.
 
