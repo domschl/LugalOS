@@ -51,6 +51,7 @@
 #include "drivers/scd4x.h"
 #include "drivers/tlv493d.h"
 #include "drivers/lcd2004.h"
+#include "drivers/cardkb2.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
@@ -8329,6 +8330,19 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
         cmd_sensor(&cmd_line[7]);
+        return;
+    } else if (strcmp(cmd_line, "cardkb") == 0 || strncmp(cmd_line, "cardkb ", 7) == 0) {
+        const char *a = cmd_line + 6;
+        while (*a == ' ') a++;
+        if (strcmp(a, "init") == 0) {
+            cprintf(cardkb2_start() ? "cardkb: keyboard ready\n" : "cardkb: no keyboard answered at 0x5f\n");
+        } else if (strcmp(a, "selftest") == 0) {
+            cardkb2_selftest(true);
+        } else if (*a == '\0') {
+            cardkb2_print_status();
+        } else {
+            cprintf("usage: cardkb [init | selftest]\n");
+        }
         return;
     } else if (strcmp(cmd_line, "clcd") == 0 || strncmp(cmd_line, "clcd ", 5) == 0) {
         cmd_clcd(cmd_line + 4);

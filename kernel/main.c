@@ -54,6 +54,7 @@
 #include "drivers/lispui.h"
 #include "drivers/bme280.h"
 #include "drivers/sensor_hub.h"
+#include "drivers/cardkb2.h"
 #include "net/mqttd.h"
 #include "kernel/identity.h"
 #include "kernel/random.h"
@@ -662,6 +663,7 @@ void kernel_main(void) {
      * or an SGP30 was read only when someone typed `sensor` -- in /proc/sensors for a moment, never on
      * MQTT. The BME280 sampler is the fallback for a board whose hub found nothing. */
     if (sensor_hub_sampler_start(0) < 0) bme280_sampler_start(0);
+    (void)cardkb2_start();                /* an I2C keyboard, when one answers; a no-op otherwise */
     power_init();
     orient_init();
 

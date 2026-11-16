@@ -84,6 +84,12 @@ On a board with an HD44780 20x4 display on a PCF8574 backpack (0x27, or 0x3F). T
 * clcd clear, clcd cursor on|off, clcd bl on|off: Clear the buffer, show the blinking cursor, switch the backlight.
 * clcd selftest: Checks the byte encoding, the changed-character search and the scrolling, without a display.
 
+### I2C keyboard (CardKB2)
+On a board with an M5Stack CardKB2 (I2C address 0x5F) the keys are typed into the console like any other keyboard, found at boot. The unit must be in I2C mode (Fn+Sym+1, then the RST button; it remembers). Sym is a toggle on the unit, and I2C mode has no arrow keys.
+* cardkb: Status (present, firmware, keys received, bus failures).
+* cardkb init: Looks for the keyboard again, for one plugged in after boot.
+* cardkb selftest: Checks the byte translation (Backspace becomes DEL), without the unit.
+
 ### Motion (IMU)
 On a board with a BMI270 (the M5Stack Tab5, or a module at 0x69):
 * imu: One reading: acceleration in g, rotation in deg/s, and pitch and roll in degrees.
