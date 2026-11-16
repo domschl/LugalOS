@@ -230,11 +230,16 @@ static uint8_t i2c_translate(uint8_t raw) {
     return 0;
 }
 
+/* A real unit answers the firmware register with a version (0x01 on the one tested). An address that
+ * only ACKs, a floating or loaded bus, reads back all ones (or zeros) there, so those and a reading that
+ * changes between two tries are not a keyboard; without this a phantom ACK at 0x5F types noise. */
 static bool probe(void) {
-    uint8_t b, fw;
+    uint8_t b, fw, fw2;
     uint8_t reg = REG_FIRMWARE;
     if (!i2c_xfer(CARDKB2_ADDR, NULL, 0u, &b, 1u)) return false;
     if (!i2c_xfer(CARDKB2_ADDR, &reg, 1u, &fw, 1u)) return false;
+    if (fw == 0x00u || fw == 0xFFu) return false;
+    if (!i2c_xfer(CARDKB2_ADDR, &reg, 1u, &fw2, 1u) || fw2 != fw) return false;
     g.firmware = fw;
     return true;
 }

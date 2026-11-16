@@ -66,3 +66,7 @@ set(CONFIG_BOARD_DESC "Raspberry Pi Pico 2")
 set(LUGALOS_ENABLE_SPISD ON)
 set(LUGALOS_ENABLE_ST7735 ON)
 set(LUGALOS_ENABLE_TM1638 ON)
+
+# A 20x4 HD44780 on a PCF8574 backpack (I2C0 on the pins above, address 0x27 or 0x3F): mirror the console
+# to it at boot when it answers. Without one the probe finds nothing and the console is unchanged.
+set(CONFIG_CLCD_MIRROR_AT_BOOT 1)
