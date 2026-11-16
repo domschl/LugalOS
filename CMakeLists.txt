@@ -1114,6 +1114,7 @@ set(SOURCES
     drivers/sgp30.c
     drivers/scd4x.c
     drivers/tlv493d.c
+    drivers/lcd2004.c
     drivers/tsl2561.c
     drivers/tsl2591.c
     drivers/mics6814.c

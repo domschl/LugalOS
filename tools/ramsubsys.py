@@ -36,7 +36,7 @@ RULES: list[tuple[str, str]] = [
     ("shell", r"^kernel/(shell|line_editor|vterm|console|editor|keyseq|clipboard|discipline|path|scratch)\.c$"),
     ("display", r"^drivers/(lcdterm|lcd7_|dsi_|ppa_|reader_view|launcher_view|ugui|screen|ramscreen|st7735|ribbon|canvas|fbtext|font|vtterm|latex_layout|touch_)"
                 r"|^fs/(markdown|gemtext|latex_math)\.c$|^kernel/(screenshot|orient)\.c$"),
-    ("sensors", r"^drivers/(sensor|bme|bmi|ccs811|hdc1080|ina226|mcp9808|mhz19b|mics6814|sgp30|scd4x|tlv493d|tmp117|tsl2|adc|battery|charger)"),
+    ("sensors", r"^drivers/(sensor|bme|bmi|ccs811|hdc1080|ina226|mcp9808|mhz19b|mics6814|sgp30|scd4x|tlv493d|lcd2004|tmp117|tsl2|adc|battery|charger)"),
     ("usb", r"^drivers/(usb|piousb)"),
     ("audio", r"^drivers/audio"),
     ("storage", r"^drivers/(spisd|sdmmc|virtio_blk|flash_|psram_|xip_cache)"),

@@ -81,6 +81,15 @@ On a board with a battery (the M5Stack Tab5):
 
 The charge level blends two estimates. One is the pack voltage, corrected for the voltage drop under load and read off a Li-ion discharge curve. The other counts the current in and out against the pack's capacity. The count keeps the number steady from second to second, and the voltage corrects it over several minutes. ([sensors](sensors.md))
 
+### Character LCD (20x4, I2C)
+On a board with an HD44780 20x4 display on a PCF8574 backpack (0x27, or 0x3F). The commands write to a frame buffer and then send only the characters that changed, so the slow I2C link carries little.
+* `clcd`: Status of the display (address, cursor, characters sent, bus failures).
+* `clcd init [addr]`: Finds the display (0x27, then 0x3F; or the given hex address) and initializes it. The other commands do this on first use.
+* `clcd at X Y TEXT`: Dashboard use. Puts `TEXT` at column X, row Y (from 0), cut off at the edge; nothing scrolls and the cursor is left alone.
+* `clcd print TEXT` / `clcd type TEXT`: Terminal use. Writes at the cursor, wraps, and scrolls at the bottom; `print` adds a newline. `\n`, `\r`, backspace and form feed work from programs.
+* `clcd clear`, `clcd cursor on|off`, `clcd bl on|off`: Clear the buffer, show the blinking cursor, switch the backlight.
+* `clcd selftest`: Checks the byte encoding, the changed-character search and the scrolling, without a display.
+
 ### Motion (IMU)
 On a board with a BMI270 (the M5Stack Tab5, or a module at 0x69):
 * `imu`: One reading: acceleration in g, rotation in deg/s, and pitch and roll in degrees.

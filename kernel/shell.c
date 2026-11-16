@@ -50,6 +50,7 @@
 #include "drivers/sgp30.h"
 #include "drivers/scd4x.h"
 #include "drivers/tlv493d.h"
+#include "drivers/lcd2004.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
@@ -3529,6 +3530,57 @@ static void cmd_mqtt(const char *arg) {
  * vector computed independently by tools/bme280_reference.py, and needs no
  * sensor, no bus and no hardware -- which is why it runs in CI on both QEMU
  * targets. */
+/* clcd: the 20x4 character LCD. `clcd at X Y TEXT` is the dashboard use (no scrolling, only
+ * changed characters are sent), `clcd print|type` the terminal use. */
+static void cmd_clcd(const char *arg) {
+    while (*arg == ' ') arg++;
+    if (*arg == '\0') {
+        lcd2004_print_status();
+        return;
+    }
+    if (strncmp(arg, "init", 4) == 0) {
+        unsigned addr = 0;
+        for (const char *q = arg + 4; *q; q++) {
+            if (*q >= '0' && *q <= '9') addr = addr * 16u + (unsigned)(*q - '0');
+            else if (*q >= 'a' && *q <= 'f') addr = addr * 16u + (unsigned)(*q - 'a' + 10);
+        }
+        cprintf(lcd2004_init((uint8_t)addr) ? "clcd: display ready at 0x%02x\n"
+                                            : "clcd: no display answered (0x%02x)\n",
+                addr ? addr : (unsigned)lcd2004_address());
+        return;
+    }
+    if (strcmp(arg, "clear") == 0) {
+        lcd2004_clear();
+    } else if (strncmp(arg, "at ", 3) == 0) {
+        const char *p = arg + 3;
+        unsigned xy[2] = { 0, 0 };
+        for (int i = 0; i < 2; i++) {
+            while (*p == ' ') p++;
+            if (*p < '0' || *p > '9') { cprintf("usage: clcd at X Y TEXT\n"); return; }
+            while (*p >= '0' && *p <= '9') xy[i] = xy[i] * 10u + (unsigned)(*p++ - '0');
+        }
+        if (*p == ' ') p++;
+        lcd2004_put_at(xy[0], xy[1], p);
+    } else if (strncmp(arg, "print ", 6) == 0 || strncmp(arg, "type ", 5) == 0) {
+        bool nl = arg[1] == 'r';
+        const char *t = arg + (nl ? 6 : 5);
+        lcd2004_term_write(t, strlen(t));
+        if (nl) lcd2004_term_write("\n", 1);
+    } else if (strncmp(arg, "bl ", 3) == 0) {
+        lcd2004_backlight(strcmp(arg + 3, "off") != 0);
+        return;
+    } else if (strncmp(arg, "cursor ", 7) == 0) {
+        lcd2004_cursor_visible(strcmp(arg + 7, "off") != 0);
+    } else if (strcmp(arg, "selftest") == 0) {
+        lcd2004_selftest(true);
+        return;
+    } else {
+        cprintf("usage: clcd [init [ADDR] | clear | at X Y TEXT | print TEXT | type TEXT | cursor on|off | bl on|off | selftest]\n");
+        return;
+    }
+    if (!lcd2004_flush()) cprintf("clcd: the display did not answer\n");
+}
+
 static void cmd_sensor(const char *arg) {
     while (*arg == ' ') arg++;
     if (strncmp(arg, "period", 6) == 0) {
@@ -8277,6 +8329,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
         cmd_sensor(&cmd_line[7]);
+        return;
+    } else if (strcmp(cmd_line, "clcd") == 0 || strncmp(cmd_line, "clcd ", 5) == 0) {
+        cmd_clcd(cmd_line + 4);
         return;
     } else if (strcmp(cmd_line, "mqttcfg") == 0) {
         cmd_mqttcfg(NULL);
