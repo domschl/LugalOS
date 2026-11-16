@@ -47,6 +47,8 @@
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 #include "drivers/tm1638.h"
+#include "drivers/lcd2004.h"
+#include "kernel/version.h"
 #endif
 
 #include "chess_ui.h"
@@ -121,6 +123,153 @@ static uint32_t g_chess_scratch_pages = 0;
 Position *chess_scratch_position(void) {
     return g_chess_scratch;
 }
+
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+/* --- The optional 20x4 character LCD during a board session -----------------
+ *
+ * Present only when lcd2004_is_ready(); every function below is a no-op
+ * otherwise. The session takes the display from the console mirror (the two
+ * would overwrite each other) and hands it back in chess_lcd_end().
+ *
+ *   row 0     title: the version for LCD_VERSION_MS, then the local time when
+ *             the clock has been set (the version stays when it has not). The
+ *             options menu replaces it with the full name of the highlighted
+ *             option for as long as the menu is open.
+ *   rows 1-3  the game in short algebraic notation ("1. e4 e5 2. Nf3 Nc6"),
+ *             filled by whole "N. san" / "san" units; when the game outgrows
+ *             three rows the oldest scroll away, the title stays.
+ *
+ * The history is rebuilt by replaying the game on the scratch Position, so it
+ * is refreshed only from chess_lcd_tick() (between searches, where the live
+ * Position is stable); the search poll calls chess_lcd_clock_tick(), which
+ * touches nothing but the title.
+ *
+ * guarded by: the chess session claim (chess_ui.c's chess_claim()). */
+#define LCD_VERSION_MS  3000u
+#define LCD_COLS        LCD2004_COLS
+
+static bool         g_lcd_on;              /* this session owns the display */
+static bool         g_lcd_was_mirroring;   /* give the console back on exit */
+static uint64_t     g_lcd_t0_ms;
+static const char  *g_lcd_help;            /* option shown in the title, or NULL */
+static char         g_lcd_title[LCD_COLS + 1];
+static uint64_t     g_lcd_hist_key;        /* position the rows show */
+static bool         g_lcd_hist_valid;
+
+static void chess_lcd_row(uint32_t y, const char *s) {
+    char line[LCD_COLS + 1];
+    uint32_t i = 0;
+    for (; s[i] && i < LCD_COLS; i++) line[i] = s[i];
+    for (; i < LCD_COLS; i++) line[i] = ' ';
+    line[LCD_COLS] = '\0';
+    lcd2004_put_at(0, y, line);
+}
+
+/* Redraws the title when its text changed. Returns true if it did. */
+static bool chess_lcd_title(void) {
+    char t[LCD_COLS + 1];
+    if (g_lcd_help) {
+        ksnprintf(t, sizeof(t), "Opt: %s", g_lcd_help);
+    } else if (time_get_ms() - g_lcd_t0_ms >= LCD_VERSION_MS && time_is_set()) {
+        rtc_time_t tm;
+        time_get_local(&tm);
+        ksnprintf(t, sizeof(t), "Lugal Chess %02u:%02u:%02u",
+                  (unsigned)tm.hour, (unsigned)tm.min, (unsigned)tm.sec);
+    } else {
+        ksnprintf(t, sizeof(t), "Lugal Chess v%s", LUGALOS_VERSION);
+    }
+    if (strcmp(t, g_lcd_title) == 0) return false;
+    memcpy(g_lcd_title, t, sizeof(g_lcd_title));
+    chess_lcd_row(0, t);
+    return true;
+}
+
+/* Replays the game on the scratch Position and keeps the last three rows. */
+static void chess_lcd_history(void) {
+    char rows[3][LCD_COLS + 1];
+    memset(rows, 0, sizeof(rows));
+    int nrows = 0;                          /* rows[nrows-1] is being filled */
+    Position *p = g_chess_scratch;
+    if (!p) return;
+    *p = g_chess_pos;
+    int plies = p->history_ply;
+    while (p->history_ply > 0) unmake_move(p);
+    for (int i = 0; i < plies; i++) {
+        Move m = g_chess_pos.history[i].move;
+        char san[SAN_MAX], unit[SAN_MAX + 8];
+        format_move_san(p, m, san);
+        if (p->side == WHITE)
+            ksnprintf(unit, sizeof(unit), "%d. %s", p->fullmove, san);
+        else if (i == 0)
+            ksnprintf(unit, sizeof(unit), "%d... %s", p->fullmove, san);
+        else
+            ksnprintf(unit, sizeof(unit), "%s", san);
+        size_t ul = strlen(unit);
+        size_t cur = nrows ? strlen(rows[(nrows - 1) % 3]) : 0;
+        if (nrows == 0 || cur + 1 + ul > LCD_COLS) {
+            nrows++;
+            cur = 0;
+            rows[(nrows - 1) % 3][0] = '\0';
+        } else {
+            rows[(nrows - 1) % 3][cur++] = ' ';
+        }
+        memcpy(&rows[(nrows - 1) % 3][cur], unit, ul + 1);
+        if (!make_move(p, m)) break;
+    }
+    for (int r = 0; r < 3; r++) {
+        int idx = nrows > 3 ? nrows - 3 + r : r;      /* oldest of the last three first */
+        chess_lcd_row(1u + (uint32_t)r, idx < nrows ? rows[idx % 3] : "");
+    }
+}
+
+static void chess_lcd_begin(void) {
+    g_lcd_on = lcd2004_is_ready();
+    if (!g_lcd_on) return;
+    g_lcd_was_mirroring = lcd2004_mirror_active();
+    (void)lcd2004_mirror(false);
+    lcd2004_cursor_visible(false);
+    lcd2004_clear();
+    g_lcd_t0_ms = time_get_ms();
+    g_lcd_help = NULL;
+    g_lcd_title[0] = '\0';
+    g_lcd_hist_valid = false;
+    (void)chess_lcd_title();
+    (void)lcd2004_flush();
+}
+
+static void chess_lcd_end(void) {
+    if (!g_lcd_on) return;
+    g_lcd_on = false;
+    lcd2004_clear();
+    (void)lcd2004_flush();
+    if (g_lcd_was_mirroring) (void)lcd2004_mirror(true);
+}
+
+/* Title only; safe while a search is mutating the live Position. */
+static void chess_lcd_clock_tick(void) {
+    if (g_lcd_on && chess_lcd_title()) (void)lcd2004_flush();
+}
+
+/* Title and history; call only where the live Position is stable. */
+static void chess_lcd_tick(void) {
+    if (!g_lcd_on) return;
+    bool dirty = chess_lcd_title();
+    uint64_t key = g_chess_pos.hash_key ^ ((uint64_t)g_chess_pos.history_ply << 56);
+    if (!g_lcd_hist_valid || key != g_lcd_hist_key) {
+        g_lcd_hist_key = key;
+        g_lcd_hist_valid = true;
+        chess_lcd_history();
+        dirty = true;
+    }
+    if (dirty) (void)lcd2004_flush();
+}
+
+/* The full name of an option, or NULL to restore the title. */
+static void chess_lcd_help(const char *name) {
+    g_lcd_help = name;
+    chess_lcd_clock_tick();
+}
+#endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_TM1638 */
 
 /* guarded by: the chess session claim (chess_claim() below). */
 static Move g_search_best_move = 0;
@@ -496,6 +645,7 @@ void search_poll_stop_callback(void) {
     }
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     tm_search_ticker_tick();
+    chess_lcd_clock_tick();
 #endif
     chess_touch_search_poll();
 }
@@ -1644,6 +1794,7 @@ static int tm_wait_key(void) {
     int pressed_key = -1;
     for (;;) {
         ChessEvent ev;
+        chess_lcd_tick();
         switch (chess_next_event(&ev, 20, TM_CONSOLE_PROMPT)) {
         case CHESS_EVENT_KEY:
             pressed_key = ev.key;
@@ -2117,19 +2268,38 @@ static const char *tm_option_names[TM_OPTION_COUNT] = {
  * play both sides in an unstoppable loop with nothing to break it. */
 static bool g_tm_auto_reply = true;
 
-static int tm_options_menu(Position *pos) {
-    int idx = 0;
+/* The full names the LCD title shows for the abbreviations above, same order. */
+static const char *tm_option_full[TM_OPTION_COUNT] = {
+    "New game", "Score", "Side to move", "Halfmove clock", "Move count",
+    "Save game", "Load game", "Auto-reply", "Exit chess"
+};
+
+/* Shows option `idx` on the 7-segment display and, in the LCD title, spelled out. */
+static void tm_option_show(int idx) {
     tm1638_display_string(tm_option_names[idx]);
+    if (idx == 7) {
+        /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
+        static char buf[LCD2004_COLS + 1];
+        ksnprintf(buf, sizeof(buf), "Auto-reply %s", g_tm_auto_reply ? "on" : "off");
+        chess_lcd_help(buf);
+    } else {
+        chess_lcd_help(tm_option_full[idx]);
+    }
+}
+
+static int tm_options_menu_run(Position *pos) {
+    int idx = 0;
+    tm_option_show(idx);
     for (;;) {
         int k = tm_wait_key();
         if (k == TM_KEY_ABORT_CTRLC) return TM_KEY_ABORT_CTRLC;
         if (k == TM_KEY_ABORT_STOPKEY) return 0;
         if (k == 8) {
             idx = (idx - 1 + TM_OPTION_COUNT) % TM_OPTION_COUNT;
-            tm1638_display_string(tm_option_names[idx]);
+            tm_option_show(idx);
         } else if (k == 9) {
             idx = (idx + 1) % TM_OPTION_COUNT;
-            tm1638_display_string(tm_option_names[idx]);
+            tm_option_show(idx);
         } else if (k == 15) {
             char buf[9];
             switch (idx) {
@@ -2140,12 +2310,12 @@ static int tm_options_menu(Position *pos) {
                     tm_format_score(evaluate(pos), buf);
                     tm1638_display_string(buf);
                     time_delay_us(2000000);
-                    tm1638_display_string(tm_option_names[idx]);
+                    tm_option_show(idx);
                     break;
                 case 2: /* side to move */
                     tm1638_display_string(pos->side == WHITE ? "SIdE UH " : "SIdE bL ");
                     time_delay_us(2000000);
-                    tm1638_display_string(tm_option_names[idx]);
+                    tm_option_show(idx);
                     break;
                 case 3: { /* halfmove clock */
                     int v = pos->halfmove > 999 ? 999 : pos->halfmove;
@@ -2155,7 +2325,7 @@ static int tm_options_menu(Position *pos) {
                     hbuf[5] = (char)('0' + v % 10);
                     tm1638_display_string(hbuf);
                     time_delay_us(2000000);
-                    tm1638_display_string(tm_option_names[idx]);
+                    tm_option_show(idx);
                     break;
                 }
                 case 4: { /* move count */
@@ -2166,7 +2336,7 @@ static int tm_options_menu(Position *pos) {
                     nbuf[5] = (char)('0' + v % 10);
                     tm1638_display_string(nbuf);
                     time_delay_us(2000000);
-                    tm1638_display_string(tm_option_names[idx]);
+                    tm_option_show(idx);
                     break;
                 }
                 case 5: /* save */
@@ -2179,7 +2349,7 @@ static int tm_options_menu(Position *pos) {
                     cprintf("Auto-reply %s.\n", g_tm_auto_reply ? "on" : "off");
                     tm1638_display_string(g_tm_auto_reply ? "AUtO On " : "AUtO OFF");
                     time_delay_us(2000000);
-                    tm1638_display_string(tm_option_names[idx]);
+                    tm_option_show(idx);
                     break;
                 case 8: /* exit -- the deliberate, keypad-only way to leave
                          * chess_run() now that STOP no longer does (see
@@ -2188,6 +2358,12 @@ static int tm_options_menu(Position *pos) {
             }
         }
     }
+}
+
+static int tm_options_menu(Position *pos) {
+    int r = tm_options_menu_run(pos);
+    chess_lcd_help(NULL);
+    return r;
 }
 
 /* One square takes two key presses, both from the same 0-7 range -- the
@@ -2592,6 +2768,7 @@ static void chess_run_locked(void) {
             cprintf("Board plays: %s\n", mv_san);
             print_board(&g_chess_pos);
             console_autosave(&g_chess_pos);   /* 14b */
+            chess_lcd_tick();   /* before the engine starts thinking */
 
             TmAfterMove result = tm_after_move(&g_chess_pos, disp, mover_side);
             if (result == TM_AFTER_EXIT) return;
@@ -2669,6 +2846,7 @@ static void chess_run_locked(void) {
                 eng_san, sign_prefix(g_search_score), g_search_score);
         print_board(&g_chess_pos);
         console_autosave(&g_chess_pos);   /* 14b */
+        chess_lcd_tick();
 
         char disp2[9];
         for (int i = 0; i < 4; i++) { disp2[i] = g_tm_white_slot[i]; disp2[4 + i] = g_tm_black_slot[i]; }
@@ -2680,7 +2858,9 @@ static void chess_run_locked(void) {
 /* Holding the session claim (chess_claim()) for the session. */
 void chess_run(void) {
     if (!chess_claim()) return;
+    chess_lcd_begin();
     chess_run_locked();
+    chess_lcd_end();
     chess_unclaim();
 }
 #endif /* CONFIG_ENABLE_ST7735 */

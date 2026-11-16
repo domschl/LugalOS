@@ -107,7 +107,7 @@
     "net/udp.c": 48,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
-    "user/chess/src/chess_ui.c": 10792,
+    "user/chess/src/chess_ui.c": 10857,
     "user/chess/src/perft.c": 17,
     "user/chess/src/pgn.c": 2580,
     "user/chess/src/position.c": 48,
@@ -128,7 +128,7 @@
     "agent": 987,
     "app:cc": 462,
     "app:ed": 100,
-    "chess": 21359,
+    "chess": 21424,
     "clock-app": 459,
     "crypto": 38,
     "display": 7707,
@@ -150,5 +150,5 @@
     "vfs": 3727
   },
   "ram_code": 470,
-  "total": 197299
+  "total": 197364
 }
