@@ -77,6 +77,9 @@ The charge level blends two estimates. One is the pack voltage, corrected for th
 
 ### Character LCD (20x4, I2C)
 On a board with an HD44780 20x4 display on a PCF8574 backpack (0x27, or 0x3F). The commands write to a frame buffer and then send only the characters that changed, so the slow I2C link carries little.
+
+> [!WARNING]
+> 5 V LCD vs. 3.3 V I2C Hardware: Most HD44780 displays require 5 V (VCC) for contrast and backlight, while LugalOS boards (RP2350, ESP32-C6, ESP32-P4) use 3.3 V I2C logic. Many PCF8574 I2C backpacks include onboard pull-up resistors to VCC (5 V), which will pull SDA/SCL to 5 V and can damage 3.3 V GPIOs. Remove the I2C pull-up resistors on the backpack before connecting it (on common backpacks these are R8 and R9 -- verify with a multimeter against VCC and SDA/SCL) so the bus is pulled up only to 3.3 V by the MCU/board.
 * clcd: Status of the display (address, cursor, characters sent, bus failures).
 * clcd init [addr]: Finds the display (0x27, then 0x3F; or the given hex address) and initializes it. The other commands do this on first use.
 * clcd at X Y TEXT: Dashboard use. Puts TEXT at column X, row Y (from 0), cut off at the edge; nothing scrolls and the cursor is left alone.

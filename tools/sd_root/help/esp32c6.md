@@ -125,6 +125,7 @@ If firmware fails to boot and UART is inaccessible:
 
 * **ESP32-C6-Zero (`esp32c6`, `cmake/board-esp32c6-zero.cmake`):**
   * **I2C0 (Sensors / 20x4 HD44780 CLCD):** `GPIO0` (SDA), `GPIO1` (SCL), 100 kHz.
+    * *5 V HD44780 warning:* Power the LCD from 5 V, and remove the PCF8574 backpack's I2C pull-up resistors (`R8`/`R9` on many boards -- verify with a multimeter) so SDA/SCL are not pulled to 5 V.
   * **UART1 (M5Stack CardKB2 in UART mode):** `GPIO2` (RX, connected to CardKB2 Grove yellow wire TX).
   * **RGB Status LED:** `GPIO8` (WS2812).
   * **BOOT / Owner Reset Button:** `GPIO9` (active low, internal pull-up).
