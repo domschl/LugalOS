@@ -81,8 +81,11 @@ On a board with an HD44780 20x4 display on a PCF8574 backpack (0x27, or 0x3F). T
 * clcd init [addr]: Finds the display (0x27, then 0x3F; or the given hex address) and initializes it. The other commands do this on first use.
 * clcd at X Y TEXT: Dashboard use. Puts TEXT at column X, row Y (from 0), cut off at the edge; nothing scrolls and the cursor is left alone.
 * clcd print TEXT / clcd type TEXT: Terminal use. Writes at the cursor, wraps, and scrolls at the bottom; print adds a newline. \n, \r, backspace and form feed work from programs.
+* clcd mirror [on|off]: Mirrors the console to the display: what you type and what commands print, with the line editor's cursor moves and erases applied. A board file can start it at boot when a display answers (the C6-Zero does). A dashboard that writes with clcd at or lcd-at should turn it off first.
 * clcd clear, clcd cursor on|off, clcd bl on|off: Clear the buffer, show the blinking cursor, switch the backlight.
-* clcd selftest: Checks the byte encoding, the changed-character search and the scrolling, without a display.
+* clcd dash [rounds]: A sensor dashboard on the display: temperature, humidity, pressure, light, CO2, dew point and the date and time, refreshed every 2 s from the sensor cache; Ctrl-C stops it and the mirror comes back. It is a Lisp program (tools/sdroot/demos/clcddash.lisp) carried in the image, so it runs on a board with no filesystem; edit the file to change the layout.
+* clcd dump: Prints what the terminal buffer holds, four rows between bars, and the cursor (for checking the mirror).
+* clcd selftest: Checks the byte encoding, the changed-character search, the scrolling and the escape sequences, without a display.
 
 ### CardKB2 keyboard (UART or I2C)
 An M5Stack CardKB2 types into the console like any other keyboard. On the ESP32-C6-Zero it is read on UART: put the unit in UART mode (Fn+Sym+2, then the RST button; it remembers) and wire its Grove connector to GND, 5V (or 3.3V) and its TX, the yellow wire (G26), to GPIO2 (measured on this unit; M5's product page labels that pin RX, so test with cardkb scope: the pull-down test says HIGH on the right wire); the white wire (G25) stays free, and GPIO0/1 remain the I2C bus. A board with no keyboard pin set (CONFIGCARDKB2RX_GPIO) reads the unit over I2C instead (factory mode Fn+Sym+1, address 0x5F), which has no cursor keys or Ctrl.

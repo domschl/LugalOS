@@ -3533,6 +3533,9 @@ static void cmd_mqtt(const char *arg) {
  * targets. */
 /* clcd: the 20x4 character LCD. `clcd at X Y TEXT` is the dashboard use (no scrolling, only
  * changed characters are sent), `clcd print|type` the terminal use. */
+/* The dashboard program (tools/sd_root/demos/clcd_dash.lisp), embedded in the image. */
+extern const char g_clcd_dash_lisp[];
+
 static void cmd_clcd(const char *arg) {
     while (*arg == ' ') arg++;
     if (*arg == '\0') {
@@ -3572,11 +3575,43 @@ static void cmd_clcd(const char *arg) {
         return;
     } else if (strncmp(arg, "cursor ", 7) == 0) {
         lcd2004_cursor_visible(strcmp(arg + 7, "off") != 0);
+    } else if (strncmp(arg, "mirror", 6) == 0) {
+        const char *m = arg + 6;
+        while (*m == ' ') m++;
+        if (*m == '\0') {
+            cprintf("clcd: console mirror %s\n", lcd2004_mirror_active() ? "on" : "off");
+        } else if (strcmp(m, "on") == 0 || strcmp(m, "off") == 0) {
+            bool want = m[1] == 'n';
+            if (!lcd2004_mirror(want)) cprintf("clcd: no display answered\n");
+            else cprintf("clcd: console mirror %s\n", want ? "on" : "off");
+        } else {
+            cprintf("usage: clcd mirror [on|off]\n");
+        }
+        return;
+    } else if (strncmp(arg, "dash", 4) == 0) {
+        unsigned long rounds = 0;
+        for (const char *q = arg + 4; *q; q++) if (*q >= '0' && *q <= '9') rounds = rounds * 10u + (unsigned long)(*q - '0');
+        bool was = lcd2004_mirror_active();
+        char call[40];
+        ksnprintf(call, sizeof(call), "(clcd-dash %lu)", rounds);
+        cprintf("clcd: sensor dashboard%s -- Ctrl-C stops it\n", rounds ? "" : " until");
+        lisp_lock();
+        (void)lisp_eval_string(g_clcd_dash_lisp);
+        (void)lisp_eval_string(call);
+        lisp_unlock();
+        if (was) {
+            lcd2004_clear();                      /* after a Ctrl-C the dashboard is still on it */
+            (void)lcd2004_mirror(true);
+        }
+        return;
+    } else if (strcmp(arg, "dump") == 0) {
+        lcd2004_dump();
+        return;
     } else if (strcmp(arg, "selftest") == 0) {
         lcd2004_selftest(true);
         return;
     } else {
-        cprintf("usage: clcd [init [ADDR] | clear | at X Y TEXT | print TEXT | type TEXT | cursor on|off | bl on|off | selftest]\n");
+        cprintf("usage: clcd [init [ADDR] | clear | at X Y TEXT | print TEXT | type TEXT | cursor on|off | bl on|off | mirror on|off | dash [rounds] | dump | selftest]\n");
         return;
     }
     if (!lcd2004_flush()) cprintf("clcd: the display did not answer\n");

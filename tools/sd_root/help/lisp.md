@@ -80,6 +80,14 @@ Readings come from the sensor hub's cache, so no call waits on the I2C bus. Valu
 * Channel names: `temp`, `pressure`, `humidity`, `lux`, `eco2`, `tvoc`, `gas-res`, `co`, `no2`, `nh3`, `co2`, `pressure-msl`, `abs-humidity`, `dew-point`, `iaq`, `voltage` (mV), `current` (mA), `power` (mW), `battery` (0.1 %), `accel-x/y/z` (mg), `gyro-x/y/z` (0.1 deg/s), `mag-x/y/z` (uT).
 * `(sensor-cal ['save | 'restore | 'clear])`: Gas-sensor calibration baselines.
 
+### Character LCD
+A 20x4 HD44780 display on a PCF8574 backpack (`clcd` in the [shell manual](shell.md)). Writes go to a frame buffer and nothing moves until `(lcd-flush)`, which sends only the characters that changed.
+* `(lcd-clear)`: Blank the buffer.
+* `(lcd-at x y "text")`: Put text at column `x`, row `y` (from 0), cut off at the edge; `#f` for a bad position.
+* `(lcd-print "text")`: Terminal use: write at the cursor with wrap and scrolling.
+* `(lcd-flush)`: Send what changed; `#f` when the display did not answer.
+* `(lcd-mirror [#t | #f])`: The console mirror on or off (returns the state). Turn it off before a dashboard writes with `lcd-at`, and on again afterwards. See `/sd0/demos/clcd_dash.lisp`, which `clcd dash` also runs from a copy inside the image.
+
 ### Filesystem & Process Control
 * `(load <path>)`: Load and evaluate Lisp source file.
 * `(read-file <path>)`: Read file content directly into a Lisp string.

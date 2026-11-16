@@ -1171,6 +1171,19 @@ add_custom_command(
 )
 list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/admin_page.c)
 
+# The character-LCD dashboard, as Lisp source in flash: a board with no filesystem (the C6) runs it with
+# `clcd dash`. Flash only; no RAM.
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/clcd_dash_lisp.c
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py
+            ${CMAKE_CURRENT_BINARY_DIR}/clcd_dash_lisp.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/demos/clcd_dash.lisp g_clcd_dash_lisp
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/demos/clcd_dash.lisp
+    COMMENT "Embedding the character-LCD dashboard"
+)
+list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/clcd_dash_lisp.c)
+
 # Optional subsystems (F1/F2, ): each is a
 # self-contained leaf with exactly one outside touchpoint, gated to match in
 # lisp.c/shell.c via the CONFIG_ENABLE_CC/CONFIG_ENABLE_ED generated defines.

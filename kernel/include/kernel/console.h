@@ -44,6 +44,13 @@ typedef struct {
  * state (the device was handed to something else), not an error. */
 void console_bind(console_putc_fn putc);
 
+/* A second output for the console stream: every byte a task writes through the console is also
+ * handed to `fn` (raw: no CR before LF), e.g. a small character display. It runs inside
+ * console_putc(), in whatever context printed, possibly under the output lock: it must be
+ * short, must not block, and must not print. Not called for captured output, which is not
+ * shown. NULL unbinds. One tee. */
+void console_tee_bind(console_putc_fn fn);
+
 /* --- The output lock ------------------------------------------------------
  *
  * One message, one uninterrupted run. This is what printk_lock() used to be,

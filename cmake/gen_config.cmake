@@ -218,6 +218,8 @@ set(_optional_keys
     CONFIG_SETUP_BUTTON_GPIO
     # The pin a CardKB2 in UART mode has its TX wired to (UART1's RX); absent: the keyboard is read over I2C.
     CONFIG_CARDKB2_RX_GPIO
+    # 1: mirror the console to a 20x4 character LCD at 0x27/0x3F at boot, when one answers (drivers/lcd2004.c).
+    CONFIG_CLCD_MIRROR_AT_BOOT
     CONFIG_SETUP_BUTTON_BOOTSEL
     # The status LED that shows a headless node's mode (kernel/status_led.c): a GPIO driving an LED
     # (CONFIG_STATUS_LED_ACTIVE_LOW 1 when it lights at a low level), the Pico 2 W's LED behind the Wi-Fi chip

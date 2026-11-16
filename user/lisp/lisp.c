@@ -38,6 +38,7 @@
 #include "net/mqttd.h"
 #include "net/llm.h"
 #include "drivers/sensor_hub.h"
+#include "drivers/lcd2004.h"
 #include <limits.h>
 #include "kernel/identity.h"
 #include "drivers/lispui.h"
@@ -7695,6 +7696,46 @@ static lisp_val_t *prim_sensor_cal(lisp_val_t *args, lisp_val_t *env) {
     res = make_pair(make_pair(make_sym("sgp30-tvoc"), make_int((long)cur.sgp30_tvoc_base)), res);
     res = make_pair(make_pair(make_sym("sgp30-eco2"), make_int((long)cur.sgp30_eco2_base)), res);
     return res;
+}
+
+/* The 20x4 character LCD (drivers/lcd2004.h). Writes go to a frame buffer; `(lcd-flush)` sends the
+ * characters that changed. `(lcd-mirror #f)` first, so the console does not write over a dashboard. */
+static lisp_val_t *prim_lcd_clear(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    lcd2004_clear();
+    return &true_val;
+}
+
+static lisp_val_t *prim_lcd_at(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long x = arg_int(args, 0, -1), y = arg_int(args, 1, -1);
+    const char *t = get_str_val(lisp_list_ref(args, 2));
+    if (x < 0 || y < 0 || !t) return &false_val;
+    lcd2004_put_at((uint32_t)x, (uint32_t)y, t);
+    return &true_val;
+}
+
+static lisp_val_t *prim_lcd_print(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *t = get_str_val(lisp_list_ref(args, 0));
+    if (!t) return &false_val;
+    lcd2004_term_write(t, strlen(t));
+    return &true_val;
+}
+
+static lisp_val_t *prim_lcd_flush(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return lcd2004_flush() ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_lcd_mirror(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    if (a) {
+        bool on = (a != &false_val) && !(a->type == LISP_INT && a->u.i == 0);
+        if (!lcd2004_mirror(on)) return &false_val;
+    }
+    return lcd2004_mirror_active() ? &true_val : &false_val;
 }
 
 /* `(sensor-list)` -- Milestone 46.9: lists all detected sensor device names as symbols. */

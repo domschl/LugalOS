@@ -36,6 +36,13 @@ void lcd2004_set_cursor(uint32_t x, uint32_t y);
 void lcd2004_cursor_visible(bool on);
 void lcd2004_backlight(bool on);
 
+/* Console mirror: while on, everything the console prints also goes to the terminal buffer and
+ * is flushed by a task. The terminal understands the escape sequences a line editor sends (cursor
+ * moves, erase, absolute position); colours are ignored. A dashboard that writes with put_at turns
+ * the mirror off first, or the two overwrite each other. False when no display answers. */
+bool lcd2004_mirror(bool on);
+bool lcd2004_mirror_active(void);
+
 /* Sends the changed characters. False when the bus failed; the next flush then
  * redraws everything, since what the display shows is unknown. */
 bool lcd2004_flush(void);
@@ -54,5 +61,6 @@ void lcd2004_encode(uint8_t out[6], uint8_t v, bool data, bool backlight);
 
 uint32_t lcd2004_selftest(bool report);
 void     lcd2004_print_status(void);
+void     lcd2004_dump(void);
 
 #endif /* DRIVERS_LCD2004_H */

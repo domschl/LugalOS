@@ -55,6 +55,7 @@
 #include "drivers/bme280.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/cardkb2.h"
+#include "drivers/lcd2004.h"
 #include "net/mqttd.h"
 #include "kernel/identity.h"
 #include "kernel/random.h"
@@ -664,6 +665,9 @@ void kernel_main(void) {
      * MQTT. The BME280 sampler is the fallback for a board whose hub found nothing. */
     if (sensor_hub_sampler_start(0) < 0) bme280_sampler_start(0);
     (void)cardkb2_start();                /* an I2C keyboard, when one answers; a no-op otherwise */
+#if defined(CONFIG_CLCD_MIRROR_AT_BOOT)
+    (void)lcd2004_mirror(true);           /* the console on a 20x4 LCD, when one answers */
+#endif
     power_init();
     orient_init();
 

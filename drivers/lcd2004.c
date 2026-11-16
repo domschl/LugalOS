@@ -13,6 +13,15 @@
  * 100 kHz, longer than the HD44780's 230 ns E pulse and 37 us command time, so the
  * six-byte encoding (data, E high, E low, per nibble) needs no delays between
  * bytes. Only clear (1.52 ms) and the power-up sequence are waited out.
+ *
+ * Two locks, so the console can feed the display from any context:
+ *   g_buf_lock (spinlock)  the frame buffer, cursor and escape parser; held for a few
+ *                          instructions, never across I2C. The console tee updates the
+ *                          terminal here, inline.
+ *   g_io_lock  (ylock)     what the glass shows, and the bus; held across I2C, so task
+ *                          context only. A flush snapshots the buffer under g_buf_lock,
+ *                          then talks to the bus under g_io_lock alone.
+ * Order: g_io_lock, then g_buf_lock.
  */
 
 #define RS_BIT   0x01u
@@ -30,20 +39,34 @@
 
 static const uint8_t k_row_base[LCD2004_ROWS] = { 0x00u, 0x40u, 0x14u, 0x54u };
 
+/* The frame buffer and the terminal state machine, which the console tee updates from any context. */
+static spinlock_t g_buf_lock = SPINLOCK_INIT;
+static struct {
+    char     want[LCD2004_ROWS][LCD2004_COLS];
+    uint32_t cx, cy;               /* terminal cursor */
+    bool     wrap_pending;         /* the last column was written; wrap on the next printable */
+    bool     cursor_on;
+    bool     dirty;                /* changed since the last snapshot */
+    uint8_t  esc;                  /* escape parser: 0 text, 1 after ESC, 2 inside CSI */
+    uint8_t  csi_n;                /* parameter being read */
+    uint16_t csi[3];
+    bool     csi_priv;             /* ESC [ ? ... : modes and the like, ignored */
+} t;   /* guarded by: g_buf_lock */
+
+/* What the glass shows and the bus state: a blocking lock, held across I2C. */
+static ylock_t g_io_lock;
 static struct {
     bool     ready;
     uint8_t  addr;
     bool     backlight;
-    bool     cursor_on;
     bool     hw_cursor_on;         /* what the HD44780 display-control register holds */
     bool     shown_valid;          /* false: what the glass shows is unknown, redraw all */
-    uint32_t cx, cy;               /* terminal cursor */
-    bool     wrap_pending;         /* the last column was written; wrap on the next printable */
-    char     want[LCD2004_ROWS][LCD2004_COLS];
     char     shown[LCD2004_ROWS][LCD2004_COLS];
+    bool     mirror_task;
     uint32_t flush_count, fail_count, chars_sent;
-} g;   /* guarded by: g_lock (below) */
-static ylock_t g_lock;
+} g;   /* guarded by: g_io_lock */
+/* accepted: gates a tee that is bound or not; the shell and Lisp read it racily */
+static volatile bool g_mirror_on;
 
 static void wait_ms(uint32_t ms) {
     uint64_t until = time_get_ms() + ms;
@@ -96,11 +119,19 @@ static bool hd_cmd(uint8_t v) {
     return wr_xfer(&w);
 }
 
-static uint8_t display_ctl(void) {
-    return (uint8_t)(CMD_DISPLAY | 0x04u | (g.cursor_on ? 0x01u : 0u));
+static uint8_t display_ctl(bool cursor_on) {
+    return (uint8_t)(CMD_DISPLAY | 0x04u | (cursor_on ? 0x01u : 0u));
 }
 
-static bool init_locked(uint8_t addr) {
+static void buf_reset_locked(void) {            /* g_buf_lock held */
+    memset(t.want, ' ', sizeof(t.want));
+    t.cx = t.cy = 0;
+    t.wrap_pending = false;
+    t.esc = 0;
+    t.dirty = true;
+}
+
+static bool init_locked(uint8_t addr) {         /* g_io_lock held */
     g.ready = false;
     static const uint8_t cands[2] = { LCD2004_ADDR, 0x3Fu };
     uint8_t found = 0;
@@ -131,118 +162,198 @@ static bool init_locked(uint8_t addr) {
     if (!hd_cmd(CMD_CLEAR)) return false;
     wait_ms(3u);
     if (!hd_cmd(CMD_ENTRY_INC)) return false;
-    g.hw_cursor_on = g.cursor_on;
-    if (!hd_cmd(display_ctl())) return false;
 
-    memset(g.want, ' ', sizeof(g.want));
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    buf_reset_locked();
+    bool cur = t.cursor_on;
+    spin_unlock_irqrestore(&g_buf_lock, f);
     memset(g.shown, ' ', sizeof(g.shown));
-    g.cx = g.cy = 0;
-    g.wrap_pending = false;
+    g.hw_cursor_on = cur;
+    if (!hd_cmd(display_ctl(cur))) return false;
     g.shown_valid = true;
     g.ready = true;
     printk("[LCD2004] HD44780 20x4 display at 0x%02x.\n", g.addr);
     return true;
 }
 
-static bool ensure_ready(void) {
+static bool ensure_ready(void) {                /* g_io_lock held */
     return g.ready || init_locked(0u);
 }
 
 bool lcd2004_init(uint8_t addr) {
-    ylock_acquire(&g_lock);
+    ylock_acquire(&g_io_lock);
     bool r = init_locked(addr);
-    ylock_release(&g_lock);
+    ylock_release(&g_io_lock);
     return r;
 }
 
 bool    lcd2004_is_ready(void) { return g.ready; }
 uint8_t lcd2004_address(void)  { return g.addr; }
 
-const char *lcd2004_row(uint32_t y) { return y < LCD2004_ROWS ? &g.want[y][0] : NULL; }
+const char *lcd2004_row(uint32_t y) { return y < LCD2004_ROWS ? &t.want[y][0] : NULL; }
+
+/* ---- The terminal: every function below assumes g_buf_lock is held ------------------------ */
 
 static char printable(char c) {
     return (c >= 0x20 && c <= 0x7D) ? c : '?';
 }
 
 static void scroll_up(void) {
-    memmove(g.want[0], g.want[1], (LCD2004_ROWS - 1u) * LCD2004_COLS);
-    memset(g.want[LCD2004_ROWS - 1u], ' ', LCD2004_COLS);
+    memmove(t.want[0], t.want[1], (LCD2004_ROWS - 1u) * LCD2004_COLS);
+    memset(t.want[LCD2004_ROWS - 1u], ' ', LCD2004_COLS);
 }
 
-static void term_putc(char c) {
+static void term_char(char c) {
     switch (c) {
-    case '\r': g.cx = 0; g.wrap_pending = false; return;
+    case '\r': t.cx = 0; t.wrap_pending = false; return;
     case '\n':
-        g.cx = 0; g.wrap_pending = false;
-        if (g.cy + 1u >= LCD2004_ROWS) scroll_up(); else g.cy++;
+        t.cx = 0; t.wrap_pending = false;
+        if (t.cy + 1u >= LCD2004_ROWS) scroll_up(); else t.cy++;
         return;
+    case '\t': {                                        /* to the next multiple of 4 */
+        t.wrap_pending = false;
+        uint32_t nx = (t.cx + 4u) & ~3u;
+        t.cx = nx < LCD2004_COLS ? nx : LCD2004_COLS - 1u;
+        return;
+    }
     case '\b':
-        if (g.wrap_pending) g.wrap_pending = false;
-        else if (g.cx > 0) g.cx--;
+        if (t.wrap_pending) t.wrap_pending = false;
+        else if (t.cx > 0) t.cx--;
         return;
     case '\f':
-        memset(g.want, ' ', sizeof(g.want));
-        g.cx = g.cy = 0; g.wrap_pending = false;
+        memset(t.want, ' ', sizeof(t.want));
+        t.cx = t.cy = 0; t.wrap_pending = false;
         return;
     default: break;
     }
-    if (g.wrap_pending) {
-        g.cx = 0; g.wrap_pending = false;
-        if (g.cy + 1u >= LCD2004_ROWS) scroll_up(); else g.cy++;
+    if (t.wrap_pending) {
+        t.cx = 0; t.wrap_pending = false;
+        if (t.cy + 1u >= LCD2004_ROWS) scroll_up(); else t.cy++;
     }
-    g.want[g.cy][g.cx] = printable(c);
-    if (g.cx + 1u >= LCD2004_COLS) g.wrap_pending = true; else g.cx++;
+    t.want[t.cy][t.cx] = printable(c);
+    if (t.cx + 1u >= LCD2004_COLS) t.wrap_pending = true; else t.cx++;
 }
 
+static void erase_cells(uint32_t y, uint32_t from, uint32_t to) {   /* [from, to) */
+    if (y < LCD2004_ROWS && from < to) memset(&t.want[y][from], ' ', to - from);
+}
+
+static void csi_final(char c) {
+    if (t.csi_priv) return;                               /* ?25l, ?2004h and the like */
+    uint32_t p0 = t.csi[0], p1 = t.csi[1], n = p0 ? p0 : 1u;
+    uint32_t cx = t.wrap_pending ? LCD2004_COLS - 1u : t.cx;
+    switch (c) {
+    case 'A': t.cy = t.cy > n ? t.cy - n : 0; t.wrap_pending = false; break;
+    case 'B': t.cy = t.cy + n < LCD2004_ROWS ? t.cy + n : LCD2004_ROWS - 1u; t.wrap_pending = false; break;
+    case 'C': t.cx = cx + n < LCD2004_COLS ? cx + n : LCD2004_COLS - 1u; t.wrap_pending = false; break;
+    case 'D': t.cx = cx > n ? cx - n : 0; t.wrap_pending = false; break;
+    case 'G': t.cx = (n - 1u) < LCD2004_COLS ? n - 1u : LCD2004_COLS - 1u; t.wrap_pending = false; break;
+    case 'H': case 'f': {
+        uint32_t r = p0 ? p0 : 1u, k = p1 ? p1 : 1u;
+        t.cy = r - 1u < LCD2004_ROWS ? r - 1u : LCD2004_ROWS - 1u;
+        t.cx = k - 1u < LCD2004_COLS ? k - 1u : LCD2004_COLS - 1u;
+        t.wrap_pending = false;
+        break;
+    }
+    case 'K':
+        if (p0 == 0) erase_cells(t.cy, cx, LCD2004_COLS);
+        else if (p0 == 1) erase_cells(t.cy, 0, cx + 1u);
+        else erase_cells(t.cy, 0, LCD2004_COLS);
+        break;
+    case 'J':
+        if (p0 == 0) { erase_cells(t.cy, cx, LCD2004_COLS); for (uint32_t r = t.cy + 1u; r < LCD2004_ROWS; r++) erase_cells(r, 0, LCD2004_COLS); }
+        else if (p0 == 1) { for (uint32_t r = 0; r < t.cy; r++) erase_cells(r, 0, LCD2004_COLS); erase_cells(t.cy, 0, cx + 1u); }
+        else memset(t.want, ' ', sizeof(t.want));
+        break;
+    default: break;                                       /* colours (m), scroll regions, ... */
+    }
+}
+
+/* Text with the escape sequences a line editor sends: cursor moves, erase, absolute position. */
+static void term_feed(char c) {
+    t.dirty = true;
+    if (t.esc == 0u) {
+        if (c == 0x1B) t.esc = 1u; else term_char(c);
+        return;
+    }
+    if (t.esc == 1u) {
+        if (c == '[') { t.esc = 2u; t.csi_n = 0; t.csi[0] = t.csi[1] = t.csi[2] = 0; t.csi_priv = false; }
+        else t.esc = 0u;                                  /* a two-byte escape: ignored */
+        return;
+    }
+    if (c >= '0' && c <= '9') { if (t.csi[t.csi_n] < 9999u) t.csi[t.csi_n] = (uint16_t)(t.csi[t.csi_n] * 10u + (uint16_t)(c - '0')); return; }
+    if (c == ';') { if (t.csi_n < 2u) t.csi_n++; return; }
+    if (c == '?' || c == '>' || c == '=') { t.csi_priv = true; return; }
+    if (c >= 0x20 && c <= 0x2F) return;                   /* intermediate bytes */
+    t.esc = 0u;
+    if (c >= 0x40 && c <= 0x7E) csi_final(c);
+}
+
+/* ---- Public frame buffer operations --------------------------------------------------------- */
+
 void lcd2004_clear(void) {
-    ylock_acquire(&g_lock);
-    memset(g.want, ' ', sizeof(g.want));
-    g.cx = g.cy = 0; g.wrap_pending = false;
-    ylock_release(&g_lock);
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    memset(t.want, ' ', sizeof(t.want));
+    t.cx = t.cy = 0; t.wrap_pending = false; t.esc = 0; t.dirty = true;
+    spin_unlock_irqrestore(&g_buf_lock, f);
 }
 
 void lcd2004_put_at(uint32_t x, uint32_t y, const char *s) {
     if (!s || y >= LCD2004_ROWS) return;
-    ylock_acquire(&g_lock);
-    for (; *s && x < LCD2004_COLS; s++, x++) g.want[y][x] = printable(*s);
-    ylock_release(&g_lock);
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    for (; *s && x < LCD2004_COLS; s++, x++) t.want[y][x] = printable(*s);
+    t.dirty = true;
+    spin_unlock_irqrestore(&g_buf_lock, f);
 }
 
 void lcd2004_term_write(const char *s, size_t len) {
     if (!s) return;
-    ylock_acquire(&g_lock);
-    for (size_t i = 0; i < len; i++) term_putc(s[i]);
-    ylock_release(&g_lock);
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    for (size_t i = 0; i < len; i++) term_feed(s[i]);
+    spin_unlock_irqrestore(&g_buf_lock, f);
 }
 
 void lcd2004_set_cursor(uint32_t x, uint32_t y) {
-    ylock_acquire(&g_lock);
-    g.cx = x < LCD2004_COLS ? x : LCD2004_COLS - 1u;
-    g.cy = y < LCD2004_ROWS ? y : LCD2004_ROWS - 1u;
-    g.wrap_pending = false;
-    ylock_release(&g_lock);
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    t.cx = x < LCD2004_COLS ? x : LCD2004_COLS - 1u;
+    t.cy = y < LCD2004_ROWS ? y : LCD2004_ROWS - 1u;
+    t.wrap_pending = false; t.dirty = true;
+    spin_unlock_irqrestore(&g_buf_lock, f);
 }
 
 void lcd2004_cursor_visible(bool on) {
-    ylock_acquire(&g_lock);
-    g.cursor_on = on;
-    ylock_release(&g_lock);
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    t.cursor_on = on; t.dirty = true;
+    spin_unlock_irqrestore(&g_buf_lock, f);
 }
 
 void lcd2004_backlight(bool on) {
-    ylock_acquire(&g_lock);
+    ylock_acquire(&g_io_lock);
     g.backlight = on;
     if (g.ready) {
         uint8_t b = on ? BL_BIT : 0u;      /* any write carries the bit; E stays low */
         (void)i2c_xfer(g.addr, &b, 1u, NULL, 0u);
     }
-    ylock_release(&g_lock);
+    ylock_release(&g_io_lock);
 }
 
-static bool flush_locked(void) {
-    if (!ensure_ready()) return false;
-    wr_t w = { .len = 0, .ok = true };
+/* ---- Flush ---------------------------------------------------------------------------------- */
 
+static bool flush_locked(void) {                /* g_io_lock held */
+    if (!ensure_ready()) return false;
+
+    char want[LCD2004_ROWS][LCD2004_COLS];
+    uint32_t cx, cy;
+    bool cursor_on;
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    memcpy(want, t.want, sizeof(want));
+    cx = t.wrap_pending ? LCD2004_COLS - 1u : t.cx;
+    cy = t.cy;
+    cursor_on = t.cursor_on;
+    t.dirty = false;
+    spin_unlock_irqrestore(&g_buf_lock, f);
+
+    wr_t w = { .len = 0, .ok = true };
     if (!g.shown_valid) {
         /* The glass is unknown after a bus failure: clear it and redraw every character. */
         wr_byte(&w, CMD_CLEAR, false);
@@ -250,42 +361,91 @@ static bool flush_locked(void) {
         wait_ms(3u);
         memset(g.shown, ' ', sizeof(g.shown));
         g.shown_valid = true;
-        g.hw_cursor_on = !g.cursor_on;     /* force the display-control write below */
+        g.hw_cursor_on = !cursor_on;       /* force the display-control write below */
     }
-    if (g.hw_cursor_on != g.cursor_on) {
-        wr_byte(&w, display_ctl(), false);
-        g.hw_cursor_on = g.cursor_on;
+    if (g.hw_cursor_on != cursor_on) {
+        wr_byte(&w, display_ctl(cursor_on), false);
+        g.hw_cursor_on = cursor_on;
     }
 
     for (uint32_t r = 0; r < LCD2004_ROWS; r++) {
         lcd2004_run_t runs[LCD2004_COLS / 2u + 1u];
-        uint32_t n = lcd2004_diff_runs(g.shown[r], g.want[r], runs, LCD2004_COLS / 2u + 1u);
+        uint32_t n = lcd2004_diff_runs(g.shown[r], want[r], runs, LCD2004_COLS / 2u + 1u);
         for (uint32_t i = 0; i < n; i++) {
             wr_byte(&w, (uint8_t)(CMD_SET_DDRAM | (k_row_base[r] + runs[i].x)), false);
             for (uint32_t k = 0; k < runs[i].len; k++)
-                wr_byte(&w, (uint8_t)g.want[r][runs[i].x + k], true);
+                wr_byte(&w, (uint8_t)want[r][runs[i].x + k], true);
             g.chars_sent += runs[i].len;
         }
     }
-    if (g.cursor_on) {
-        uint32_t cx = g.wrap_pending ? LCD2004_COLS - 1u : g.cx;
-        wr_byte(&w, (uint8_t)(CMD_SET_DDRAM | (k_row_base[g.cy] + cx)), false);
-    }
+    if (cursor_on) wr_byte(&w, (uint8_t)(CMD_SET_DDRAM | (k_row_base[cy] + cx)), false);
     if (!wr_xfer(&w)) {
         g.shown_valid = false;
         g.fail_count++;
+        f = spin_lock_irqsave(&g_buf_lock);
+        t.dirty = true;                    /* try again */
+        spin_unlock_irqrestore(&g_buf_lock, f);
         return false;
     }
-    memcpy(g.shown, g.want, sizeof(g.shown));
+    memcpy(g.shown, want, sizeof(g.shown));
     g.flush_count++;
     return true;
 }
 
 bool lcd2004_flush(void) {
-    ylock_acquire(&g_lock);
+    ylock_acquire(&g_io_lock);
     bool r = flush_locked();
-    ylock_release(&g_lock);
+    ylock_release(&g_io_lock);
     return r;
+}
+
+/* ---- Console mirror ------------------------------------------------------------------------- */
+
+#define MIRROR_MS  60u
+
+/* console_tee_bind(mirror_tee) feeds every byte a task prints into the terminal inline: a few
+ * instructions under g_buf_lock, in whatever context printed. A task does the slow part, the
+ * flush, when the buffer changed, at most every MIRROR_MS; a burst of output costs one flush. */
+static void mirror_tee(char c) {
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    term_feed(c);
+    spin_unlock_irqrestore(&g_buf_lock, f);
+}
+
+static void mirror_body(void *arg) {
+    (void)arg;
+    for (;;) {
+        uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+        bool dirty = t.dirty;
+        spin_unlock_irqrestore(&g_buf_lock, f);
+        if (dirty && g_mirror_on && !lcd2004_flush()) { task_sleep_ms(2000u); continue; }   /* absent or glitching: back off */
+        task_sleep_ms(MIRROR_MS);
+    }
+}
+
+bool lcd2004_mirror(bool on) {
+    if (!on) {
+        console_tee_bind(NULL);
+        g_mirror_on = false;
+        return true;
+    }
+    ylock_acquire(&g_io_lock);
+    bool ok = ensure_ready();
+    if (ok && !g.mirror_task) g.mirror_task = task_create_sized("clcd", mirror_body, NULL, 2) >= 0;
+    bool started = g.mirror_task;
+    ylock_release(&g_io_lock);
+    if (!ok || !started) return false;
+    g_mirror_on = true;
+    console_tee_bind(mirror_tee);
+    return true;
+}
+
+bool lcd2004_mirror_active(void) { return g_mirror_on; }
+
+/* ---- Selftest, status ------------------------------------------------------------------------ */
+
+static void feed_str(const char *s) {
+    for (; *s; s++) term_feed(*s);
 }
 
 uint32_t lcd2004_selftest(bool report) {
@@ -325,27 +485,46 @@ uint32_t lcd2004_selftest(bool report) {
         if (report) cprintf("  lcd2004 diff: got %lu runs\n", (unsigned long)n);
     }
 
-    /* Terminal behaviour on a scratch state: wrap, deferred wrap at the last cell, scroll. */
-    ylock_acquire(&g_lock);
+    /* Terminal behaviour on a scratch state, restored afterwards: wrap, deferred wrap at the last
+     * cell, scroll, tabs, escape sequences. Results are collected under the lock and reported after. */
+    uint32_t bad = 0;
+    char got[LCD2004_COLS + 1] = "";
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
     char keep[LCD2004_ROWS][LCD2004_COLS];
-    memcpy(keep, g.want, sizeof(keep));
-    uint32_t keep_cx = g.cx, keep_cy = g.cy;
-    bool keep_wrap = g.wrap_pending;
-    memset(g.want, ' ', sizeof(g.want));
-    g.cx = g.cy = 0; g.wrap_pending = false;
-    for (uint32_t i = 0; i < LCD2004_COLS; i++) term_putc('a');
-    if (g.cy != 0 || !g.wrap_pending) { failed++; if (report) cprintf("  lcd2004 term: no deferred wrap\n"); }
-    term_putc('\n');
-    if (g.cy != 1 || g.cx != 0) { failed++; if (report) cprintf("  lcd2004 term: LF after full row\n"); }
-    term_putc('b');
-    for (uint32_t i = 0; i < 3u; i++) term_putc('\n');   /* row 1 -> 3, then a scroll */
-    if (g.cy != 3 || g.want[0][0] != 'b' || g.want[3][0] != ' ') {
+    memcpy(keep, t.want, sizeof(keep));
+    uint32_t keep_cx = t.cx, keep_cy = t.cy;
+    bool keep_wrap = t.wrap_pending, keep_dirty = t.dirty;
+    uint8_t keep_esc = t.esc;
+    buf_reset_locked();
+    for (uint32_t i = 0; i < LCD2004_COLS; i++) term_char('a');
+    if (t.cy != 0 || !t.wrap_pending) bad |= 1u;              /* no deferred wrap */
+    term_char('\n');
+    if (t.cy != 1 || t.cx != 0) bad |= 2u;                    /* LF after a full row */
+    term_char('b');
+    for (uint32_t i = 0; i < 3u; i++) term_char('\n');        /* row 1 -> 3, then a scroll */
+    if (t.cy != 3 || t.want[0][0] != 'b' || t.want[3][0] != ' ') bad |= 4u;
+
+    buf_reset_locked();
+    feed_str("a\tb");                                         /* tab to column 4 */
+    if (t.want[0][4] != 'b') bad |= 8u;
+
+    buf_reset_locked();
+    feed_str("lsh> abcdef\r\x1b[?25l\x1b[Klsh> x\x1b[?25h");  /* a prompt redraw */
+    memcpy(got, t.want[0], LCD2004_COLS); got[LCD2004_COLS] = '\0';
+    if (memcmp(t.want[0], "lsh> x               ", LCD2004_COLS) != 0 || t.cx != 6) bad |= 16u;
+
+    feed_str("\x1b[3;5HZ\x1b[2D\x1b[1CY\x1b[0m");             /* absolute position, left 2, right 1 */
+    if (t.want[2][4] != 'Y' || t.cy != 2) bad |= 32u;
+    feed_str("\x1b[2J");
+    if (t.want[0][0] != ' ' || t.want[2][4] != ' ') bad |= 64u;
+
+    memcpy(t.want, keep, sizeof(keep));
+    t.cx = keep_cx; t.cy = keep_cy; t.wrap_pending = keep_wrap; t.dirty = keep_dirty; t.esc = keep_esc;
+    spin_unlock_irqrestore(&g_buf_lock, f);
+    if (bad) {
         failed++;
-        if (report) cprintf("  lcd2004 term: scroll wrong (row0 '%c')\n", g.want[0][0]);
+        if (report) cprintf("  lcd2004 terminal: failure mask 0x%02lx (row 0 after a redraw: '%s')\n", (unsigned long)bad, got);
     }
-    memcpy(g.want, keep, sizeof(keep));
-    g.cx = keep_cx; g.cy = keep_cy; g.wrap_pending = keep_wrap;
-    ylock_release(&g_lock);
 
     if (report)
         cprintf("lcd2004 selftest: %lu case%s failed\n",
@@ -353,13 +532,26 @@ uint32_t lcd2004_selftest(bool report) {
     return failed;
 }
 
+/* What the terminal buffer holds and where its cursor is, for debugging the mirror. */
+void lcd2004_dump(void) {
+    char rows[LCD2004_ROWS][LCD2004_COLS];
+    uint32_t cx, cy;
+    bool wrap;
+    uintptr_t f = spin_lock_irqsave(&g_buf_lock);
+    memcpy(rows, t.want, sizeof(rows));
+    cx = t.cx; cy = t.cy; wrap = t.wrap_pending;
+    spin_unlock_irqrestore(&g_buf_lock, f);
+    for (uint32_t r = 0; r < LCD2004_ROWS; r++) cprintf("|%.20s|\n", rows[r]);
+    cprintf("cursor %lu,%lu%s\n", (unsigned long)cx, (unsigned long)cy, wrap ? " (wrap pending)" : "");
+}
+
 void lcd2004_print_status(void) {
     if (!g.ready) {
         cprintf("lcd: not initialized (try `lcd init`)\n");
         return;
     }
-    cprintf("lcd: 20x4 HD44780 at 0x%02x, backlight %s, cursor %lu,%lu%s; %lu flushes, %lu chars sent, %lu bus failures\n",
-            g.addr, g.backlight ? "on" : "off", (unsigned long)g.cx, (unsigned long)g.cy,
-            g.cursor_on ? " (shown)" : "",
+    cprintf("lcd: 20x4 HD44780 at 0x%02x, backlight %s; %lu flushes, %lu chars sent, %lu bus failures\n",
+            g.addr, g.backlight ? "on" : "off",
             (unsigned long)g.flush_count, (unsigned long)g.chars_sent, (unsigned long)g.fail_count);
+    cprintf("lcd: console mirror %s\n", g_mirror_on ? "on" : "off");
 }

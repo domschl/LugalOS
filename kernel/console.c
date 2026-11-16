@@ -36,6 +36,8 @@
 
 /* accepted: one pointer store each, by `console bind`. */
 static console_putc_fn g_console_putc;
+/* accepted: written by console_tee_bind() at start-up or from a shell command, read by every printer; a pointer store is atomic and a stale read only misses or repeats one byte */
+static console_putc_fn g_console_tee;
 
 /* See kernel/console.h. A ylock, because it is held across the block that a
  * console write ends in. */
@@ -1683,6 +1685,10 @@ void console_bind(console_putc_fn putc) {
     g_console_putc = putc;
 }
 
+void console_tee_bind(console_putc_fn fn) {
+    g_console_tee = fn;
+}
+
 /* See kernel/include/kernel/console.h for why the CRLF convention lives on
  * this stream rather than in the format engine or the UART driver. */
 void console_emit(console_putc_fn out, char c) {
@@ -1817,6 +1823,7 @@ void console_putc(char c) {
     bool closed;
     vterm_t *vt = task_terminal(&closed);
     if (closed) return;                         /* nobody to show it to */
+    if (g_console_tee) g_console_tee(c);
     if (vt) vterm_write(vt, &c, 1);
     else vt = vterm_get(0);
     if (vt && !vt->active) {

@@ -54,3 +54,6 @@ set(CONFIG_BOARD_DESC "Waveshare ESP32-C6-Zero")
 # M5Stack CardKB2 in UART mode (Fn+Sym+2): its TX (the Grove YELLOW wire, G26, as measured; M5's page labels it RX) to GPIO2, read by UART1.
 # GPIO3 is kept free for a future TX; nothing is driven on either. GPIO0/1 stay the I2C bus.
 set(CONFIG_CARDKB2_RX_GPIO 2)
+
+# A 20x4 HD44780 on a PCF8574 backpack (I2C 0x27 or 0x3F): mirror the console to it when it answers.
+set(CONFIG_CLCD_MIRROR_AT_BOOT 1)
