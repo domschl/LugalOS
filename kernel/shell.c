@@ -49,6 +49,7 @@
 #include "drivers/ccs811.h"
 #include "drivers/sgp30.h"
 #include "drivers/scd4x.h"
+#include "drivers/tlv493d.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
@@ -3544,6 +3545,7 @@ static void cmd_sensor(const char *arg) {
         ccs811_selftest(true);
         sgp30_selftest(true);
         scd4x_selftest(true);
+        tlv493d_selftest(true);
         tsl2561_selftest(true);
         tsl2591_selftest(true);
         mics6814_selftest(true);

@@ -30,6 +30,9 @@ static const sensor_chan_desc_t s_descriptors[SENSOR_CHAN_MAX] = {
     [SENSOR_CHAN_GYRO_X]       = { SENSOR_CHAN_GYRO_X,       "gyro_x",         "dps",  1, 10,   "gyro_x_ddps", false },
     [SENSOR_CHAN_GYRO_Y]       = { SENSOR_CHAN_GYRO_Y,       "gyro_y",         "dps",  1, 10,   "gyro_y_ddps", false },
     [SENSOR_CHAN_GYRO_Z]       = { SENSOR_CHAN_GYRO_Z,       "gyro_z",         "dps",  1, 10,   "gyro_z_ddps", false },
+    [SENSOR_CHAN_MAG_X]        = { SENSOR_CHAN_MAG_X,        "mag_x",          "mT",   3, 1000, "mag_x_ut", false },
+    [SENSOR_CHAN_MAG_Y]        = { SENSOR_CHAN_MAG_Y,        "mag_y",          "mT",   3, 1000, "mag_y_ut", false },
+    [SENSOR_CHAN_MAG_Z]        = { SENSOR_CHAN_MAG_Z,        "mag_z",          "mT",   3, 1000, "mag_z_ut", false },
 };
 
 const sensor_chan_desc_t *sensor_chan_desc(sensor_chan_t chan) {
@@ -271,6 +274,7 @@ uint32_t sensor_derived_selftest(bool report) {
         { SENSOR_CHAN_BATTERY, 1000,   "100.0 %" },
         { SENSOR_CHAN_ACCEL_Z, -1003,  "-1.003 g" },
         { SENSOR_CHAN_GYRO_X,  -7,     "-0.7 dps" },
+        { SENSOR_CHAN_MAG_X,   -23618, "-23.618 mT" },
     };
     for (unsigned i = 0; i < sizeof(fmt) / sizeof(fmt[0]); i++) {
         char got[32];

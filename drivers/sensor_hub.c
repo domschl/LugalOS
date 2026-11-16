@@ -6,6 +6,7 @@
 #include "drivers/ccs811.h"
 #include "drivers/sgp30.h"
 #include "drivers/scd4x.h"
+#include "drivers/tlv493d.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
@@ -123,6 +124,7 @@ static void sensor_hub_init_locked(void) {
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
     sensor_hub_register(&scd4x_sensor_dev);
+    sensor_hub_register(&tlv493d_sensor_dev);
     sensor_hub_register(&ina226_sensor_dev);
     sensor_hub_register(&bmi270_sensor_dev);
 
@@ -597,6 +599,7 @@ uint32_t sensor_hub_selftest(bool report) {
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
     sensor_hub_register(&scd4x_sensor_dev);
+    sensor_hub_register(&tlv493d_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&ina226_sensor_dev);

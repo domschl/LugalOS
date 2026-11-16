@@ -13,6 +13,7 @@ LugalOS features a comprehensive sensor subsystem capable of running autonomous 
 LugalOS includes built-in drivers for a wide range of I2C environmental and atmospheric sensors:
 * **Temperature & Humidity**: Bosch BME280, BMP280, Texas Instruments HDC1080, TMP117, Microchip MCP9808.
 * **Air Quality & Gas**: Bosch BME680 (VOC), Sensirion SGP30 (eCO2/TVOC), ScioSense CCS811, Winsen MH-Z19B (CO2), Sensirion SCD4x (SCD40/41/43, photoacoustic CO2 at 0x62; the hub prefers it over eCO2, takes its pressure compensation from the pressure sensor, and keeps its own temperature and humidity out of the fused channels).
+* **Magnetic Field**: Infineon TLV493D-A1B6 (3-axis, +/-130 mT, 0x5E; sleeps in power-down between samples; channels `mag_x/y/z`, not published over MQTT).
 * **Ambient Light**: AMS/TAOS TSL2561, TSL2591.
 
 ### Discovering Connected Sensors
@@ -139,6 +140,7 @@ Official component datasheets for all supported environmental and light sensors 
 * **MiCS-6814:** `MiCS-6814_Datasheet.pdf` & `Multichannel gas sensor 1.0.pdf`
 * **SCD4x:** `CD_DS_SCD4x_Datasheet_D1.pdf`
 * **SGP30:** `Sensirion_Gas_Sensors_Datasheet_SGP30.pdf`
+* **TLV493D:** `infineon-tlv493d-a1b6-datasheet-en.pdf`
 * **TMP117:** `tmp117.pdf`
 * **TSL2561:** `TSL2561.pdf`
 * **TSL2591:** `TSL25911_Datasheet_EN_v1.pdf`

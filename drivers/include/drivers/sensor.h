@@ -39,6 +39,10 @@
  *   SENSOR_CHAN_BATTERY:  0.1 %        (state of charge: 715 is 71.5 %)
  *   SENSOR_CHAN_ACCEL_X/Y/Z: 1 mg, signed (1000 is 1 g)
  *   SENSOR_CHAN_GYRO_X/Y/Z:  0.1 deg/s, signed
+ *
+ * Magnetic field:
+ *
+ *   SENSOR_CHAN_MAG_X/Y/Z:   1 uT, signed (-23600 is -23.6 mT)
  */
 
 typedef enum {
@@ -67,6 +71,9 @@ typedef enum {
     SENSOR_CHAN_GYRO_X,
     SENSOR_CHAN_GYRO_Y,
     SENSOR_CHAN_GYRO_Z,
+    SENSOR_CHAN_MAG_X,
+    SENSOR_CHAN_MAG_Y,
+    SENSOR_CHAN_MAG_Z,
     SENSOR_CHAN_MAX
 } sensor_chan_t;
 

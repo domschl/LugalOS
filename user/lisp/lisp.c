@@ -7605,6 +7605,7 @@ static const char *const k_lisp_chan_names[] = {
     "co", "no2", "nh3", "co2", "pressure-msl", "abs-humidity", "dew-point", "iaq",
     "voltage", "current", "power", "battery",
     "accel-x", "accel-y", "accel-z", "gyro-x", "gyro-y", "gyro-z",
+    "mag-x", "mag-y", "mag-z",
 };
 _Static_assert(sizeof(k_lisp_chan_names) / sizeof(k_lisp_chan_names[0]) == SENSOR_CHAN_MAX,
                "a Lisp name for every sensor channel");

@@ -173,7 +173,8 @@ static mp_obj_t sensor_read(size_t n_args, const mp_obj_t *args) {
         "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas_res",
         "co", "no2", "nh3", "co2", "pressure_msl", "ah", "dew_point", "iaq",
         "voltage", "current", "power", "battery",
-        "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"
+        "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z",
+        "mag_x", "mag_y", "mag_z"
     };
     mp_obj_t dict = mp_obj_new_dict(0);
     size_t found = 0;
