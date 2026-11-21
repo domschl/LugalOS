@@ -50,6 +50,8 @@
 #include "drivers/sgp30.h"
 #include "drivers/scd4x.h"
 #include "drivers/tlv493d.h"
+#include "drivers/mmc5983.h"
+#include "drivers/rm3100.h"
 #include "drivers/lcd2004.h"
 #include "drivers/cardkb2.h"
 #include "drivers/eeprom_script.h"
@@ -3711,6 +3713,8 @@ static void cmd_sensor(const char *arg) {
         sgp30_selftest(true);
         scd4x_selftest(true);
         tlv493d_selftest(true);
+        mmc5983_selftest(true);
+        rm3100_selftest(true);
         tsl2561_selftest(true);
         tsl2591_selftest(true);
         mics6814_selftest(true);

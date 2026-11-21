@@ -18,7 +18,7 @@
 #define TLV493D_ADDR         0x5Eu   /* ADDR pin level at the reset picks 0x5E or 0x1F */
 
 typedef struct {
-    int32_t bx_ut, by_ut, bz_ut;   /* uT, signed */
+    int32_t bx_nt, by_nt, bz_nt;   /* nT, signed */
     int32_t temp_c10;              /* die temperature, 0.1 degC */
 } tlv493d_reading_t;
 
@@ -30,7 +30,7 @@ const char *tlv493d_part_name(void);
 bool tlv493d_read(tlv493d_reading_t *out);
 
 /* Pure integer conversions from the 12-bit register fields. */
-int32_t tlv493d_field_ut(int16_t raw12);
+int32_t tlv493d_field_nt(int16_t raw12);
 int32_t tlv493d_temp_c10(int16_t raw12);
 
 /* Odd parity over the four write bytes, set in bit 7 of byte 1. */

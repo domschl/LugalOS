@@ -6,7 +6,7 @@
   "heap_pages": 30680,
   "per_file": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 16544,
+    "(no line info: .rodata)": 16594,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 20,
     "arch/riscv/common/trap.c": 15,
@@ -52,6 +52,7 @@
     "drivers/mcp9808.c": 228,
     "drivers/mhz19b.c": 172,
     "drivers/mics6814.c": 228,
+    "drivers/mmc5983.c": 227,
     "drivers/nvme.c": 80816,
     "drivers/paper.c": 4,
     "drivers/pcie_jh7110.c": 2641,
@@ -61,11 +62,12 @@
     "drivers/ramscreen.c": 96,
     "drivers/reader_view.c": 40205,
     "drivers/ribbon.c": 4,
+    "drivers/rm3100.c": 256,
     "drivers/scd4x.c": 168,
     "drivers/screen.c": 748,
     "drivers/sdmmc_jh7110.c": 6873,
-    "drivers/sensor.c": 1616,
-    "drivers/sensor_hub.c": 7345,
+    "drivers/sensor.c": 1632,
+    "drivers/sensor_hub.c": 7361,
     "drivers/settings_view.c": 4921,
     "drivers/sgp30.c": 138,
     "drivers/shortcuts.c": 12256,
@@ -205,7 +207,7 @@
   },
   "per_subsystem": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 16544,
+    "(no line info: .rodata)": 16594,
     "9p": 65775,
     "agent": 3501,
     "app:cc": 598,
@@ -228,12 +230,12 @@
     "net": 2211,
     "radio": 3464,
     "selftest": 10607,
-    "sensors": 21407,
+    "sensors": 21922,
     "shell": 14861,
     "storage": 6873,
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 864400,
-  "total": 8164443
+  "ram_code": 867298,
+  "total": 8167906
 }

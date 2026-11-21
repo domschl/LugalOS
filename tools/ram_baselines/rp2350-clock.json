@@ -32,6 +32,7 @@
     "drivers/mcp9808.c": 76,
     "drivers/mhz19b.c": 80,
     "drivers/mics6814.c": 108,
+    "drivers/mmc5983.c": 72,
     "drivers/ota_rp2350.c": 14,
     "drivers/pico_clock_app.c": 196,
     "drivers/pico_clock_green_rp2350.c": 2116,
@@ -39,8 +40,9 @@
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 28,
     "drivers/reader_view.c": 3997,
+    "drivers/rm3100.c": 68,
     "drivers/scd4x.c": 84,
-    "drivers/sensor_hub.c": 6849,
+    "drivers/sensor_hub.c": 6857,
     "drivers/sgp30.c": 76,
     "drivers/tlv493d.c": 84,
     "drivers/tmp117.c": 76,
@@ -138,11 +140,11 @@
     "ota": 126,
     "radio": 12072,
     "selftest": 1653,
-    "sensors": 8591,
+    "sensors": 8739,
     "shell": 13246,
     "usb": 16700,
     "vfs": 3215
   },
   "ram_code": 358,
-  "total": 183629
+  "total": 183777
 }

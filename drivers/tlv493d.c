@@ -34,7 +34,7 @@
 #define RESET_MS               60u
 #define CONVERSION_MS          10u
 
-#define LSB_UT                 98      /* 0.098 mT per LSB */
+#define LSB_NT                 98000   /* 0.098 mT per LSB */
 
 static struct {
     bool               detected;
@@ -76,8 +76,8 @@ bool tlv493d_cached(tlv493d_reading_t *out, uint32_t *age_s) {
 }
 
 /* 12-bit two's complement, 0.098 mT per LSB. */
-int32_t tlv493d_field_ut(int16_t raw12) {
-    return (int32_t)raw12 * LSB_UT;
+int32_t tlv493d_field_nt(int16_t raw12) {
+    return (int32_t)raw12 * LSB_NT;
 }
 
 /* 25 degC at 340 LSB, 1.1 degC per LSB (datasheet table 'Temperature'). */
@@ -156,9 +156,9 @@ static bool tlv493d_read_locked(tlv493d_reading_t *out) {
     if (!slept) return fail("power-down write");
     if (b[3] & 0x03u) return fail("incomplete frame");
 
-    out->bx_ut = tlv493d_field_ut(sext12((uint16_t)((uint16_t)b[0] << 4 | (b[4] >> 4))));
-    out->by_ut = tlv493d_field_ut(sext12((uint16_t)((uint16_t)b[1] << 4 | (b[4] & 0x0Fu))));
-    out->bz_ut = tlv493d_field_ut(sext12((uint16_t)((uint16_t)b[2] << 4 | (b[5] & 0x0Fu))));
+    out->bx_nt = tlv493d_field_nt(sext12((uint16_t)((uint16_t)b[0] << 4 | (b[4] >> 4))));
+    out->by_nt = tlv493d_field_nt(sext12((uint16_t)((uint16_t)b[1] << 4 | (b[4] & 0x0Fu))));
+    out->bz_nt = tlv493d_field_nt(sext12((uint16_t)((uint16_t)b[2] << 4 | (b[5] & 0x0Fu))));
     out->temp_c10 = tlv493d_temp_c10(sext12((uint16_t)((uint16_t)(b[3] >> 4) << 8 | b[6])));
 
     g.last = *out;
@@ -172,12 +172,12 @@ uint32_t tlv493d_selftest(bool report) {
     uint32_t failed = 0;
 
     /* Datasheet example: 1111 0000 1111 is -241 LSB, -23.6 mT. */
-    int32_t f = tlv493d_field_ut(sext12(0xF0Fu));
-    if (f != -23618) {
+    int32_t f = tlv493d_field_nt(sext12(0xF0Fu));
+    if (f != -23618000) {
         failed++;
-        if (report) cprintf("  tlv493d field: got %ld, want -23618\n", (long)f);
+        if (report) cprintf("  tlv493d field: got %ld, want -23618000\n", (long)f);
     }
-    if (tlv493d_field_ut(sext12(0x7FFu)) != 200606 || tlv493d_field_ut(sext12(0x800u)) != -200704) {
+    if (tlv493d_field_nt(sext12(0x7FFu)) != 200606000 || tlv493d_field_nt(sext12(0x800u)) != -200704000) {
         failed++;
         if (report) cprintf("  tlv493d field range ends wrong\n");
     }
@@ -219,8 +219,8 @@ void tlv493d_print_status(void) {
                 g.addr, g.last_fail ? g.last_fail : "?", (unsigned long)g.fail_count);
         return;
     }
-    cprintf("tlv493d at 0x%02x: Bx %ld uT, By %ld uT, Bz %ld uT, die %ld.%ld C\n",
-            g.addr, (long)r.bx_ut, (long)r.by_ut, (long)r.bz_ut,
+    cprintf("tlv493d at 0x%02x: Bx %ld nT, By %ld nT, Bz %ld nT, die %ld.%ld C\n",
+            g.addr, (long)r.bx_nt, (long)r.by_nt, (long)r.bz_nt,
             (long)(r.temp_c10 / 10), (long)((r.temp_c10 < 0 ? -r.temp_c10 : r.temp_c10) % 10));
 }
 
@@ -244,9 +244,9 @@ static bool tlv493d_dev_get_value(struct sensor_dev *dev, sensor_chan_t chan, in
     (void)dev;
     if (!g.have_last || !out_val) return false;
     switch (chan) {
-    case SENSOR_CHAN_MAG_X: *out_val = g.last.bx_ut; return true;
-    case SENSOR_CHAN_MAG_Y: *out_val = g.last.by_ut; return true;
-    case SENSOR_CHAN_MAG_Z: *out_val = g.last.bz_ut; return true;
+    case SENSOR_CHAN_MAG_X: *out_val = g.last.bx_nt; return true;
+    case SENSOR_CHAN_MAG_Y: *out_val = g.last.by_nt; return true;
+    case SENSOR_CHAN_MAG_Z: *out_val = g.last.bz_nt; return true;
     default: return false;
     }
 }

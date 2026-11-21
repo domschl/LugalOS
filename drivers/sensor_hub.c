@@ -7,6 +7,8 @@
 #include "drivers/sgp30.h"
 #include "drivers/scd4x.h"
 #include "drivers/tlv493d.h"
+#include "drivers/mmc5983.h"
+#include "drivers/rm3100.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
@@ -124,6 +126,10 @@ static void sensor_hub_init_locked(void) {
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
     sensor_hub_register(&scd4x_sensor_dev);
+    /* The first device with a channel is its primary source, so the better
+     * magnetometers come before the TLV493D (+-130 mT, 98 uT per LSB). */
+    sensor_hub_register(&rm3100_sensor_dev);
+    sensor_hub_register(&mmc5983_sensor_dev);
     sensor_hub_register(&tlv493d_sensor_dev);
     sensor_hub_register(&ina226_sensor_dev);
     sensor_hub_register(&bmi270_sensor_dev);
@@ -602,6 +608,8 @@ uint32_t sensor_hub_selftest(bool report) {
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
     sensor_hub_register(&scd4x_sensor_dev);
+    sensor_hub_register(&rm3100_sensor_dev);
+    sensor_hub_register(&mmc5983_sensor_dev);
     sensor_hub_register(&tlv493d_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);

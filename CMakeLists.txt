@@ -1115,6 +1115,8 @@ set(SOURCES
     drivers/sgp30.c
     drivers/scd4x.c
     drivers/tlv493d.c
+    drivers/mmc5983.c
+    drivers/rm3100.c
     drivers/lcd2004.c
     drivers/cardkb2.c
     drivers/cardkb2_keys.c

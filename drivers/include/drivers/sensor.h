@@ -42,7 +42,9 @@
  *
  * Magnetic field:
  *
- *   SENSOR_CHAN_MAG_X/Y/Z:   1 uT, signed (-23600 is -23.6 mT)
+ *   SENSOR_CHAN_MAG_X/Y/Z:   1 nT, signed (48123 is the earth's field, 48.123 uT;
+ *                            -23600000 is -23.6 mT). nT because a geomagnetic
+ *                            storm is tens to hundreds of nT on a 50 uT field.
  */
 
 typedef enum {

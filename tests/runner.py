@@ -7902,7 +7902,7 @@ def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> 
             return (name, False,
                     f"tmp117 selftest did not pass:\n{log[-700:]}")
 
-        for part in ("ina226", "battery", "bmi270", "orient"):
+        for part in ("tlv493d", "mmc5983", "rm3100", "ina226", "battery", "bmi270", "orient"):
             m_part = re.search(part + r" selftest: (\d+) case", log)
             if not m_part or int(m_part.group(1)) != 0:
                 return (name, False, f"{part} selftest did not pass:\n{log[-700:]}")
